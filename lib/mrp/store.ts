@@ -30,36 +30,47 @@ import * as rawActions from "./actions";
 // ...") kalau sesi login tidak valid/kedaluwarsa/salah role (lihat requireSession/
 // requireInternalRole di lib/auth/session.ts). Tanpa penanganan ini, error itu jadi unhandled
 // promise rejection di event handler halaman -> Next.js dev overlay nge-crash SELURUH halaman
-// (bukan cuma gagal aksi yang barusan diklik). Proxy ini membungkus SEMUA pemanggilan
-// `actions.xxxAction(...)` di file ini (tanpa perlu ubah satu-satu di ~40 tempat) supaya error
-// sesi-habis cukup redirect halus ke "/" (halaman pilih modul / login ulang), bukan crash. Error
-// LAIN (bukan soal sesi) tetap dilempar apa adanya -- supaya bug sungguhan tetap kelihatan.
+// (bukan cuma gagal aksi yang barusan diklik).
+//
+// PERNAH dicoba pakai `new Proxy(rawActions, {...})` supaya tidak perlu ubah satu-satu di ~40
+// tempat -- TERNYATA CRASH TOTAL di production build (tidak kelihatan di `next dev`/`tsc`!):
+// export Server Action hasil bundling "use server" di production adalah properti non-writable +
+// non-configurable pada namespace modul, dan spesifikasi Proxy MEWAJIBKAN `get` trap mengembalikan
+// NILAI PERSIS SAMA untuk properti seperti itu -- Proxy saya mengembalikan fungsi WRAPPER (beda
+// referensi), jadi browser melempar
+// `TypeError: 'get' on proxy: property 'xxxAction' is a read-only and non-configurable data
+// property on the proxy target but the proxy did not return its actual value`
+// untuk SETIAP pemanggilan actions.xxxAction(...) -- akibatnya semua Server Action gagal total di
+// production walau `npm run build` & `tsc --noEmit` sama sekali tidak mendeteksinya (murni runtime
+// invariant JS, bukan type error). Diganti objek BIASA (bukan Proxy) berisi salinan tiap fungsi
+// yang sudah dibungkus try/catch -- tidak men-trap akses ke modul asli sama sekali, jadi tidak
+// kena invariant itu.
 let redirectingForAuthError = false;
-const actions = new Proxy(rawActions, {
-  get(target, prop, receiver) {
-    const value = Reflect.get(target, prop, receiver);
-    if (typeof value !== "function") return value;
-    return async (...args: unknown[]) => {
-      try {
-        return await (value as (...a: unknown[]) => unknown)(...args);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (typeof window !== "undefined" && (message.startsWith("Unauthorized") || message.startsWith("Forbidden"))) {
-          // Aksi yang gagal biasanya diikuti get().refresh() (juga lewat proxy ini) -- tanpa
-          // guard ini, refresh() akan gagal dengan error sesi yang SAMA lagi dan memicu alert +
-          // redirect kedua. Cukup sekali per navigasi.
-          if (!redirectingForAuthError) {
-            redirectingForAuthError = true;
-            window.alert("Sesi login Anda sudah tidak valid/kedaluwarsa. Anda akan diarahkan ke halaman login ulang.");
-            window.location.href = "/";
-          }
-          return undefined;
+function guardAction<Args extends unknown[], R>(fn: (...args: Args) => Promise<R>): (...args: Args) => Promise<R> {
+  return async (...args: Args) => {
+    try {
+      return await fn(...args);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (typeof window !== "undefined" && (message.startsWith("Unauthorized") || message.startsWith("Forbidden"))) {
+        // Aksi yang gagal biasanya diikuti get().refresh() (juga dibungkus guardAction) -- tanpa
+        // guard ini, refresh() akan gagal dengan error sesi yang SAMA lagi dan memicu alert +
+        // redirect kedua. Cukup sekali per navigasi.
+        if (!redirectingForAuthError) {
+          redirectingForAuthError = true;
+          window.alert("Sesi login Anda sudah tidak valid/kedaluwarsa. Anda akan diarahkan ke halaman login ulang.");
+          window.location.href = "/";
         }
-        throw err;
+        return undefined as R;
       }
-    };
-  },
-}) as typeof rawActions;
+      throw err;
+    }
+  };
+}
+
+const actions = Object.fromEntries(
+  Object.entries(rawActions).map(([key, fn]) => [key, guardAction(fn as (...args: unknown[]) => Promise<unknown>)])
+) as typeof rawActions;
 
 export type MrpDates = {
   created: string;
