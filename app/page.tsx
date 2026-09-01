@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ClipboardList, Package, Wallet, Building2, Lock, X, ShieldCheck, Factory } from "lucide-react";
+import { ClipboardList, Package, Wallet, Building2, Lock, X, ShieldCheck, Factory, Eye, EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useInternalAuthStore } from "@/lib/internal-auth-store";
 import { INTERNAL_ACCOUNTS, type InternalRole } from "@/lib/internal-auth";
@@ -26,6 +26,7 @@ export default function ModuleSelectPage() {
 
   const [selectedRole, setSelectedRole] = useState<InternalRole | null>(null);
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -34,12 +35,14 @@ export default function ModuleSelectPage() {
   function pickRole(role: InternalRole) {
     setSelectedRole(role);
     setPassword("");
+    setShowPassword(false);
     setError("");
   }
 
   function closeLogin() {
     setSelectedRole(null);
     setPassword("");
+    setShowPassword(false);
     setError("");
   }
 
@@ -144,14 +147,25 @@ export default function ModuleSelectPage() {
                       <Lock size={10} />
                       Password
                     </div>
-                    <input
-                      type="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="input mt-1 !py-1.5 !text-[11.5px]"
-                      autoFocus
-                      placeholder="••••••••"
-                    />
+                    <div className="relative mt-1">
+                      <input
+                        type={showPassword ? "text" : "password"}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="input !py-1.5 !pr-8 !text-[11.5px]"
+                        autoFocus
+                        placeholder="••••••••"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        tabIndex={-1}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary"
+                        aria-label={showPassword ? "Sembunyikan password" : "Tampilkan password"}
+                      >
+                        {showPassword ? <EyeOff size={13} /> : <Eye size={13} />}
+                      </button>
+                    </div>
                   </div>
                   {error && <div className="font-sans text-[10.5px] font-medium text-danger-fg">{error}</div>}
                   <button

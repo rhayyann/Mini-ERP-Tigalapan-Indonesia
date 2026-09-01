@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Building2 } from "lucide-react";
+import { ArrowLeft, Building2, Eye, EyeOff } from "lucide-react";
 import { useVendorAuthStore } from "@/lib/mrp/vendor-auth-store";
 
 export default function VendorLoginPage() {
@@ -18,6 +18,7 @@ export default function VendorLoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     if (mounted && loggedInVendorId) router.replace("/vendor-maklon/po-produksi");
@@ -73,13 +74,24 @@ export default function VendorLoginPage() {
             </div>
             <div>
               <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Password</div>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="input mt-1"
-                placeholder="••••••••"
-              />
+              <div className="relative mt-1">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="input !pr-9"
+                  placeholder="••••••••"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  tabIndex={-1}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary"
+                  aria-label={showPassword ? "Sembunyikan password" : "Tampilkan password"}
+                >
+                  {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
             </div>
             {error && <div className="font-sans text-[11.5px] font-medium text-danger-fg">{error}</div>}
             <button
