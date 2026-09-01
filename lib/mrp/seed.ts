@@ -5,26 +5,30 @@
  *  BAYU & GI-01 SENGAJA mempertahankan key lama (bukan "BY" sesuai kode di spreadsheet) supaya
  *  data yang sudah tersimpan (PO, invoice, dsb — semua disimpan pakai vendorId string ini) tetap
  *  cocok; cuma `name`-nya yang diperbarui mengikuti nama asli di spreadsheet.
- *  `password` dipakai halaman login vendor (lihat app/vendor-maklon/login/page.tsx) — SEMUA
- *  vendor pakai password seragam "vendor123" sesuai spreadsheet.
  *  baseCapacity/ratePerPc/estDays/productionLeadDays untuk 8 vendor BARU (semua kecuali BAYU &
  *  GI-01) masih ANGKA PLACEHOLDER (belum ada datanya dari Procurement) — dipakai sebagai fallback
  *  terakhir kalau Master Data > Harga Maklon belum punya baris untuk vendor itu (lihat
- *  maklonAmountForVendor di lib/mrp/derive.ts). Update begitu rate & kapasitas riilnya tersedia. */
+ *  maklonAmountForVendor di lib/mrp/derive.ts). Update begitu rate & kapasitas riilnya tersedia.
+ *
+ *  CATATAN MIGRASI SUPABASE: field `password` yang dulu ada di sini (plaintext, ikut ter-bundle
+ *  ke client) sudah DIHAPUS. Password login vendor sekarang cuma hidup sebagai hash bcrypt di
+ *  kolom vendors_produksi.password_hash (lihat supabase/migrations/0002_seed_master_data.sql),
+ *  dicek server-only lewat lib/auth/actions.ts#loginVendorAction — tidak pernah lagi bisa dibaca
+ *  dari bundle JS. */
 export const VENDOR_PRODUKSI: Record<
   string,
-  { name: string; baseCapacity: number; ratePerPc: number; estDays: number; retentionPct: number; productionLeadDays: number; password: string }
+  { name: string; baseCapacity: number; ratePerPc: number; estDays: number; retentionPct: number; productionLeadDays: number }
 > = {
-  BAYU: { name: "Bayu", baseCapacity: 8500, ratePerPc: 7000, estDays: 14, retentionPct: 10, productionLeadDays: 7, password: "vendor123" },
-  "GI-01": { name: "Yogi 01", baseCapacity: 6200, ratePerPc: 6900, estDays: 11, retentionPct: 10, productionLeadDays: 7, password: "vendor123" },
-  "GI-02": { name: "Yogi 02", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7, password: "vendor123" },
-  CE: { name: "Cecep", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7, password: "vendor123" },
-  KK: { name: "Koko", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7, password: "vendor123" },
-  CP: { name: "Custom Project", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7, password: "vendor123" },
-  MKS: { name: "Konveksi Makassar", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7, password: "vendor123" },
-  AWL: { name: "Awal", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7, password: "vendor123" },
-  ART: { name: "Artha", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7, password: "vendor123" },
-  ELMN: { name: "Elang", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7, password: "vendor123" },
+  BAYU: { name: "Bayu", baseCapacity: 8500, ratePerPc: 7000, estDays: 14, retentionPct: 10, productionLeadDays: 7 },
+  "GI-01": { name: "Yogi 01", baseCapacity: 6200, ratePerPc: 6900, estDays: 11, retentionPct: 10, productionLeadDays: 7 },
+  "GI-02": { name: "Yogi 02", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  CE: { name: "Cecep", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  KK: { name: "Koko", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  CP: { name: "Custom Project", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  MKS: { name: "Konveksi Makassar", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  AWL: { name: "Awal", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  ART: { name: "Artha", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  ELMN: { name: "Elang", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
 };
 
 export const SUPPLIERS = ["Supplier Rajut Jaya", "Supplier ABC", "Supplier Cemerlang"];

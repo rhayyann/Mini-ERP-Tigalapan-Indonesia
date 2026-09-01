@@ -17,6 +17,7 @@ export default function VendorLoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (mounted && loggedInVendorId) router.replace("/vendor-maklon/po-produksi");
@@ -24,10 +25,13 @@ export default function VendorLoginPage() {
 
   if (!mounted) return null;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
-    if (login(username, password)) {
+    setSubmitting(true);
+    const ok = await login(username, password);
+    setSubmitting(false);
+    if (ok) {
       router.push("/vendor-maklon/po-produksi");
     } else {
       setError("Nama vendor atau password salah.");
@@ -78,14 +82,14 @@ export default function VendorLoginPage() {
               />
             </div>
             {error && <div className="font-sans text-[11.5px] font-medium text-danger-fg">{error}</div>}
-            <button type="submit" className="mt-1 rounded-md bg-accent-orange px-3.5 py-2 font-sans text-xs font-semibold text-white">
-              Masuk
+            <button
+              type="submit"
+              disabled={submitting}
+              className="mt-1 rounded-md bg-accent-orange px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:opacity-60"
+            >
+              {submitting ? "Memeriksa..." : "Masuk"}
             </button>
           </form>
-
-          <div className="mt-4 border-t border-border-subtle pt-3 font-sans text-[10.5px] leading-[1.6] text-text-muted">
-            Password demo untuk semua vendor: <span className="font-mono font-semibold text-text-primary">vendor123</span>
-          </div>
         </div>
       </div>
     </div>

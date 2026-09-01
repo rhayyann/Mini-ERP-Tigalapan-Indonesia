@@ -230,6 +230,96 @@ export function maklonAmountForVendor(hargaMaklon: HargaMaklonRow[], vendorKey: 
   return maklonAmountForLenganBuckets(hargaMaklon, vendorKey, Array.from(byLengan.entries()).map(([lengan, qty]) => ({ lengan, qty })));
 }
 
+// CATATAN MIGRASI SUPABASE: dua fungsi di bawah ini (splitMaterialPoByEntitas &
+// advanceMaklonToDeliveryIfFullyDone) DIPINDAH dari lib/mrp/store.ts (bukan ditulis ulang)
+// supaya bisa dipakai bareng dari Server Action di lib/mrp/actions.ts, tanpa duplikasi
+// logika bisnis. Satu-satunya perubahan: splitMaterialPoByEntitas dulu generate id baru
+// lewat nextId() in-memory synchronous, sekarang id-nya HARUS sudah di-generate lebih
+// dulu oleh pemanggil (lewat next_readable_id() di Postgres, yang async) dan dioper lewat
+// parameter `newIds` (urut sesuai grup entitas ke-2, ke-3, dst — grup pertama pakai id PO asal).
+export function splitMaterialPoByEntitas(po: MaterialPO, newIds: string[]): MaterialPO[] {
+  const groups = new Map<string, ColorBreakdown[]>();
+  for (const c of po.colorBreakdown) {
+    const ent = c.entitas ?? po.entity;
+    groups.set(ent, [...(groups.get(ent) ?? []), c]);
+  }
+  if (groups.size <= 1) return [po];
+  // Sisa (remainder) dari pembulatan dilempar ke grup TERAKHIR — bukan Math.round independen per
+  // grup — supaya total amount hasil split selalu PERSIS sama dengan po.amount asli.
+  const entries = Array.from(groups.entries());
+  let amountRemaining = po.amount;
+  let idCursor = 0;
+  return entries.map(([entitas, colorBreakdown], idx) => {
+    const rollCount = colorBreakdown.reduce((a, c) => a + c.rollCount, 0);
+    const ratio = po.rollCount > 0 ? rollCount / po.rollCount : 0;
+    const invoicedByColor: Record<string, number> = {};
+    for (const c of colorBreakdown) {
+      const key = c.warna + "|" + c.lengan;
+      if (po.invoicedByColor[key] != null) invoicedByColor[key] = po.invoicedByColor[key];
+    }
+    const invoicedRolls = colorBreakdown.reduce((a, c) => a + (invoicedByColor[c.warna + "|" + c.lengan] ?? 0), 0);
+    const isLast = idx === entries.length - 1;
+    const amount = isLast ? amountRemaining : Math.round(po.amount * ratio);
+    amountRemaining -= amount;
+    return {
+      ...po,
+      id: idx === 0 ? po.id : newIds[idCursor++],
+      warna: colorBreakdown.length === 1 ? colorBreakdown[0].warna : colorBreakdown.map((c) => c.warna).join(", "),
+      lengan: colorBreakdown[0].lengan,
+      colorBreakdown,
+      invoicedByColor,
+      rollCount,
+      availableRolls: rollCount,
+      invoicedRolls,
+      amount,
+      entity: entitas,
+    };
+  });
+}
+
+/** Pindahkan `moveQtyRoll` roll aduan pola (warna+lengan tertentu, milik fromVendor) ke toVendor
+ *  -- dipakai transferMaterial. Row yang qty roll-nya lebih besar dari yang perlu dipindah
+ *  di-SPLIT jadi 2 (sisa tetap di fromVendor, potongan pindah ke toVendor). `newIds` = id
+ *  pre-generated (next_readable_id "AD") buat baris hasil split, dikonsumsi berurutan. */
+export function reassignAduanRowsVendor(rows: AduanPolaRow[], fromVendor: string, toVendor: string, warna: string, lengan: Lengan, moveQtyRoll: number, newIds: string[]): AduanPolaRow[] {
+  let remaining = moveQtyRoll;
+  let idCursor = 0;
+  const next: AduanPolaRow[] = [];
+  for (const row of rows) {
+    if (remaining <= 0 || row.vendor !== fromVendor || row.warna !== warna || row.lengan !== lengan) {
+      next.push(row);
+      continue;
+    }
+    if (row.qtyRoll <= remaining) {
+      next.push({ ...row, vendor: toVendor });
+      remaining -= row.qtyRoll;
+    } else {
+      const moveFrac = remaining / row.qtyRoll;
+      const movedQty = Math.round(row.qty * moveFrac);
+      next.push({ ...row, qtyRoll: row.qtyRoll - remaining, qty: row.qty - movedQty });
+      next.push({ ...row, id: newIds[idCursor++], qtyRoll: remaining, qty: movedQty, vendor: toVendor });
+      remaining = 0;
+    }
+  }
+  return next;
+}
+
+/** Auto-advance status PO maklon dari PRODUCTION ke DELIVERY begitu semua target Finish Good
+ *  tercapai. Dipanggil setelah tiap kali hasil produksi (FG) baru dicatat. */
+export function advanceMaklonToDeliveryIfFullyDone(
+  mrpId: string,
+  vendorProduksi: string,
+  maklonPOs: MaklonPO[],
+  mrpDetails: MrpDetail[],
+  batches: ProductionBatch[],
+  results: ProductionResult[]
+): MaklonPO[] {
+  const po = maklonPOs.find((m) => m.mrpId === mrpId && m.vendorProduksi === vendorProduksi);
+  if (!po || po.status !== "PRODUCTION") return maklonPOs;
+  if (!maklonProductionFullyDone(mrpId, vendorProduksi, mrpDetails, batches, results)) return maklonPOs;
+  return maklonPOs.map((m) => (m.id === po.id ? { ...m, status: "DELIVERY" } : m));
+}
+
 /** Orkestrasi Material: tonase dihitung SEKALI per warna (dijumlah lintas lengan dalam PO yang
  *  sama supplier-nya — 1 roll kain fisik warna X harganya sama mau nanti dipotong PENDEK atau
  *  PANJANG), rate hasil lookup itu baru diterapkan ke kontribusi rollCount×25kg tiap baris

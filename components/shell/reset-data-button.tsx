@@ -5,8 +5,15 @@ import { useMrpStore } from "@/lib/mrp/store";
 export function ResetDataButton({ variant = "button" }: { variant?: "button" | "menu-item" }) {
   const resetAll = useMrpStore((s) => s.resetAll);
 
-  function handleReset() {
-    resetAll();
+  async function handleReset() {
+    // CATATAN MIGRASI: ini sekarang benar-benar menghapus data BERSAMA di Supabase (semua modul
+    // & vendor), bukan cuma localStorage browser sendiri seperti dulu -- confirm dulu di sini
+    // sebelum action dipanggil, supaya tidak ada klik-tak-sengaja yang menghapus data semua orang.
+    const ok = window.confirm(
+      "Yakin hapus SEMUA data? Ini akan menghapus data MRP, PO, invoice, produksi, delivery, dan master data milik SEMUA modul & vendor (bukan cuma punya Anda). Aksi ini tidak bisa dibatalkan."
+    );
+    if (!ok) return;
+    await resetAll();
     try {
       localStorage.removeItem("g2g-sim-v1");
     } catch {}

@@ -2,11 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ClipboardList, Package, Wallet, Building2, Lock, KeyRound, X, ShieldCheck, Factory } from "lucide-react";
+import { ClipboardList, Package, Wallet, Building2, Lock, X, ShieldCheck, Factory } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useInternalAuthStore } from "@/lib/internal-auth-store";
 import { INTERNAL_ACCOUNTS, type InternalRole } from "@/lib/internal-auth";
-import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import { useVendorAuthStore } from "@/lib/mrp/vendor-auth-store";
 
 const MODULES: { role: InternalRole; label: string; desc: string; icon: typeof ClipboardList }[] = [
@@ -28,7 +27,7 @@ export default function ModuleSelectPage() {
   const [selectedRole, setSelectedRole] = useState<InternalRole | null>(null);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [showPasswordInfo, setShowPasswordInfo] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   if (!mounted) return null;
 
@@ -44,12 +43,15 @@ export default function ModuleSelectPage() {
     setError("");
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedRole) return;
     const account = INTERNAL_ACCOUNTS.find((a) => a.role === selectedRole)!;
     setError("");
-    if (login(selectedRole, password)) {
+    setSubmitting(true);
+    const ok = await login(selectedRole, password);
+    setSubmitting(false);
+    if (ok) {
       router.push(account.homeHref);
     } else {
       setError("Password salah.");
@@ -61,14 +63,6 @@ export default function ModuleSelectPage() {
       className="relative flex min-h-screen flex-col items-center justify-center px-4 py-12"
       style={{ background: "linear-gradient(160deg, #000000 0%, #050912 30%, #0A1B3D 62%, var(--accent-blue) 100%)" }}
     >
-      <button
-        onClick={() => setShowPasswordInfo(true)}
-        className="absolute right-5 top-5 flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3.5 py-2 font-sans text-[11.5px] font-medium text-white/70 backdrop-blur-sm transition-colors hover:border-white/30 hover:bg-white/10 hover:text-white"
-      >
-        <KeyRound size={13} />
-        Password default
-      </button>
-
       <div className="mb-8 text-center">
         <div className="font-sans text-[13px] font-semibold text-white/60">ERP Tigalapan Indonesia</div>
         <div className="mt-1.5 font-heading text-[26px] font-bold text-white">Pilih Modul</div>
@@ -160,50 +154,18 @@ export default function ModuleSelectPage() {
                     />
                   </div>
                   {error && <div className="font-sans text-[10.5px] font-medium text-danger-fg">{error}</div>}
-                  <button type="submit" className="rounded-md bg-action-primary px-3 py-[7px] font-sans text-[11.5px] font-semibold text-white">
-                    Masuk
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    className="rounded-md bg-action-primary px-3 py-[7px] font-sans text-[11.5px] font-semibold text-white disabled:opacity-60"
+                  >
+                    {submitting ? "Memeriksa..." : "Masuk"}
                   </button>
                 </form>
               </div>
             </div>
           );
         })()}
-
-      {showPasswordInfo && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4" onClick={() => setShowPasswordInfo(false)}>
-          <div
-            className="w-full max-w-[380px] overflow-hidden rounded-xl border border-border-subtle bg-surface-card shadow-[0_20px_50px_rgba(0,0,0,.4)]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-3">
-              <KeyRound size={14} className="text-action-primary" />
-              <span className="font-sans text-[13px] font-semibold text-text-primary">Password default</span>
-              <button onClick={() => setShowPasswordInfo(false)} className="ml-auto text-text-muted hover:text-danger-fg">
-                <X size={16} />
-              </button>
-            </div>
-            <div className="px-4 py-3.5 font-sans text-[12px] leading-[1.7] text-text-primary">
-              {INTERNAL_ACCOUNTS.map((a) => (
-                <div key={a.role} className="flex items-center justify-between">
-                  <span className="text-text-muted">{a.label}</span>
-                  <span className="font-mono font-semibold">{a.password}</span>
-                </div>
-              ))}
-              <div className="mt-3 border-t border-[#F1F4F7] pt-3 font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
-                Vendor Produksi — pilih nama vendor di halaman login, password di bawah
-              </div>
-              <div className="max-h-[220px] overflow-y-auto">
-                {Object.entries(VENDOR_PRODUKSI).map(([id, v]) => (
-                  <div key={id} className="mt-1.5 flex items-center justify-between">
-                    <span className="text-text-muted">{v.name}</span>
-                    <span className="font-mono font-semibold">{v.password}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

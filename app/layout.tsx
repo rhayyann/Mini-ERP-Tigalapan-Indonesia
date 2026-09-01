@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, Space_Grotesk, IBM_Plex_Mono } from "next/font/google";
+import { StoreHydrator } from "@/components/shell/store-hydrator";
 import "./globals.css";
 
 const inter = Inter({
@@ -31,7 +32,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="id"
       className={`${inter.variable} ${spaceGrotesk.variable} ${plexMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <StoreHydrator />
+        {children}
+      </body>
     </html>
   );
 }
