@@ -225,6 +225,29 @@
   html {
     @apply font-sans;
   }
+
+  /* Tailwind v4 preflight nge-reset cursor button ke "default" (niru form control browser) --
+     di app ini hampir semua <button> dipakai sebagai elemen UI interaktif biasa (bukan submit
+     form murni), jadi kursor tangan + hint hover diaktifkan lagi secara global di sini supaya
+     tidak perlu ditambah manual di ratusan tempat. Utility class hover spesifik yang sudah ada
+     di masing-masing komponen (mis. hover:bg-...) tetap menang seperti biasa -- ini cuma
+     fallback DEFAULT untuk tombol yang belum punya hover state sendiri. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+  button:disabled,
+  [role="button"][aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+  button:not(:disabled):hover,
+  [role="button"]:not([aria-disabled="true"]):hover {
+    filter: brightness(0.96);
+  }
+  .dark button:not(:disabled):hover,
+  .dark [role="button"]:not([aria-disabled="true"]):hover {
+    filter: brightness(1.12);
+  }
 }
 
 @layer components {

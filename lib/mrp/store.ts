@@ -269,20 +269,48 @@ function notYetMigrated(name: string) {
   console.warn(`[mrp-store] Action "${name}" belum diporting ke Supabase pasca migrasi -- tidak melakukan apa-apa. Lihat lib/mrp/store.ts.`);
 }
 
-/** Bungkus SEMUA method async di objek state (kecuali `hydrate`, yang sinkron & dipakai
- *  StoreHydrator utk hydrate diam-diam di background) supaya `busy` otomatis true selama method
- *  itu (dan `refresh()` yang biasanya dipanggil di akhir tiap action) masih berjalan -- dipakai
- *  components/shell/busy-overlay.tsx utk nge-blok klik lain sampai selesai. Counter (bukan
- *  boolean) supaya panggilan yang saling nested (mis. action manapun yang di dalamnya manggil
- *  get().refresh()) tetap dihitung benar -- busy baru balik false kalau SEMUA pemanggilan yang
- *  sedang berjalan sudah selesai. Ini objek BIASA (bukan Proxy) -- lihat catatan panjang di
- *  `guardAction` di atas soal kenapa Proxy berbahaya untuk pola begini.
+/** Bungkus method yang namanya ada di `BUSY_TRACKED_ACTIONS` (lihat di bawah) supaya `busy`
+ *  otomatis true selama method itu (dan `refresh()` yang dipanggil di akhirnya) masih berjalan --
+ *  dipakai components/shell/busy-overlay.tsx utk nge-blok klik lain sampai selesai. Method yang
+ *  TIDAK masuk daftar dibiarkan apa adanya (tetap async & tetap benar secara fungsional, cuma
+ *  tidak memicu overlay). Counter (bukan boolean) supaya panggilan yang saling nested (mis. action
+ *  manapun yang di dalamnya manggil get().refresh()) tetap dihitung benar -- busy baru balik false
+ *  kalau SEMUA pemanggilan yang sedang berjalan sudah selesai. Ini objek BIASA (bukan Proxy) --
+ *  lihat catatan panjang di `guardAction` di atas soal kenapa Proxy berbahaya untuk pola begini.
  */
+// Cuma action yang (a) reset data, atau (b) benar-benar "oper" alur/data ke modul/role LAIN
+// (approve, kirim PO, booking invoice, bayar, dst.) yang munculkan overlay -- klik kecil yang
+// sering dipencet berkali-kali dalam satu sesi kerja (pilih entitas, tandai notifikasi dibaca,
+// edit field kecil, dst.) SENGAJA tidak, supaya tidak berasa mengganggu/lambat.
+const BUSY_TRACKED_ACTIONS = new Set<string>([
+  "resetAll",
+  "approvePpicMrp",
+  "rejectPpicMrp",
+  "sendPoToFinance",
+  "approveMaterialPo",
+  "approveAllMaterialPos",
+  "approveVendorMaterialPos",
+  "approveMaklonPo",
+  "bookInvoice",
+  "setInvoicesPaid",
+  "setInvoicesDelivery",
+  "approveMaklonInvoice",
+  "payMaklonInvoice",
+  "createVendorInvoice",
+  "setVendorInvoiceStatus",
+  "payVendorInvoice",
+  "transferMaterial",
+  "closePoWithReason",
+  "reassignMaterialToSupplier",
+  "createDeliveryKoli",
+  "markKoliDelivered",
+]);
+
 function withBusyTracking<T extends Record<string, unknown>>(set: Setter, obj: T): T {
   let counter = 0;
   const wrapped: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj)) {
-    if (typeof value !== "function" || key === "hydrate") {
+    if (typeof value !== "function" || !BUSY_TRACKED_ACTIONS.has(key)) {
       wrapped[key] = value;
       continue;
     }
