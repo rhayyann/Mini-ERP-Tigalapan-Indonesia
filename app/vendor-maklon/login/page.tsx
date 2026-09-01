@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Building2 } from "lucide-react";
 import { useVendorAuthStore } from "@/lib/mrp/vendor-auth-store";
-import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
 export default function VendorLoginPage() {
   const [mounted, setMounted] = useState(false);
@@ -27,11 +26,11 @@ export default function VendorLoginPage() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setError("");
     if (login(username, password)) {
-      setError("");
       router.push("/vendor-maklon/po-produksi");
     } else {
-      setError("Username atau password salah.");
+      setError("Nama vendor atau password salah.");
     }
   }
 
@@ -50,19 +49,22 @@ export default function VendorLoginPage() {
           <span className="flex h-[64px] w-[64px] items-center justify-center rounded-lg bg-accent-orange-bg">
             <Building2 size={28} strokeWidth={1.75} className="text-accent-orange" />
           </span>
-          <div className="mt-3.5 font-sans text-[13px] font-semibold text-text-muted">GarmenERP</div>
+          <div className="mt-3.5 font-sans text-[13px] font-semibold text-text-muted">ERP Tigalapan Indonesia</div>
           <div className="mt-1 font-heading text-xl font-bold text-text-primary">Login Vendor Produksi</div>
-          <div className="mt-1 font-sans text-xs text-text-muted">Masuk untuk melihat PO produksi dan PO material milik vendor Anda.</div>
+          <div className="mt-1 font-sans text-xs text-text-muted">Ketik nama vendor Anda lalu masukkan password.</div>
 
           <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-3">
             <div>
-              <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Username</div>
+              <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Nama vendor</div>
               <input
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  setError("");
+                }}
                 className="input mt-1"
                 autoFocus
-                placeholder="contoh: bayu"
+                placeholder="contoh: Cecep"
               />
             </div>
             <div>
@@ -82,13 +84,7 @@ export default function VendorLoginPage() {
           </form>
 
           <div className="mt-4 border-t border-border-subtle pt-3 font-sans text-[10.5px] leading-[1.6] text-text-muted">
-            Akun demo:
-            <br />
-            {Object.keys(VENDOR_PRODUKSI).map((v) => (
-              <div key={v} className="font-mono">
-                {v === "BAYU" ? "bayu / bayu123" : "gi01 / gi01123"} — {VENDOR_PRODUKSI[v].name}
-              </div>
-            ))}
+            Password demo untuk semua vendor: <span className="font-mono font-semibold text-text-primary">vendor123</span>
           </div>
         </div>
       </div>
