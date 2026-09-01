@@ -74,6 +74,7 @@ export function PaymentMaklonPanel() {
   const payVendorInvoice = useMrpStore((s) => s.payVendorInvoice);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [actionResult, setActionResult] = useState<string | null>(null);
+  const [paying, setPaying] = useState(false);
 
   if (!mounted) return null;
 
@@ -92,10 +93,21 @@ export function PaymentMaklonPanel() {
 
   const selectedList = readyRows.filter((i) => selected.has(i.id));
 
-  function payAll() {
-    for (const inv of selectedList) payVendorInvoice(inv.id);
-    setActionResult(`${selectedList.length} invoice dibayar lunas.`);
-    setSelected(new Set());
+  async function payAll() {
+    // CATATAN: dulu payVendorInvoice dipanggil tanpa `await` di dalam loop -- notifikasi "sukses"
+    // & pengosongan seleksi langsung tampil sebelum pembayarannya benar-benar tersimpan, jadi
+    // baris masih sempat tampak "Belum dibayar" sampai halaman di-reload manual (pola bug yang
+    // sama dengan paying-voucher-wizard.tsx / production-cutting-tab.tsx). Sekarang di-await satu
+    // per satu supaya notifikasi baru muncul setelah semuanya benar-benar lunas.
+    if (paying) return;
+    setPaying(true);
+    try {
+      for (const inv of selectedList) await payVendorInvoice(inv.id);
+      setActionResult(`${selectedList.length} invoice dibayar lunas.`);
+      setSelected(new Set());
+    } finally {
+      setPaying(false);
+    }
   }
 
   const readyColumns: ColumnDef<VendorInvoice>[] = [
@@ -186,8 +198,12 @@ export function PaymentMaklonPanel() {
       {selected.size > 0 && (
         <div className="flex items-center gap-2 rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-[10px]">
           <span className="font-sans text-xs font-medium text-info-fg">{selected.size} dipilih</span>
-          <button onClick={payAll} className="rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11.5px] font-semibold text-success-fg">
-            Bayar Penuh
+          <button
+            onClick={payAll}
+            disabled={paying}
+            className="rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11.5px] font-semibold text-success-fg disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {paying ? "Memproses..." : "Bayar Penuh"}
           </button>
         </div>
       )}

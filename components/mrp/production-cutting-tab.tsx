@@ -32,6 +32,7 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const [restingAt, setRestingAt] = useState(nowLocalDatetime());
   const [cuttingDraft, setCuttingDraft] = useState<Record<string, string>>({});
   const [submitNotice, setSubmitNotice] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const activeStages: string[] = ["PARTIAL_WAITING_MATERIAL", "FULL_WAITING_MATERIAL", "PRODUCTION", "PARTIAL_PRODUCTION"];
   const readyMrpIds = maklonPOs
@@ -93,27 +94,39 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
     return all.filter((c) => !pickedElsewhere.has(c));
   }
 
-  function submitResting() {
-    if (!selectedGroup) return;
+  async function submitResting() {
+    if (!selectedGroup || submitting) return;
     // Dulu baris yang belum lengkap (mis. belum pilih code roll) di-skip DIAM-DIAM lalu semua
     // baris (termasuk yang di-skip) langsung dihapus dari layar — user tidak sadar sebagian
     // rollnya gagal tersimpan, cuma tahu belakangan dari "Total Roll Tersedia" yang ternyata
     // masih sisa. Sekarang: baris yang berhasil disimpan dihapus, baris yang belum lengkap
     // TETAP tampil supaya user bisa lengkapi & submit ulang.
+    //
+    // CATATAN: dulu startProductionBatch dipanggil tanpa `await` di dalam loop ini -- form
+    // langsung ditutup/dikosongkan sebelum panggilan-panggilan itu (dan refresh snapshot
+    // sesudahnya) benar-benar selesai, jadi tabel "Material dalam produksi" sempat tampak
+    // tidak berubah/kosong sampai halaman di-reload manual, padahal batch-nya sudah tersimpan
+    // di database (lihat catatan serupa di paying-voucher-wizard.tsx). Sekarang di-await satu
+    // per satu supaya UI baru dianggap selesai setelah semuanya benar-benar tersimpan.
+    setSubmitting(true);
     const remaining: CuttingLine[] = [];
     let savedCount = 0;
-    for (const line of lines) {
-      if (!line.warna || !line.codeRoll) {
-        remaining.push(line);
-        continue;
+    try {
+      for (const line of lines) {
+        if (!line.warna || !line.codeRoll) {
+          remaining.push(line);
+          continue;
+        }
+        const row = selectedGroup.rows.find((r) => r.warna === line.warna);
+        if (!row) {
+          remaining.push(line);
+          continue;
+        }
+        await startProductionBatch({ mrpId: selectedMrpId, aduanRowId: row.id, qtyRoll: 1, gramasi: line.gramasi, restingAt, codeRoll: line.codeRoll });
+        savedCount++;
       }
-      const row = selectedGroup.rows.find((r) => r.warna === line.warna);
-      if (!row) {
-        remaining.push(line);
-        continue;
-      }
-      startProductionBatch({ mrpId: selectedMrpId, aduanRowId: row.id, qtyRoll: 1, gramasi: line.gramasi, restingAt, codeRoll: line.codeRoll });
-      savedCount++;
+    } finally {
+      setSubmitting(false);
     }
     setSubmitNotice(
       remaining.length > 0
@@ -268,12 +281,12 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
               <div className="mt-2.5 flex gap-2">
                 <button
                   onClick={submitResting}
-                  disabled={!canSubmit}
+                  disabled={!canSubmit || submitting}
                   className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Resting
+                  {submitting ? "Memproses..." : "Resting"}
                 </button>
-                <button onClick={() => setSelectedGroupKey("")} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-2 font-sans text-xs font-semibold text-action-primary">
+                <button onClick={() => setSelectedGroupKey("")} disabled={submitting} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-2 font-sans text-xs font-semibold text-action-primary disabled:cursor-not-allowed disabled:opacity-50">
                   Batal
                 </button>
               </div>
