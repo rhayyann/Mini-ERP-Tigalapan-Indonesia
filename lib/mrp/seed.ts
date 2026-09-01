@@ -39,7 +39,7 @@ export const SUPPLIERS = ["Supplier Rajut Jaya", "Supplier ABC", "Supplier Cemer
 // sekali tidak ada di Master Data > Harga Kain (lihat lib/mrp/masterData.ts).
 export const MATERIAL_RATE_PER_ROLL = 460000;
 
-export const ENTITAS_LIST = ["PT Tigalapan Sukses Indo", "PT Tigalapan Dua", "PT Tigalapan Tiga"];
+export const ENTITAS_LIST = ["Tigalapan Indonesia", "PT Tigalapan Dua", "PT Tigalapan Tiga"];
 
 export const RESTING_TARGET_MINUTES = 180;
 

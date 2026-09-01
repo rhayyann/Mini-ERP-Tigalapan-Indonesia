@@ -94,7 +94,7 @@ export function Sidebar({
         })}
       </div>
       <div className="mt-auto border-t border-white/8 px-4 py-3.5 font-mono text-[10.5px] text-[#5E7288]">
-        v1.0 · PT Tigalapan Sukses Indo
+        v1.0 · Tigalapan Indonesia
       </div>
     </div>
   );

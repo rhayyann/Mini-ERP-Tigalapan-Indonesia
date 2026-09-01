@@ -28,7 +28,7 @@ function drawHeader(doc: jsPDF, title: string): number {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8.5);
   doc.setTextColor(...GRAY_LABEL);
-  doc.text("PT Tigalapan Sukses Indo · Sistem ERP Terintegrasi · Modul Procurement", MARGIN, 55);
+  doc.text("Tigalapan Indonesia · Sistem ERP Terintegrasi · Modul Procurement", MARGIN, 55);
 
   doc.setDrawColor(...GRAY_BORDER);
   doc.line(MARGIN, 65, PAGE_W - MARGIN, 65);

@@ -53,7 +53,7 @@ export default function GateToGatePage() {
               <span>
                 Target <b className="font-mono text-[#31414F]">20/09/2026</b>
               </span>
-              <span>Entitas PT Tigalapan Sukses Indo</span>
+              <span>Entitas Tigalapan Indonesia</span>
             </div>
           </div>
           <div className="ml-auto flex items-center gap-[18px]">

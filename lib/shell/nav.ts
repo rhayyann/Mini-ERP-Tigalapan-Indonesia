@@ -11,7 +11,7 @@ export type RoleNav = {
 export const NAV: Record<RoleKey, RoleNav> = {
   ppic: {
     role: "PPIC",
-    entity: "PT Tigalapan Sukses Indo",
+    entity: "Tigalapan Indonesia",
     items: [
       { label: "Dashboard", href: "/dashboard/ppic" },
       { label: "MRP", href: "/mrp/ppic" },
@@ -19,7 +19,7 @@ export const NAV: Record<RoleKey, RoleNav> = {
   },
   procurement: {
     role: "Procurement",
-    entity: "PT Tigalapan Sukses Indo",
+    entity: "Tigalapan Indonesia",
     items: [
       { label: "Dashboard", href: "/dashboard/procurement" },
       { label: "Purchase Order", href: "/procurement/po-approval" },
@@ -31,7 +31,7 @@ export const NAV: Record<RoleKey, RoleNav> = {
   },
   finance: {
     role: "Finance",
-    entity: "PT Tigalapan Sukses Indo",
+    entity: "Tigalapan Indonesia",
     items: [
       { label: "Dashboard", href: "/dashboard/finance" },
       { label: "PO Approval", href: "/finance/po-approval" },
@@ -43,7 +43,7 @@ export const NAV: Record<RoleKey, RoleNav> = {
   },
   scm: {
     role: "SCM",
-    entity: "PT Tigalapan Sukses Indo",
+    entity: "Tigalapan Indonesia",
     items: [
       { label: "Approval MRP", href: "/scm/approval-mrp" },
       { label: "Monitoring", href: "/scm/monitoring" },
@@ -51,7 +51,7 @@ export const NAV: Record<RoleKey, RoleNav> = {
   },
   produksi: {
     role: "Produksi",
-    entity: "PT Tigalapan Sukses Indo",
+    entity: "Tigalapan Indonesia",
     items: [{ label: "Monitoring Produksi", href: "/produksi/monitoring" }],
   },
   vendorMaklon: {

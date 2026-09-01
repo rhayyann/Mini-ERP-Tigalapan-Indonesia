@@ -1,16 +1,26 @@
+"use client";
+
+import { useMemo } from "react";
 import { AppShell } from "@/components/shell/app-shell";
 import { KpiCard } from "@/components/ui/kpi-card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { MrpProgressTable } from "@/components/dashboard/mrp-progress-table";
+import { useMrpStore } from "@/lib/mrp/store";
+import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
+import { formatPcs } from "@/lib/mrp/derive";
+
+function vendorName(id: string) {
+  return VENDOR_PRODUKSI[id]?.name ?? id;
+}
 
 function VendorTimelineRow({ po, pct, color, textColor }: { po: string; pct: number; color: string; textColor: string }) {
   return (
     <div className="flex items-center gap-2.5">
-      <span className="w-24 font-mono text-[11px] font-medium text-[#31414F]">{po}</span>
+      <span className="w-24 truncate font-mono text-[11px] font-medium text-[#31414F]">{po}</span>
       <span className="relative h-4 flex-1 rounded-[3px] bg-surface-page">
         <span
           className="absolute top-0 bottom-0 flex items-center rounded-[3px] pl-2 font-mono text-[10px] font-semibold"
-          style={{ left: "4%", width: `${pct}%`, background: color, color: textColor }}
+          style={{ left: "4%", width: `${Math.min(100, pct)}%`, background: color, color: textColor }}
         >
           {pct}%
         </span>
@@ -20,22 +30,64 @@ function VendorTimelineRow({ po, pct, color, textColor }: { po: string; pct: num
 }
 
 export default function PpicDashboardPage() {
+  const mrpDetails = useMrpStore((s) => s.mrpDetails);
+  const maklonPOs = useMrpStore((s) => s.maklonPOs);
+  const productionResults = useMrpStore((s) => s.productionResults);
+  const notifications = useMrpStore((s) => s.notifications);
+
+  const stats = useMemo(() => {
+    const liveMrps = mrpDetails.filter((d) => d.mrp.live);
+    const totalQty = liveMrps.reduce((s, d) => s + d.mrp.qty, 0);
+    const waitingScm = mrpDetails.filter((d) => d.ppicApproval === "WAITING_PPIC_APPROVAL").length;
+    const poSentCount = mrpDetails.filter((d) => d.poSent).length;
+
+    // Total FG per (mrpId, vendorProduksi) -- dijumlah lintas warna/lengan (bukan per groupKey),
+    // cukup akurat untuk ringkasan dashboard tanpa perlu import derive.cumulativeSizeQtyForGroup
+    // per warna satu-satu.
+    const fgByMrpVendor = new Map<string, number>();
+    for (const r of productionResults) {
+      if (r.kind !== "FG") continue;
+      const key = `${r.mrpId}|${r.vendorProduksi}`;
+      const qty = Object.values(r.sizeQty).reduce((a, b) => a + b, 0);
+      fgByMrpVendor.set(key, (fgByMrpVendor.get(key) ?? 0) + qty);
+    }
+
+    const totalPlanned = maklonPOs.reduce((s, p) => s + p.qty, 0);
+    const totalProduced = maklonPOs.reduce((s, p) => s + Math.max(0, fgByMrpVendor.get(`${p.mrpId}|${p.vendorProduksi}`) ?? 0), 0);
+    const completion = totalPlanned > 0 ? Math.round((totalProduced / totalPlanned) * 100) : 0;
+
+    const byVendor = new Map<string, { poId: string; mrpId: string; qty: number; fg: number }[]>();
+    for (const p of maklonPOs) {
+      const fg = Math.max(0, fgByMrpVendor.get(`${p.mrpId}|${p.vendorProduksi}`) ?? 0);
+      const arr = byVendor.get(p.vendorProduksi) ?? [];
+      arr.push({ poId: p.id, mrpId: p.mrpId, qty: p.qty, fg });
+      byVendor.set(p.vendorProduksi, arr);
+    }
+
+    const rejectedMrps = mrpDetails.filter((d) => d.ppicApproval === "REJECTED" && d.ppicRejectionNote);
+    const myNotifications = notifications.filter((n) => n.audience.includes("ppic")).slice(0, 5);
+
+    return { totalQty, waitingScm, poSentCount, completion, byVendor, rejectedMrps, myNotifications };
+  }, [mrpDetails, maklonPOs, productionResults, notifications]);
+
+  const vendorEntries = Array.from(stats.byVendor.entries());
+  const colors = ["#2E6FA7", "#1F8A55", "#8FB4D4", "#C9791A"];
+
   return (
-    <AppShell role="ppic" activeHref="/dashboard/ppic" breadcrumb={["Dashboard", "Overview"]} title="Overview produksi" subtitle="Minggu 34 · 24 Agu 2026">
+    <AppShell role="ppic" activeHref="/dashboard/ppic" breadcrumb={["Dashboard", "Overview"]} title="Overview produksi" subtitle="Ringkasan seluruh MRP aktif">
       <div className="grid grid-cols-4 gap-3.5">
-        <KpiCard label="PR Draft" value="5" sub="2 perlu disubmit hari ini" accent="blue" />
-        <KpiCard label="PO Approved" value="12" sub="8.400 pcs terjadwal" accent="purple" />
-        <KpiCard label="In Production" value="8" sub="di 4 vendor maklon" accent="orange" />
+        <KpiCard label="MRP Aktif" value={String(mrpDetails.filter((d) => d.mrp.live).length)} sub={`${formatPcs(stats.totalQty)} pcs terjadwal`} accent="blue" />
+        <KpiCard label="Menunggu Approval SCM" value={String(stats.waitingScm)} sub="perlu ditindaklanjuti PPIC" accent="purple" />
+        <KpiCard label="PO Sudah Dikirim" value={String(stats.poSentCount)} sub={`dari ${mrpDetails.length} MRP`} accent="orange" />
         <KpiCard
           label="Completion"
           accent="teal"
-          value={
-            <span className="flex items-baseline gap-1.5">
-              <span className="text-success-fg">65%</span>
-              <span className="font-mono text-[11px] font-medium text-success-fg">+4</span>
+          value={<span className="text-success-fg">{stats.completion}%</span>}
+          sub={
+            <span className="mt-1.5 block h-[5px] overflow-hidden rounded-[3px] bg-success-bg">
+              <span className="block h-full rounded-[3px] bg-success" style={{ width: `${Math.min(100, stats.completion)}%` }} />
             </span>
           }
-          sub={<span className="mt-1.5 block h-[5px] overflow-hidden rounded-[3px] bg-success-bg"><span className="block h-full w-[65%] rounded-[3px] bg-success" /></span>}
         />
       </div>
 
@@ -44,89 +96,57 @@ export default function PpicDashboardPage() {
       <div className="grid gap-3.5" style={{ gridTemplateColumns: "1fr 372px" }}>
         <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
           <div className="flex items-center border-b border-border-subtle px-4 py-3">
-            <span className="font-sans text-[13px] font-semibold text-text-primary">Timeline produksi per vendor maklon</span>
-            <span className="ml-auto flex gap-3 font-mono text-[10.5px] text-text-muted">
-              <span>SEP W1</span>
-              <span>W2</span>
-              <span>W3</span>
-              <span>W4</span>
-            </span>
+            <span className="font-sans text-[13px] font-semibold text-text-primary">Progres produksi per vendor maklon</span>
           </div>
           <div className="flex flex-col gap-3.5 px-4 py-3.5">
-            <div>
-              <div className="mb-1.5 font-sans text-xs font-semibold text-[#31414F]">
-                PT Maklon ABC <span className="font-mono text-[11px] font-normal text-text-muted">· 3.500 / 5.000 pcs</span>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <VendorTimelineRow po="PO-MKL-001" pct={52} color="#2E6FA7" textColor="#fff" />
-                <VendorTimelineRow po="PO-MKL-003" pct={34} color="#8FB4D4" textColor="#17384F" />
-              </div>
-            </div>
-            <div>
-              <div className="mb-1.5 font-sans text-xs font-semibold text-[#31414F]">
-                PT Maklon XYZ <span className="font-mono text-[11px] font-normal text-text-muted">· 2.100 / 3.000 pcs</span>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <VendorTimelineRow po="PO-MKL-002" pct={44} color="#1F8A55" textColor="#fff" />
-                <VendorTimelineRow po="PO-MKL-004" pct={14} color="#C9791A" textColor="#fff" />
-              </div>
-            </div>
-            <div>
-              <div className="mb-1.5 font-sans text-xs font-semibold text-[#31414F]">
-                PT Maklon Sentosa <span className="font-mono text-[11px] font-normal text-text-muted">· 900 / 2.000 pcs</span>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <VendorTimelineRow po="PO-MKL-005" pct={26} color="#8FB4D4" textColor="#17384F" />
-              </div>
-            </div>
-            <div className="flex gap-[18px] border-t border-[#EEF1F4] pt-3 font-sans text-[11px] text-text-muted">
-              <span className="flex items-center gap-1.5">
-                <span className="h-[9px] w-[9px] rounded-sm bg-accent-blue" />
-                Cutting
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="h-[9px] w-[9px] rounded-sm bg-[#8FB4D4]" />
-                Setup
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="h-[9px] w-[9px] rounded-sm bg-success" />
-                Selesai
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="h-[9px] w-[9px] rounded-sm bg-warning" />
-                Menunggu bahan
-              </span>
-            </div>
+            {vendorEntries.length === 0 && <div className="py-6 text-center font-sans text-xs text-text-muted">Belum ada PO produksi.</div>}
+            {vendorEntries.map(([vendorId, pos], idx) => {
+              const vendorQty = pos.reduce((s, p) => s + p.qty, 0);
+              const vendorFg = pos.reduce((s, p) => s + p.fg, 0);
+              return (
+                <div key={vendorId}>
+                  <div className="mb-1.5 font-sans text-xs font-semibold text-[#31414F]">
+                    {vendorName(vendorId)} <span className="font-mono text-[11px] font-normal text-text-muted">· {formatPcs(vendorFg)} / {formatPcs(vendorQty)} pcs</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    {pos.map((p) => (
+                      <VendorTimelineRow
+                        key={p.poId}
+                        po={p.poId}
+                        pct={p.qty > 0 ? Math.round((p.fg / p.qty) * 100) : 0}
+                        color={colors[idx % colors.length]}
+                        textColor="#fff"
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
         <div className="flex flex-col gap-3.5">
           <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
-            <div className="border-b border-border-subtle px-[15px] py-3 font-sans text-[13px] font-semibold text-text-primary">Critical alerts</div>
-            {[
-              { title: "PO-001 · Maklon ABC", desc: "Material delayed 3 hari — 2 roll belum dikirim supplier XYZ", color: "#C0413A" },
-              { title: "PO-005 · Maklon Sentosa", desc: "Cutting yield 94% — di bawah target 97%", color: "#C9791A" },
-              { title: "PO-002 · Maklon XYZ", desc: "On track — FG complete, menunggu delivery", color: "#1F8A55" },
-            ].map((a, i) => (
-              <div key={i} className="border-b border-[#EEF1F4] px-[15px] py-[11px] last:border-b-0" style={{ borderLeft: `3px solid ${a.color}` }}>
-                <div className="font-sans text-xs font-semibold text-text-primary">{a.title}</div>
-                <div className="mt-0.5 font-sans text-[11.5px] leading-[1.45] text-text-muted">{a.desc}</div>
+            <div className="border-b border-border-subtle px-[15px] py-3 font-sans text-[13px] font-semibold text-text-primary">MRP ditolak SCM</div>
+            {stats.rejectedMrps.length === 0 && <div className="px-[15px] py-4 font-sans text-[11.5px] text-text-muted">Tidak ada MRP yang ditolak.</div>}
+            {stats.rejectedMrps.map((d) => (
+              <div key={d.mrp.id} className="border-b border-[#EEF1F4] px-[15px] py-[11px] last:border-b-0" style={{ borderLeft: "3px solid #C0413A" }}>
+                <div className="font-sans text-xs font-semibold text-text-primary">{d.mrp.id}</div>
+                <div className="mt-0.5 font-sans text-[11.5px] leading-[1.45] text-text-muted">{d.ppicRejectionNote}</div>
               </div>
             ))}
           </div>
           <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
-            <div className="border-b border-border-subtle px-[15px] py-3 font-sans text-[13px] font-semibold text-text-primary">PR menunggu tindakan</div>
-            {[
-              { id: "PR-2026-084", desc: "3 roll · Pola A", tone: "neutral" as const, label: "DRAFT" },
-              { id: "PR-2026-085", desc: "2 roll pengganti", tone: "warning" as const, label: "REPLACEMENT" },
-              { id: "PR-2026-086", desc: "5 roll · Pola B, C", tone: "info" as const, label: "SUBMITTED" },
-            ].map((pr) => (
-              <div key={pr.id} className="flex items-center gap-2.5 border-b border-[#EEF1F4] px-[15px] py-2.5 last:border-b-0">
-                <span className="font-mono text-[11.5px] font-medium text-[#31414F]">{pr.id}</span>
-                <span className="font-sans text-[11.5px] text-text-muted">{pr.desc}</span>
-                <StatusPill tone={pr.tone} className="ml-auto">
-                  {pr.label}
-                </StatusPill>
+            <div className="border-b border-border-subtle px-[15px] py-3 font-sans text-[13px] font-semibold text-text-primary">Notifikasi terbaru</div>
+            {stats.myNotifications.length === 0 && <div className="px-[15px] py-4 font-sans text-[11.5px] text-text-muted">Belum ada notifikasi.</div>}
+            {stats.myNotifications.map((n) => (
+              <div key={n.id} className="flex items-start gap-2.5 border-b border-[#EEF1F4] px-[15px] py-2.5 last:border-b-0">
+                <span className="mt-0.5 font-sans text-[11.5px] leading-[1.4] text-text-muted">{n.text}</span>
+                {!n.read && (
+                  <StatusPill tone="info" className="ml-auto shrink-0">
+                    BARU
+                  </StatusPill>
+                )}
               </div>
             ))}
           </div>

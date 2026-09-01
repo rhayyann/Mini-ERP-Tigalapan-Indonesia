@@ -201,7 +201,7 @@ export async function sendPoToFinanceAction(mrpId: string): Promise<void> {
     vendorProduksi: vendor,
     qty: rows.reduce((s, r) => s + r.qty, 0),
     amount: maklonAmountForVendor(snapshot.hargaMaklon, vendor, rows),
-    entity: "PT Tigalapan Sukses Indo",
+    entity: "Tigalapan Indonesia",
     status: "FULL_WAITING_MATERIAL" as const,
     approved: false,
   }));
@@ -561,7 +561,7 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
           vendor_produksi: toVendor,
           qty: pcsMoved,
           amount: maklonAmountForLenganBuckets(snapshot.hargaMaklon, toVendor, Array.from(pcsMovedByLengan.entries()).map(([lengan, q]) => ({ lengan, qty: q }))),
-          entity: "PT Tigalapan Sukses Indo",
+          entity: "Tigalapan Indonesia",
           status: "PARTIAL_WAITING_MATERIAL",
           approved: true,
         });

@@ -120,6 +120,12 @@ export type FlowState = {
    *  components/shell/store-hydrator.tsx). Halaman-halaman bisa pakai ini untuk skeleton/loading
    *  state kalau perlu -- opsional, tidak wajib dicek. */
   hydrated: boolean;
+  /** True selama ADA action yang sedang berjalan (lihat withBusyTracking di bawah) -- dipakai
+   *  components/shell/busy-overlay.tsx untuk nge-blok klik lain sampai selesai, supaya user
+   *  tidak klik berulang kali (mis. dobel klik "Reset data" atau "Approve") selagi request masih
+   *  diproses server. TIDAK ikut ke-trigger oleh polling/refresh background StoreHydrator (itu
+   *  manggil getFlowSnapshotAction+hydrate langsung, bukan lewat action yang di-track ini). */
+  busy: boolean;
 };
 
 // CATATAN MIGRASI SUPABASE (baca sebelum mengubah file ini):
@@ -256,18 +262,60 @@ const emptyState: FlowState = {
   entitasList: [],
   supplierList: [],
   hydrated: false,
+  busy: false,
 };
 
 function notYetMigrated(name: string) {
   console.warn(`[mrp-store] Action "${name}" belum diporting ke Supabase pasca migrasi -- tidak melakukan apa-apa. Lihat lib/mrp/store.ts.`);
 }
 
-export const useMrpStore = create<FlowState & FlowActions>()((set, get) => ({
+/** Bungkus SEMUA method async di objek state (kecuali `hydrate`, yang sinkron & dipakai
+ *  StoreHydrator utk hydrate diam-diam di background) supaya `busy` otomatis true selama method
+ *  itu (dan `refresh()` yang biasanya dipanggil di akhir tiap action) masih berjalan -- dipakai
+ *  components/shell/busy-overlay.tsx utk nge-blok klik lain sampai selesai. Counter (bukan
+ *  boolean) supaya panggilan yang saling nested (mis. action manapun yang di dalamnya manggil
+ *  get().refresh()) tetap dihitung benar -- busy baru balik false kalau SEMUA pemanggilan yang
+ *  sedang berjalan sudah selesai. Ini objek BIASA (bukan Proxy) -- lihat catatan panjang di
+ *  `guardAction` di atas soal kenapa Proxy berbahaya untuk pola begini.
+ */
+function withBusyTracking<T extends Record<string, unknown>>(set: Setter, obj: T): T {
+  let counter = 0;
+  const wrapped: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof value !== "function" || key === "hydrate") {
+      wrapped[key] = value;
+      continue;
+    }
+    wrapped[key] = async (...args: unknown[]) => {
+      counter++;
+      set({ busy: true });
+      try {
+        return await (value as (...a: unknown[]) => unknown)(...args);
+      } finally {
+        counter--;
+        if (counter <= 0) {
+          counter = 0;
+          set({ busy: false });
+        }
+      }
+    };
+  }
+  return wrapped as T;
+}
+
+type Setter = (partial: Partial<FlowState & FlowActions>) => void;
+
+export const useMrpStore = create<FlowState & FlowActions>()((set, get) =>
+  withBusyTracking(set, {
   ...emptyState,
 
   hydrate: (snapshot) => set({ ...snapshot, hydrated: true }),
   refresh: async () => {
-    const snapshot = await actions.getFlowSnapshotAction();
+    const { busy: _snapshotBusy, ...snapshot } = await actions.getFlowSnapshotAction();
+    // `busy` SENGAJA tidak ikut di-spread -- refresh() ini sendiri sudah berjalan DI DALAM sebuah
+    // action yang sedang di-tandai busy=true oleh withBusyTracking (lihat di atas); menimpanya di
+    // sini akan bikin overlay loading kedip mati sesaat sebelum action pemanggilnya benar-benar
+    // selesai.
     set({ ...snapshot, hydrated: true });
   },
 

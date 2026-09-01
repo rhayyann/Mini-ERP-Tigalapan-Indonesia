@@ -495,6 +495,11 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     entitasList,
     supplierList,
     hydrated: true,
+    // `busy` bukan bagian data Supabase -- ini murni flag client-side (lihat withBusyTracking di
+    // lib/mrp/store.ts). Nilainya di sini tidak penting: hydrate()/refresh() selalu men-spread
+    // snapshot penuh, tapi refresh() SENGAJA menyalin field lain (bukan busy) supaya tidak
+    // menimpa flag yang lagi di-set true oleh action pemanggilnya -- lihat komentar di refresh().
+    busy: false,
   };
 }
 
