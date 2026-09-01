@@ -62,9 +62,17 @@ export function PayingVoucherWizard({
     noInvoiceVendor: string;
     buktiPvDataUrl?: string;
     buktiPvFileName?: string;
-  }) => void;
+  }) => Promise<void>;
   onCancel: () => void;
 }) {
+  // CATATAN: dulu tombol ini memanggil onSubmit tanpa menunggu hasilnya (fire-and-forget) --
+  // kalau bookInvoice gagal (mis. sesi login sempat tidak valid), wizard tetap optimis
+  // menganggap sukses (langsung tertutup, memicu banner "sisa roll") padahal TIDAK ADA yang
+  // benar-benar tersimpan -- retry berikutnya kelihatan seperti "loop dari awal terus" karena
+  // roll count memang tidak pernah berkurang. Sekarang di-`await` + tampilkan error kalau gagal,
+  // wizard TIDAK tertutup sampai submit benar-benar sukses.
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
   const [entries, setEntries] = useState<ColorEntry[]>([]);
   // Auto-pilih warna pertama yang masih ada sisa roll, supaya field Harga/kg + Qty roll ready
   // langsung tampil begitu wizard dibuka — tidak perlu klik pilih warna dulu.
@@ -206,7 +214,19 @@ export function PayingVoucherWizard({
     setAddBuys((prev) => prev.filter((b) => b.id !== id));
   }
 
-  const canSubmit = (entries.length > 0 || addBuys.length > 0) && kodeTransaksi.trim() && !!buktiPvDataUrl;
+  const canSubmit = (entries.length > 0 || addBuys.length > 0) && kodeTransaksi.trim() && !!buktiPvDataUrl && !submitting;
+
+  async function handleSubmit() {
+    setSubmitError("");
+    setSubmitting(true);
+    try {
+      await onSubmit({ colorEntries: entries, addBuys, diskon, kodeTransaksi, noInvoiceVendor, buktiPvDataUrl, buktiPvFileName });
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Gagal membuat Paying Voucher, coba lagi.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <div className="border-t border-border-subtle bg-[#F7F9FB] px-5 py-4">
@@ -397,16 +417,17 @@ export function PayingVoucherWizard({
         {buktiPvError && <div className="mt-1 font-sans text-[11px] text-danger-fg">{buktiPvError}</div>}
       </div>
 
+      {submitError && <div className="mt-2 font-sans text-[11.5px] font-medium text-danger-fg">{submitError}</div>}
       <div className="mt-3 flex gap-2">
         <button
-          onClick={() => canSubmit && onSubmit({ colorEntries: entries, addBuys, diskon, kodeTransaksi, noInvoiceVendor, buktiPvDataUrl, buktiPvFileName })}
+          onClick={() => canSubmit && handleSubmit()}
           disabled={!canSubmit}
           title={!buktiPvDataUrl ? "Upload bukti Paying Voucher (PDF) dulu" : undefined}
           className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Bayar (Paying Voucher)
+          {submitting ? "Memproses..." : "Bayar (Paying Voucher)"}
         </button>
-        <button onClick={onCancel} className="rounded-md border border-[#CBD5DF] px-3.5 py-2 font-sans text-xs font-semibold text-action-primary">
+        <button onClick={onCancel} disabled={submitting} className="rounded-md border border-[#CBD5DF] px-3.5 py-2 font-sans text-xs font-semibold text-action-primary disabled:cursor-not-allowed disabled:opacity-50">
           Batal
         </button>
       </div>

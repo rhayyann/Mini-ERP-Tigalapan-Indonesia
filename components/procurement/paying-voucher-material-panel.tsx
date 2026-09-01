@@ -106,8 +106,12 @@ export function PayingVoucherMaterialPanel() {
             po={selectedPo}
             mrpDetails={mrpDetails}
             onCancel={() => setSelectedPoId(null)}
-            onSubmit={(input) => {
-              bookInvoice(selectedPo.id, input);
+            onSubmit={async (input) => {
+              // WAJIB di-await -- lihat catatan panjang di paying-voucher-wizard.tsx. Kalau
+              // bookInvoice gagal (throw), biarkan error itu naik ke try/catch wizard (JANGAN
+              // ditangkap di sini) supaya wizard TIDAK ikut-ikutan pindah ke state "sukses" kalau
+              // sebenarnya gagal.
+              await bookInvoice(selectedPo.id, input);
               setAfterSubmitPoId(selectedPo.id);
               setSelectedPoId(null);
             }}

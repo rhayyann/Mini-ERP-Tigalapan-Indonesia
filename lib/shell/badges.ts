@@ -14,7 +14,7 @@ import type { DeliveryKoli, MaklonInvoice, MaklonPO, MaterialPO, ProductionBatch
 
 /** Minimal shape yang dibutuhkan dari `MrpDetail` — dideklarasikan lokal (bukan import
  *  dari lib/mrp/store) supaya lib/shell tidak bergantung ke store, cukup ke bentuk datanya. */
-type MrpPoSentShape = { poSent: boolean };
+type MrpPoSentShape = { poSent: boolean; ppicApproval: string };
 
 /** Helper murni untuk menghitung badge count "item pending yang butuh aksi user" per
  *  menu/sub-tab — dihitung langsung dari data store (bukan dari `notifications[]`).
@@ -44,8 +44,13 @@ export function countPaymentTotal(invoices: RawMaterialInvoice[], vendorInvoices
   return countPaymentMaterialReady(invoices) + countPaymentMaklonReady(vendorInvoices);
 }
 
+/** MRP yang SUDAH disetujui SCM tapi belum dibuatkan PO -- HARUS konsisten dengan filter
+ *  `selectable` di app/procurement/po-approval/page.tsx (dulu badge ini cuma cek `!poSent`,
+ *  jadi ikut menghitung MRP yang masih menunggu approval SCM / ditolak, padahal MRP itu belum
+ *  bisa dipilih sama sekali di dropdown halaman itu -- badge jadi nyala tanpa ada yang bisa
+ *  ditindaklanjuti). */
 export function countMrpWithoutPO(mrpDetails: MrpPoSentShape[]): number {
-  return mrpDetails.filter((d) => !d.poSent).length;
+  return mrpDetails.filter((d) => !d.poSent && d.ppicApproval === "PPIC_APPROVED").length;
 }
 
 /** MRP dari PPIC yang masih menunggu approval SCM sebelum boleh diproses Procurement — badge
