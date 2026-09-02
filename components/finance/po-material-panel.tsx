@@ -150,7 +150,7 @@ export function PoMaterialPanel() {
       label: "Status",
       default: true,
       render: (p) => {
-        const badge = materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices));
+        const badge = materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs));
         return <StatusPill tone={badge.tone}>{badge.label}</StatusPill>;
       },
     },
@@ -324,9 +324,9 @@ export function PoMaterialPanel() {
           {
             label: "Status",
             options: Array.from(
-              new Set(approved.map((p) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices)).label))
+              new Set(approved.map((p) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs)).label))
             ),
-            test: (p, v) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices)).label === v,
+            test: (p, v) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs)).label === v,
           },
         ]}
         emptyText="Belum ada PO material disetujui."

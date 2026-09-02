@@ -39,6 +39,7 @@ export default function MaterialTrackingPage() {
 
   const invoices = useMrpStore((s) => s.invoices);
   const materialPOs = useMrpStore((s) => s.materialPOs);
+  const maklonPOs = useMrpStore((s) => s.maklonPOs);
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
   const productionBatches = useMrpStore((s) => s.productionBatches);
   const productionResults = useMrpStore((s) => s.productionResults);
@@ -81,7 +82,7 @@ export default function MaterialTrackingPage() {
       tglDelivery: i.deliveredAt,
       tglReceiving: i.receivedAt,
       tglProduksi: i.productionStart,
-      status: po ? materialPoFullStatus(po, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices) : "INVOICE",
+      status: po ? materialPoFullStatus(po, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs) : "INVOICE",
       invoice: i,
     };
   });

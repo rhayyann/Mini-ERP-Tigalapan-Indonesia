@@ -622,7 +622,8 @@ export function materialPoFullStatus(
   productionResults: ProductionResult[] = [],
   mrpDetails: MrpDetail[] = [],
   deliveryKolis: DeliveryKoli[] = [],
-  vendorInvoices: VendorInvoice[] = []
+  vendorInvoices: VendorInvoice[] = [],
+  maklonPOs: MaklonPO[] = []
 ): MaterialPoFullStatus {
   if (po.status === "CANCELLED") return "CANCEL";
   if (!po.approved) return "WAITING_APPROVAL";
@@ -641,9 +642,17 @@ export function materialPoFullStatus(
   if (bestStatus === "INVOICED" || bestStatus === "PAID") return "INVOICE";
   if (bestStatus === "DELIVERY") return "DELIVERY";
 
-  const startedProduction = po.colorBreakdown.some((c) =>
-    productionBatches.some((b) => b.mrpId === po.mrpId && b.warna === c.warna && b.lengan === c.lengan && b.cuttingAt)
+  // "Sudah mulai produksi" sekarang juga dianggap benar begitu vendor klik "Mulai Produksi" di
+  // portalnya (MaklonPO.status jadi PRODUCTION/PARTIAL_PRODUCTION lewat advanceMaklonProductionAction,
+  // dipanggil dari Good Receive) -- TIDAK cuma menunggu roll benar-benar di-cutting. Dulu status di
+  // sini nyangkut di RECEIVING walau vendor sudah kelihatan "sedang produksi" di portalnya sendiri,
+  // bikin Procurement/Finance yang cuma lihat Material Tracking mengira belum ada progres apa-apa.
+  const vendorStartedProduction = maklonPOs.some(
+    (m) => m.mrpId === po.mrpId && m.vendorProduksi === po.vendorProduksi && (m.status === "PRODUCTION" || m.status === "PARTIAL_PRODUCTION")
   );
+  const startedProduction =
+    vendorStartedProduction ||
+    po.colorBreakdown.some((c) => productionBatches.some((b) => b.mrpId === po.mrpId && b.warna === c.warna && b.lengan === c.lengan && b.cuttingAt));
   if (!startedProduction) return "RECEIVING";
 
   const finished = po.colorBreakdown.every((c) => {

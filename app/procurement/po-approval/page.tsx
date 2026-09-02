@@ -124,7 +124,7 @@ export default function PoApprovalPage() {
       label: "Status",
       default: true,
       render: (p) => {
-        const s = materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices);
+        const s = materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs);
         return <StatusPill tone={materialPoFullStatusBadge(s).tone}>{materialPoFullStatusBadge(s).label}</StatusPill>;
       },
     },
@@ -443,8 +443,8 @@ export default function PoApprovalPage() {
           { label: "Entitas", options: Array.from(new Set(allMaterialPOs.map((p) => p.entity))), test: (p, v) => p.entity === v },
           {
             label: "Status",
-            options: Array.from(new Set(allMaterialPOs.map((p) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices)).label))),
-            test: (p, v) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices)).label === v,
+            options: Array.from(new Set(allMaterialPOs.map((p) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs)).label))),
+            test: (p, v) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs)).label === v,
           },
         ]}
         emptyText="Belum ada PO material yang dibuat."
