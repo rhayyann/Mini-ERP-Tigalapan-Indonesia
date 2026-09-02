@@ -1,4 +1,5 @@
 import "server-only";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabaseServer } from "../../supabase/server";
 import type {
   AddBuyItem,
@@ -33,9 +34,57 @@ import type { FlowState, MrpDates, MrpDetail } from "../store";
  *  nyaris tidak perlu disentuh (lihat keputusan arsitektur #3 di plan migrasi). Dipanggil sekali
  *  saat StoreHydrator mount, dan lagi setiap kali ada mutasi (lihat lib/mrp/actions.ts) atau
  *  notifikasi Realtime masuk. */
-export async function getFlowSnapshot(): Promise<FlowState> {
-  const db = supabaseServer();
+/** Baris tiap tabel, dibungkus persis bentuk `{data, error}` yang dikembalikan supabase-js query
+ *  builder -- supaya SELURUH kode di bawah (loop error-check, `.data ?? []` di mana-mana) tidak
+ *  perlu tahu/berubah entah datanya datang dari RPC (cepat) atau query per-tabel (lambat,
+ *  fallback). Ini SATU-SATUNYA kontrak yang harus dipenuhi kedua cara fetch di bawah. */
+// `any` sengaja dipakai di sini -- sama seperti tipe row yang sudah diam-diam dipakai di seluruh
+// file ini (supabaseServer() tidak pakai generic Database type), supaya kedua cara fetch (RPC vs
+// query per-tabel) benar-benar cocok bentuknya.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type TableResult = { data: any[] | null; error: { message: string } | null };
+type RawTables = Record<
+  | "mrpRows"
+  | "lenganGroupRows"
+  | "lenganGroupSizeRows"
+  | "aduanRows"
+  | "aduanSizeRows"
+  | "materialRowRows"
+  | "materialPoRows"
+  | "materialPoColorRows"
+  | "materialPoInvoicedRows"
+  | "maklonPoRows"
+  | "maklonPoCancelledRows"
+  | "invoiceRows"
+  | "invoiceColorRows"
+  | "invoiceRollRows"
+  | "invoiceAddBuyRows"
+  | "maklonInvoiceRows"
+  | "productionBatchRows"
+  | "productionBatchSizeRows"
+  | "productionYieldResolutionRows"
+  | "productionResultRows"
+  | "productionResultSizeRows"
+  | "productionGroupMetaRows"
+  | "deliveryKoliRows"
+  | "deliveryKoliItemRows"
+  | "vendorInvoiceRows"
+  | "vendorInvoiceLineRows"
+  | "vendorInvoiceAdjustmentRows"
+  | "notificationRows"
+  | "hargaMaklonRows"
+  | "hargaKainRows"
+  | "hargaKainPksRows"
+  | "entitasRows"
+  | "supplierRows",
+  TableResult
+>;
 
+/** Cara LAMA -- 32 query terpisah ke PostgREST lewat Promise.all. Tetap dipertahankan sebagai
+ *  fallback (lihat fetchFlowRows) supaya app tidak pernah benar-benar berhenti bisa muat data
+ *  cuma karena migration 0008 (RPC get_flow_snapshot_raw) belum sempat di-apply -- urutan deploy
+ *  kode vs migration jadi tidak penting. */
+async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
   const [
     mrpRows,
     lenganGroupRows,
@@ -105,6 +154,140 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     db.from("entitas").select("*"),
     db.from("suppliers").select("*"),
   ]);
+  return {
+    mrpRows,
+    lenganGroupRows,
+    lenganGroupSizeRows,
+    aduanRows,
+    aduanSizeRows,
+    materialRowRows,
+    materialPoRows,
+    materialPoColorRows,
+    materialPoInvoicedRows,
+    maklonPoRows,
+    maklonPoCancelledRows,
+    invoiceRows,
+    invoiceColorRows,
+    invoiceRollRows,
+    invoiceAddBuyRows,
+    maklonInvoiceRows,
+    productionBatchRows,
+    productionBatchSizeRows,
+    productionYieldResolutionRows,
+    productionResultRows,
+    productionResultSizeRows,
+    productionGroupMetaRows,
+    deliveryKoliRows,
+    deliveryKoliItemRows,
+    vendorInvoiceRows,
+    vendorInvoiceLineRows,
+    vendorInvoiceAdjustmentRows,
+    notificationRows,
+    hargaMaklonRows,
+    hargaKainRows,
+    hargaKainPksRows,
+    entitasRows,
+    supplierRows,
+  };
+}
+
+/** Cara BARU (cepat) -- satu panggilan RPC (get_flow_snapshot_raw, lihat migration
+ *  0008_flow_snapshot_rpc.sql) yang menggabungkan 32 tabel jadi satu objek JSON di DALAM
+ *  Postgres, jadi cuma 1 round-trip jaringan total (dulu: 32 round-trip paralel, tiap satu
+ *  tetap punya overhead koneksi/HTTP sendiri-sendiri). Throw kalau RPC-nya belum ada/gagal --
+ *  fetchFlowRows di bawah yang menangkap ini dan fallback ke cara lama. */
+async function fetchFlowRowsFast(db: SupabaseClient): Promise<RawTables> {
+  const { data, error } = await db.rpc("get_flow_snapshot_raw");
+  if (error || !data) throw error ?? new Error("get_flow_snapshot_raw: hasil kosong");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const raw = data as Record<string, any[]>;
+  const wrap = (key: string): TableResult => ({ data: raw[key] ?? [], error: null });
+  return {
+    mrpRows: wrap("mrp"),
+    lenganGroupRows: wrap("lengan_groups"),
+    lenganGroupSizeRows: wrap("lengan_group_sizes"),
+    aduanRows: wrap("aduan_pola_rows"),
+    aduanSizeRows: wrap("aduan_pola_sizes"),
+    materialRowRows: wrap("material_rows"),
+    materialPoRows: wrap("material_pos"),
+    materialPoColorRows: wrap("material_po_color_breakdown"),
+    materialPoInvoicedRows: wrap("material_po_invoiced_by_color"),
+    maklonPoRows: wrap("maklon_pos"),
+    maklonPoCancelledRows: wrap("maklon_po_cancelled_lines"),
+    invoiceRows: wrap("raw_material_invoices"),
+    invoiceColorRows: wrap("raw_material_invoice_colors"),
+    invoiceRollRows: wrap("raw_material_invoice_rolls"),
+    invoiceAddBuyRows: wrap("raw_material_invoice_addbuys"),
+    maklonInvoiceRows: wrap("maklon_invoices"),
+    productionBatchRows: wrap("production_batches"),
+    productionBatchSizeRows: wrap("production_batch_sizes"),
+    productionYieldResolutionRows: wrap("production_yield_resolutions"),
+    productionResultRows: wrap("production_results"),
+    productionResultSizeRows: wrap("production_result_sizes"),
+    productionGroupMetaRows: wrap("production_group_meta"),
+    deliveryKoliRows: wrap("delivery_kolis"),
+    deliveryKoliItemRows: wrap("delivery_koli_items"),
+    vendorInvoiceRows: wrap("vendor_invoices"),
+    vendorInvoiceLineRows: wrap("vendor_invoice_lines"),
+    vendorInvoiceAdjustmentRows: wrap("vendor_invoice_adjustments"),
+    notificationRows: wrap("notifications"),
+    hargaMaklonRows: wrap("harga_maklon"),
+    hargaKainRows: wrap("harga_kain"),
+    hargaKainPksRows: wrap("harga_kain_pks"),
+    entitasRows: wrap("entitas"),
+    supplierRows: wrap("suppliers"),
+  };
+}
+
+async function fetchFlowRows(db: SupabaseClient): Promise<RawTables> {
+  try {
+    return await fetchFlowRowsFast(db);
+  } catch (err) {
+    // Migration 0008 belum di-apply, atau RPC gagal karena sebab lain -- diam-diam fallback ke
+    // cara lama (lebih lambat, tapi tetap benar) alih-alih bikin SELURUH app gagal muat data.
+    console.warn("getFlowSnapshot: get_flow_snapshot_raw gagal, fallback ke query per-tabel —", err instanceof Error ? err.message : err);
+    return fetchFlowRowsLegacy(db);
+  }
+}
+
+export async function getFlowSnapshot(): Promise<FlowState> {
+  const db = supabaseServer();
+
+  const {
+    mrpRows,
+    lenganGroupRows,
+    lenganGroupSizeRows,
+    aduanRows,
+    aduanSizeRows,
+    materialRowRows,
+    materialPoRows,
+    materialPoColorRows,
+    materialPoInvoicedRows,
+    maklonPoRows,
+    maklonPoCancelledRows,
+    invoiceRows,
+    invoiceColorRows,
+    invoiceRollRows,
+    invoiceAddBuyRows,
+    maklonInvoiceRows,
+    productionBatchRows,
+    productionBatchSizeRows,
+    productionYieldResolutionRows,
+    productionResultRows,
+    productionResultSizeRows,
+    productionGroupMetaRows,
+    deliveryKoliRows,
+    deliveryKoliItemRows,
+    vendorInvoiceRows,
+    vendorInvoiceLineRows,
+    vendorInvoiceAdjustmentRows,
+    notificationRows,
+    hargaMaklonRows,
+    hargaKainRows,
+    hargaKainPksRows,
+    entitasRows,
+    supplierRows,
+  } = await fetchFlowRows(db);
 
   for (const [name, res] of Object.entries({
     mrpRows,
