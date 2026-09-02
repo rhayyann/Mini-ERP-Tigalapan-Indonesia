@@ -5,7 +5,20 @@ import { NumberInput } from "@/components/mrp/number-input";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
 import { useMrpStore } from "@/lib/mrp/store";
-import { availableCodeRollsForColor, availableRollsForAduanRow, formatDateTime, formatDuration, materialReceivedForMaklon, restingMinutes } from "@/lib/mrp/derive";
+import {
+  availableCodeRollsForColor,
+  availableRollsForAduanRow,
+  formatDateTime,
+  formatDecimal,
+  formatDuration,
+  materialReceivedForMaklon,
+  pendingWeighRolls,
+  restingMinutes,
+  targetSizesForBatch,
+  weightVariance,
+  YIELD_ALERT_THRESHOLD_PCT,
+  type PendingWeighRoll,
+} from "@/lib/mrp/derive";
 import { RESTING_TARGET_MINUTES } from "@/lib/mrp/seed";
 import type { AduanPolaRow, Lengan } from "@/lib/mrp/types";
 
@@ -25,14 +38,32 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const productionBatches = useMrpStore((s) => s.productionBatches);
   const startProductionBatch = useMrpStore((s) => s.startProductionBatch);
   const updateBatchToCutting = useMrpStore((s) => s.updateBatchToCutting);
+  const receiveRawMaterialRoll = useMrpStore((s) => s.receiveRawMaterialRoll);
 
   const [selectedMrpId, setSelectedMrpId] = useState("");
   const [selectedGroupKey, setSelectedGroupKey] = useState("");
   const [lines, setLines] = useState<CuttingLine[]>([]);
   const [restingAt, setRestingAt] = useState(nowLocalDatetime());
+  // Dulu restingAt di-set "now" sekali saat grup dipilih (pickGroup) lalu dipakai apa adanya saat
+  // submit — kalau user butuh waktu lama isi code roll/gramasi sebelum klik "Resting", "Durasi
+  // Resting" di tabel bawah langsung tampak sudah berjalan sejak form dibuka, bukan sejak roll
+  // BENAR-BENAR mulai resting. Sekarang: kalau user tidak pernah sentuh field tanggal/jam ini
+  // secara manual, nilainya di-refresh ke waktu saat ini persis sebelum submit (lihat
+  // submitResting) — field tetap bisa diedit manual untuk backdate yang memang disengaja.
+  const [restingAtTouched, setRestingAtTouched] = useState(false);
   const [cuttingDraft, setCuttingDraft] = useState<Record<string, string>>({});
+  // Hasil aduan AKTUAL per roll (qty per size), diinput bareng datetime saat "Update ke Cutting"
+  // — dulu tidak ada tempat mencatat ini sama sekali, cutting output cuma diestimasi dari rasio
+  // rencana MRP (lihat cuttingSizesForGroup di derive.ts).
+  const [cuttingSizeDraft, setCuttingSizeDraft] = useState<Record<string, Record<string, number>>>({});
   const [submitNotice, setSubmitNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Timbang roll — dulu ada di Good Receive (vendor timbang begitu roll fisik datang), sekarang
+  // dipindah ke sini: roll yang sudah ditandai diterima di Good Receive tapi belum ditimbang (atau
+  // masih di luar toleransi & perlu ditimbang ulang) baru bisa dipilih untuk Resting setelah
+  // ditimbang & sesuai di sini (lihat availableCodeRollsForColor/availableRollsForAduanRow).
+  const [weighDraft, setWeighDraft] = useState<Record<string, number>>({});
+  const [pendingClaim, setPendingClaim] = useState<{ key: string; roll: PendingWeighRoll; netKg: number; diffKg: number; pct: number } | null>(null);
 
   const activeStages: string[] = ["PARTIAL_WAITING_MATERIAL", "FULL_WAITING_MATERIAL", "PRODUCTION", "PARTIAL_PRODUCTION"];
   const readyMrpIds = maklonPOs
@@ -42,6 +73,29 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
 
   const selectedDetail = mrpDetails.find((d) => d.mrp.id === selectedMrpId);
   const aduanRows = (selectedDetail?.aduanRows ?? []).filter((a) => a.vendor === vendorId);
+
+  const weighRows = selectedMrpId ? pendingWeighRolls(selectedMrpId, vendorId, invoices) : [];
+  function weighKey(r: PendingWeighRoll): string {
+    return `${r.invoiceId}|${r.warna}|${r.lengan}|${r.rollIndex}`;
+  }
+  function commitWeigh(r: PendingWeighRoll, netKg: number, claim?: { diffKg: number; pct: number }) {
+    receiveRawMaterialRoll(r.invoiceId, r.warna, r.lengan, r.rollIndex, netKg, claim);
+    setWeighDraft((prev) => {
+      const next = { ...prev };
+      delete next[weighKey(r)];
+      return next;
+    });
+  }
+  function saveWeigh(r: PendingWeighRoll) {
+    const key = weighKey(r);
+    const netKg = weighDraft[key] ?? r.netKg ?? r.grossKg;
+    const variance = weightVariance(r.grossKg, netKg);
+    if (!variance.withinTolerance) {
+      setPendingClaim({ key, roll: r, netKg, diffKg: variance.diff, pct: variance.pct });
+      return;
+    }
+    commitWeigh(r, netKg);
+  }
 
   const groups = new Map<string, AduanGroup>();
   for (const row of aduanRows) {
@@ -67,6 +121,7 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
     setSelectedGroupKey(key);
     const g = groups.get(key);
     setRestingAt(nowLocalDatetime());
+    setRestingAtTouched(false);
     setLines([{ id: "line-" + Date.now(), warna: g?.rows[0]?.warna ?? "", codeRoll: "", gramasi: 0 }]);
     setSubmitNotice(null);
   }
@@ -109,6 +164,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
     // di database (lihat catatan serupa di paying-voucher-wizard.tsx). Sekarang di-await satu
     // per satu supaya UI baru dianggap selesai setelah semuanya benar-benar tersimpan.
     setSubmitting(true);
+    // Kalau user tidak pernah sentuh field tanggal/jam resting secara manual, refresh ke waktu
+    // SEKARANG persis sebelum disimpan — bukan waktu saat grup pertama kali dipilih tadi, yang
+    // bisa saja sudah berselang cukup lama karena user lagi isi code roll/gramasi.
+    const effectiveRestingAt = restingAtTouched ? restingAt : nowLocalDatetime();
     const remaining: CuttingLine[] = [];
     let savedCount = 0;
     try {
@@ -122,7 +181,7 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
           remaining.push(line);
           continue;
         }
-        await startProductionBatch({ mrpId: selectedMrpId, aduanRowId: row.id, qtyRoll: 1, gramasi: line.gramasi, restingAt, codeRoll: line.codeRoll });
+        await startProductionBatch({ mrpId: selectedMrpId, aduanRowId: row.id, qtyRoll: 1, gramasi: line.gramasi, restingAt: effectiveRestingAt, codeRoll: line.codeRoll });
         savedCount++;
       }
     } finally {
@@ -158,6 +217,62 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
         </select>
         {readyMrps.length === 0 && <div className="mt-2 font-sans text-xs text-text-muted">Belum ada MRP dengan bahan siap dan pekerjaan belum selesai.</div>}
       </div>
+
+      {selectedMrpId && weighRows.length > 0 && (
+        <div className="w-full overflow-x-auto rounded-lg border border-[#F0DFC2] bg-warning-bg">
+          <div className="border-b border-[#F0DFC2] px-4 py-3 font-sans text-[13px] font-semibold text-warning-fg">
+            Timbang roll — {weighRows.length} roll sudah diterima, belum ditimbang / masih di luar toleransi
+          </div>
+          <div
+            className="grid min-w-[900px] gap-x-3 border-b border-[#F0DFC2] bg-white/40 px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
+            style={{ gridTemplateColumns: "minmax(140px,1.1fr) minmax(70px,0.6fr) minmax(120px,0.9fr) minmax(110px,0.9fr) minmax(110px,0.9fr) minmax(120px,1fr) minmax(110px,0.8fr) minmax(110px,0.9fr)" }}
+          >
+            <span>Warna / lengan</span>
+            <span>Roll</span>
+            <span>Code Roll</span>
+            <span className="text-right">Berat kotor (kg)</span>
+            <span className="text-right">Berat bersih (kg)</span>
+            <span className="text-right">Selisih</span>
+            <span>Toleransi</span>
+            <span>Aksi</span>
+          </div>
+          {weighRows.map((r) => {
+            const key = weighKey(r);
+            const netVal = weighDraft[key] ?? r.netKg ?? r.grossKg;
+            const variance = weightVariance(r.grossKg, netVal);
+            return (
+              <div
+                key={key}
+                className="grid min-w-[900px] items-center gap-x-3 border-b border-[#F0DFC2] bg-white px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0"
+                style={{ gridTemplateColumns: "minmax(140px,1.1fr) minmax(70px,0.6fr) minmax(120px,0.9fr) minmax(110px,0.9fr) minmax(110px,0.9fr) minmax(120px,1fr) minmax(110px,0.8fr) minmax(110px,0.9fr)" }}
+              >
+                <span>
+                  {r.warna} · {r.lengan}
+                  {r.netKg !== undefined && <span className="ml-1.5 font-mono text-[10px] text-danger-fg">(timbang ulang)</span>}
+                </span>
+                <span className="font-mono font-medium">Roll {r.rollIndex + 1}</span>
+                <span className="font-mono text-[11px]">{r.codeRoll || "—"}</span>
+                <span className="text-right font-mono">{formatDecimal(r.grossKg)}</span>
+                <span className="flex justify-end">
+                  <NumberInput value={netVal} decimals={2} onChange={(v) => setWeighDraft((prev) => ({ ...prev, [key]: v }))} className="input w-[100px] text-right" />
+                </span>
+                <span className={"text-right font-mono " + (variance.withinTolerance ? "text-success-fg" : "text-danger-fg")}>
+                  {variance.diff >= 0 ? "+" : ""}
+                  {formatDecimal(variance.diff)} kg ({variance.pct.toFixed(1)}%)
+                </span>
+                <span>
+                  <StatusPill tone={variance.withinTolerance ? "success" : "danger"}>{variance.withinTolerance ? "SESUAI" : "DI LUAR TOLERANSI"}</StatusPill>
+                </span>
+                <span>
+                  <Button onClick={() => saveWeigh(r)} variant="primary" size="xs">
+                    Simpan
+                  </Button>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {selectedDetail && (
         <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
@@ -199,7 +314,15 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
               <div className="mt-2.5 flex items-end gap-3">
                 <div>
                   <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Tanggal &amp; jam resting</div>
-                  <input type="datetime-local" value={restingAt} onChange={(e) => setRestingAt(e.target.value)} className="input mt-1" />
+                  <input
+                    type="datetime-local"
+                    value={restingAt}
+                    onChange={(e) => {
+                      setRestingAt(e.target.value);
+                      setRestingAtTouched(true);
+                    }}
+                    className="input mt-1"
+                  />
                 </div>
                 <button
                   onClick={addLine}
@@ -300,10 +423,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
         <div className="overflow-x-auto">
           <div>
             <div
-              className="grid min-w-[1040px] gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
+              className="grid min-w-[1200px] gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
               style={{
                 gridTemplateColumns:
-                  "minmax(80px,0.6fr) minmax(70px,0.5fr) minmax(140px,1.1fr) minmax(120px,0.9fr) minmax(60px,0.5fr) minmax(90px,0.7fr) minmax(140px,1.1fr) minmax(170px,1.3fr) minmax(170px,1.3fr)",
+                  "minmax(80px,0.6fr) minmax(70px,0.5fr) minmax(140px,1.1fr) minmax(120px,0.9fr) minmax(60px,0.5fr) minmax(90px,0.7fr) minmax(140px,1.1fr) minmax(170px,1.3fr) minmax(170px,1.3fr) minmax(160px,1.2fr)",
               }}
             >
               <span>MRP</span>
@@ -315,44 +438,120 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
               <span>Resting</span>
               <span>Cutting</span>
               <span>Durasi Resting</span>
+              <span>Hasil Aduan / Yield</span>
             </div>
             {myBatches.length === 0 && <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">Belum ada batch produksi.</div>}
             {myBatches.map((b) => {
               const draft = cuttingDraft[b.id];
               const durasiKurang = b.cuttingAt ? restingMinutes(b.restingAt, b.cuttingAt) < RESTING_TARGET_MINUTES : false;
+              const detail = mrpDetails.find((d) => d.mrp.id === b.mrpId);
+              const targetSizes = targetSizesForBatch(b, detail?.aduanRows ?? []);
+              const targetTotal = Object.values(targetSizes).reduce((a, c) => a + c, 0);
+              const sizeDraft = cuttingSizeDraft[b.id] ?? {};
+              const actualTotal = b.sizeQty
+                ? Object.values(b.sizeQty).reduce((a, c) => a + c, 0)
+                : Object.values(sizeDraft).reduce((a, c) => a + c, 0);
+              const yieldPct = targetTotal > 0 ? (actualTotal / targetTotal) * 100 : null;
+              const yieldAlert = yieldPct !== null && yieldPct < YIELD_ALERT_THRESHOLD_PCT;
               return (
-                <div
-                  key={b.id}
-                  className="grid min-w-[1040px] items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0"
-                  style={{
-                    gridTemplateColumns:
-                      "minmax(80px,0.6fr) minmax(70px,0.5fr) minmax(140px,1.1fr) minmax(120px,0.9fr) minmax(60px,0.5fr) minmax(90px,0.7fr) minmax(140px,1.1fr) minmax(170px,1.3fr) minmax(170px,1.3fr)",
-                  }}
-                >
-                  <span className="font-mono">{b.mrpId}</span>
-                  <span className="font-mono font-medium">{b.kode}</span>
-                  <span>
-                    {b.warna} · {b.lengan}
-                  </span>
-                  <span className="font-mono text-[11px]">{b.codeRoll || "—"}</span>
-                  <span className="text-right font-mono">{b.qtyRoll}</span>
-                  <span className="text-right font-mono">{b.gramasi} gsm</span>
-                  <span className="font-mono text-[11px]">{formatDateTime(b.restingAt)}</span>
-                  <span className="font-mono text-[11px]">
-                    {b.cuttingAt ? (
-                      formatDateTime(b.cuttingAt)
-                    ) : draft !== undefined ? (
-                      <span className="flex flex-col items-start gap-1">
+                <div key={b.id} className="border-b border-[#F1F4F7] last:border-b-0">
+                  <div
+                    className="grid min-w-[1200px] items-center gap-x-3 px-4 py-[11px] font-sans text-xs text-[#31414F]"
+                    style={{
+                      gridTemplateColumns:
+                        "minmax(80px,0.6fr) minmax(70px,0.5fr) minmax(140px,1.1fr) minmax(120px,0.9fr) minmax(60px,0.5fr) minmax(90px,0.7fr) minmax(140px,1.1fr) minmax(170px,1.3fr) minmax(170px,1.3fr) minmax(160px,1.2fr)",
+                    }}
+                  >
+                    <span className="font-mono">{b.mrpId}</span>
+                    <span className="font-mono font-medium">{b.kode}</span>
+                    <span>
+                      {b.warna} · {b.lengan}
+                    </span>
+                    <span className="font-mono text-[11px]">{b.codeRoll || "—"}</span>
+                    <span className="text-right font-mono">{b.qtyRoll}</span>
+                    <span className="text-right font-mono">{b.gramasi} gsm</span>
+                    <span className="font-mono text-[11px]">{formatDateTime(b.restingAt)}</span>
+                    <span className="font-mono text-[11px]">
+                      {b.cuttingAt ? (
+                        formatDateTime(b.cuttingAt)
+                      ) : draft !== undefined ? (
                         <input
                           type="datetime-local"
                           value={draft}
                           onChange={(e) => setCuttingDraft((prev) => ({ ...prev, [b.id]: e.target.value }))}
                           className="w-full rounded-md border border-[#DDE4EB] px-1.5 py-1 font-mono text-[11px]"
                         />
+                      ) : (
                         <Button
                           onClick={() => {
-                            updateBatchToCutting(b.id, draft);
+                            setCuttingDraft((prev) => ({ ...prev, [b.id]: nowLocalDatetime() }));
+                            setCuttingSizeDraft((prev) => ({ ...prev, [b.id]: prev[b.id] ?? {} }));
+                          }}
+                          variant="primary"
+                          size="xs"
+                        >
+                          Update ke Cutting →
+                        </Button>
+                      )}
+                    </span>
+                    <span className="flex items-center gap-1.5 font-mono text-[11px] text-text-muted">
+                      {formatDuration(b.restingAt, b.cuttingAt ?? new Date().toISOString())}
+                      {durasiKurang && <StatusPill tone="warning">RESTING KURANG DARI TARGET</StatusPill>}
+                    </span>
+                    <span className="flex flex-wrap items-center gap-1 font-mono text-[11px]">
+                      {b.cuttingAt ? (
+                        b.sizeQty ? (
+                          <>
+                            <span>
+                              {actualTotal} / {targetTotal} pcs
+                            </span>
+                            {yieldPct !== null && (
+                              <StatusPill tone={yieldAlert ? "danger" : "success"}>{yieldPct.toFixed(1)}%</StatusPill>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-text-muted">— (belum diisi)</span>
+                        )
+                      ) : (
+                        <span className="text-text-muted">Target: {targetTotal} pcs</span>
+                      )}
+                    </span>
+                  </div>
+                  {!b.cuttingAt && draft !== undefined && (
+                    <div className="border-t border-[#CFE0EF] bg-info-bg px-4 py-3">
+                      <div className="font-sans text-[11px] font-semibold text-info-fg">
+                        Hasil aduan — {b.warna} · {b.lengan} (target {targetTotal} pcs dari roll ini)
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {Object.keys(targetSizes).length === 0 && (
+                          <span className="font-sans text-[11px] text-text-muted">Aduan pola untuk roll ini tidak punya rincian size.</span>
+                        )}
+                        {Object.entries(targetSizes).map(([size, tgt]) => (
+                          <div key={size} className="flex flex-col">
+                            <span className="font-sans text-[10px] text-text-muted">
+                              {size} <span className="text-[9px]">(target {tgt})</span>
+                            </span>
+                            <NumberInput
+                              value={sizeDraft[size] ?? 0}
+                              decimals={0}
+                              onChange={(v) =>
+                                setCuttingSizeDraft((prev) => ({ ...prev, [b.id]: { ...(prev[b.id] ?? {}), [size]: v } }))
+                              }
+                              className="input mt-0.5 w-[80px] text-right"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2.5 flex items-center gap-2">
+                        <Button
+                          onClick={() => {
+                            updateBatchToCutting(b.id, draft, sizeDraft);
                             setCuttingDraft((prev) => {
+                              const next = { ...prev };
+                              delete next[b.id];
+                              return next;
+                            });
+                            setCuttingSizeDraft((prev) => {
                               const next = { ...prev };
                               delete next[b.id];
                               return next;
@@ -363,27 +562,74 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                         >
                           Simpan
                         </Button>
-                      </span>
-                    ) : (
-                      <Button
-                        onClick={() => setCuttingDraft((prev) => ({ ...prev, [b.id]: nowLocalDatetime() }))}
-                        variant="primary"
-                        size="xs"
-                      >
-                        Update ke Cutting →
-                      </Button>
-                    )}
-                  </span>
-                  <span className="flex items-center gap-1.5 font-mono text-[11px] text-text-muted">
-                    {formatDuration(b.restingAt, b.cuttingAt ?? new Date().toISOString())}
-                    {durasiKurang && <StatusPill tone="warning">RESTING KURANG DARI TARGET</StatusPill>}
-                  </span>
+                        <button
+                          onClick={() => {
+                            setCuttingDraft((prev) => {
+                              const next = { ...prev };
+                              delete next[b.id];
+                              return next;
+                            });
+                            setCuttingSizeDraft((prev) => {
+                              const next = { ...prev };
+                              delete next[b.id];
+                              return next;
+                            });
+                          }}
+                          className="font-sans text-[11px] font-semibold text-action-primary"
+                        >
+                          Batal
+                        </button>
+                        {targetTotal > 0 && actualTotal > 0 && actualTotal / targetTotal < YIELD_ALERT_THRESHOLD_PCT / 100 && (
+                          <span className="font-sans text-[10.5px] text-danger-fg">
+                            Yield {((actualTotal / targetTotal) * 100).toFixed(1)}% — di bawah baseline {YIELD_ALERT_THRESHOLD_PCT}%, akan masuk alert yield ke portal Produksi.
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
         </div>
       </div>
+
+      {pendingClaim && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B131B]/45">
+          <div className="w-full max-w-[440px] rounded-lg bg-white shadow-[0_8px_24px_rgba(11,19,27,.2)]">
+            <div className="border-b border-danger-bg bg-danger-bg px-5 py-3.5">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-danger" />
+                <span className="font-sans text-[13px] font-semibold text-danger-fg">Selisih berat di luar toleransi</span>
+              </div>
+            </div>
+            <div className="px-5 py-4">
+              <div className="font-sans text-xs text-[#31414F]">
+                {pendingClaim.roll.warna} · {pendingClaim.roll.lengan} — Roll {pendingClaim.roll.rollIndex + 1} — selisih {pendingClaim.diffKg >= 0 ? "+" : ""}
+                {formatDecimal(pendingClaim.diffKg)} kg ({pendingClaim.pct.toFixed(1)}%), melebihi toleransi ±2%.
+              </div>
+              <div className="mt-2 font-sans text-xs text-text-muted">Kirim claim ke Procurement supaya selisih ini dicatat dan bisa ditindaklanjuti?</div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-3.5">
+              <button
+                onClick={() => setPendingClaim(null)}
+                className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-[7px] font-sans text-xs font-semibold text-action-primary"
+              >
+                Batal
+              </button>
+              <button
+                onClick={() => {
+                  commitWeigh(pendingClaim.roll, pendingClaim.netKg, { diffKg: pendingClaim.diffKg, pct: pendingClaim.pct });
+                  setPendingClaim(null);
+                }}
+                className="rounded-md bg-danger px-3.5 py-[7px] font-sans text-xs font-semibold text-white"
+              >
+                Ya, Kirim Claim
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

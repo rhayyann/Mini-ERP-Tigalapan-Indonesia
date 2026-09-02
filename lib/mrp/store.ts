@@ -16,7 +16,7 @@ import type {
   ProductionBatch,
   ProductionGroupMeta,
   ProductionResult,
-  ProductionResultKind,
+  ProductionYieldResolution,
   RawMaterialInvoice,
   Usia,
   VendorInvoice,
@@ -111,6 +111,9 @@ export type FlowState = {
   rejectRemarks: Record<string, string>;
   materialClaimResolutions: Record<string, { note: string; resolvedAt: string }>;
   materialClaimReturRequests: Record<string, { note: string; requestedAt: string }>;
+  /** Keyed by ProductionBatch.id — resolusi alert yield <99% (lihat productionYieldAlertsList di
+   *  derive.ts), ditindaklanjuti dari portal internal Produksi (bukan Procurement). */
+  productionYieldResolutions: Record<string, ProductionYieldResolution>;
   hargaMaklon: HargaMaklonRow[];
   hargaKain: HargaKainRow[];
   hargaKainPks: HargaKainPksRow[];
@@ -166,18 +169,12 @@ type FlowActions = {
   ) => Promise<void>;
   setInvoicesPaid: (invoiceIds: string[], paid: boolean) => Promise<void>;
   setInvoicesDelivery: (invoiceIds: string[], deliveryDate: string) => Promise<void>;
-  receiveRawMaterialRoll: (
-    invoiceId: string,
-    warna: string,
-    lengan: Lengan,
-    rollIndex: number,
-    netKg: number,
-    codeRoll?: string,
-    codeLot?: string,
-    claim?: { diffKg: number; pct: number }
-  ) => Promise<void>;
+  markRollArrived: (invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, codeRoll?: string, codeLot?: string) => Promise<void>;
+  receiveRawMaterialRoll: (invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, netKg: number, claim?: { diffKg: number; pct: number }) => Promise<void>;
   startProductionBatch: (input: { mrpId: string; aduanRowId: string; qtyRoll: number; gramasi: number; restingAt: string; codeRoll?: string }) => Promise<void>;
-  submitProductionResult: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; kind: ProductionResultKind; sizeQty: Record<string, number>; note?: string }) => Promise<void>;
+  // "WASTE" SENGAJA tidak termasuk di sini — satu-satunya jalur bikin entri WASTE adalah
+  // wasteRejectSize (lihat di bawah), bukan submission FG/REJECT manual biasa ini.
+  submitProductionResult: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; kind: "FG" | "REJECT"; sizeQty: Record<string, number>; note?: string }) => Promise<void>;
   createDeliveryKoli: (input: { mrpId: string; vendorProduksi: string; ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }) => Promise<void>;
   setKoliWeight: (koliId: string, beratKoli: number) => Promise<void>;
   markKoliDelivered: (koliId: string) => Promise<void>;
@@ -222,8 +219,11 @@ type FlowActions = {
   approveMaklonInvoice: (invoiceId: string) => Promise<void>;
   payMaklonInvoice: (invoiceId: string) => Promise<void>;
   receiveRawMaterialAddBuy: (invoiceId: string, addBuyId: string) => Promise<void>;
-  updateBatchToCutting: (batchId: string, cuttingAt: string) => Promise<void>;
+  updateBatchToCutting: (batchId: string, cuttingAt: string, sizeQty?: Record<string, number>) => Promise<void>;
+  resolveProductionYield: (batchId: string, note: string) => Promise<void>;
+  unresolveProductionYield: (batchId: string) => Promise<void>;
   reworkRejectSize: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; fromSize: string; qty: number; toLengan: Lengan; toSize: string; usia: Usia }) => Promise<void>;
+  wasteRejectSize: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; fromSize: string; qty: number; note?: string }) => Promise<void>;
   updateDeliveryKoli: (koliId: string, patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }) => Promise<void>;
   setVendorInvoiceDueDate: (invoiceId: string, dueDate: string) => Promise<void>;
   setVendorInvoiceOngkir: (invoiceId: string, ongkirTotal: number) => Promise<void>;
@@ -256,6 +256,7 @@ const emptyState: FlowState = {
   rejectRemarks: {},
   materialClaimResolutions: {},
   materialClaimReturRequests: {},
+  productionYieldResolutions: {},
   hargaMaklon: [],
   hargaKain: [],
   hargaKainPks: [],
@@ -396,8 +397,12 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) =>
     await actions.setInvoicesDeliveryAction(invoiceIds, deliveryDate);
     await get().refresh();
   },
-  receiveRawMaterialRoll: async (invoiceId, warna, lengan, rollIndex, netKg, codeRoll, codeLot, claim) => {
-    await actions.receiveRawMaterialRollAction(invoiceId, warna, lengan, rollIndex, netKg, codeRoll, codeLot, claim);
+  markRollArrived: async (invoiceId, warna, lengan, rollIndex, codeRoll, codeLot) => {
+    await actions.markRollArrivedAction(invoiceId, warna, lengan, rollIndex, codeRoll, codeLot);
+    await get().refresh();
+  },
+  receiveRawMaterialRoll: async (invoiceId, warna, lengan, rollIndex, netKg, claim) => {
+    await actions.receiveRawMaterialRollAction(invoiceId, warna, lengan, rollIndex, netKg, claim);
     await get().refresh();
   },
   startProductionBatch: async (input) => {
@@ -575,12 +580,24 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) =>
     await actions.receiveRawMaterialAddBuyAction(invoiceId, addBuyId);
     await get().refresh();
   },
-  updateBatchToCutting: async (batchId, cuttingAt) => {
-    await actions.updateBatchToCuttingAction(batchId, cuttingAt);
+  updateBatchToCutting: async (batchId, cuttingAt, sizeQty) => {
+    await actions.updateBatchToCuttingAction(batchId, cuttingAt, sizeQty);
+    await get().refresh();
+  },
+  resolveProductionYield: async (batchId, note) => {
+    await actions.resolveProductionYieldAction(batchId, note);
+    await get().refresh();
+  },
+  unresolveProductionYield: async (batchId) => {
+    await actions.unresolveProductionYieldAction(batchId);
     await get().refresh();
   },
   reworkRejectSize: async (input) => {
     await actions.reworkRejectSizeAction(input);
+    await get().refresh();
+  },
+  wasteRejectSize: async (input) => {
+    await actions.wasteRejectSizeAction(input);
     await get().refresh();
   },
   updateDeliveryKoli: async (koliId, patch) => {

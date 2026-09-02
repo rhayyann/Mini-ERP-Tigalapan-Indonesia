@@ -17,7 +17,9 @@ import type {
   ProductionBatch,
   ProductionGroupMeta,
   ProductionResult,
+  ProductionYieldResolution,
   RawMaterialInvoice,
+  RollArrival,
   RollReceipt,
   VendorInvoice,
   VendorInvoiceAdjustment,
@@ -52,6 +54,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     invoiceAddBuyRows,
     maklonInvoiceRows,
     productionBatchRows,
+    productionBatchSizeRows,
+    productionYieldResolutionRows,
     productionResultRows,
     productionResultSizeRows,
     productionGroupMetaRows,
@@ -84,6 +88,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     db.from("raw_material_invoice_addbuys").select("*"),
     db.from("maklon_invoices").select("*"),
     db.from("production_batches").select("*"),
+    db.from("production_batch_sizes").select("*"),
+    db.from("production_yield_resolutions").select("*"),
     db.from("production_results").select("*"),
     db.from("production_result_sizes").select("*"),
     db.from("production_group_meta").select("*"),
@@ -261,14 +267,22 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     const colors = colorsByInvoice[inv.id] ?? [];
     const colorEntries: ColorEntry[] = [];
     const rollReceipts: Record<string, (RollReceipt | null)[]> = {};
+    const rollArrivals: Record<string, (RollArrival | null)[]> = {};
     for (const c of colors) {
       const colorKey = `${c.warna}|${c.lengan}`;
       const rolls = (rollsByColor[c.id] ?? []).sort((a, b) => a.roll_index - b.roll_index);
       colorEntries.push({ warna: c.warna, lengan: c.lengan, hargaPerRoll: Number(c.harga_per_roll), rolls: rolls.map((r) => Number(r.gross_kg)) });
+      // received_at = ditandai diterima (Good Receive, lihat markRollArrivedAction) — TIDAK lagi
+      // berarti "sudah ditimbang" (itu net_kg, sekarang diisi dari Cutting lewat
+      // receiveRawMaterialRollAction). Satu roll bisa "arrived" (received_at ada) tapi belum
+      // "receipt" (net_kg masih null) sambil menunggu ditimbang di Cutting.
       rollReceipts[colorKey] = rolls.map((r) =>
         r.net_kg == null
           ? null
           : { netKg: Number(r.net_kg), receivedAt: r.received_at ?? "", codeRoll: r.code_roll ?? undefined, codeLot: r.code_lot ?? undefined }
+      );
+      rollArrivals[colorKey] = rolls.map((r) =>
+        r.received_at == null ? null : { arrivedAt: r.received_at, codeRoll: r.code_roll ?? undefined, codeLot: r.code_lot ?? undefined }
       );
       for (const r of rolls) {
         const claimKey = `${inv.id}|${c.warna}|${c.lengan}|${r.roll_index}`;
@@ -313,6 +327,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
       productionStart: inv.production_start ?? undefined,
       productionEnd: inv.production_end ?? undefined,
       rollReceipts,
+      rollArrivals,
       addBuyReceipts,
     };
   });
@@ -337,21 +352,36 @@ export async function getFlowSnapshot(): Promise<FlowState> {
   }));
 
   // ---- Produksi ----
-  const productionBatches: ProductionBatch[] = (productionBatchRows.data ?? []).map((b) => ({
-    id: b.id,
-    mrpId: b.mrp_id,
-    vendorProduksi: b.vendor_produksi,
-    aduanRowId: b.aduan_row_id,
-    kode: b.kode ?? "",
-    warna: b.warna,
-    lengan: b.lengan,
-    qtyRoll: Number(b.qty_roll),
-    gramasi: b.gramasi == null ? 0 : Number(b.gramasi),
-    restingAt: b.resting_at ?? "",
-    cuttingAt: b.cutting_at ?? undefined,
-    createdAt: b.created_at,
-    codeRoll: b.code_roll ?? undefined,
-  }));
+  // production_batch_sizes/production_yield_resolutions belum tentu ada (butuh migration
+  // 0006_production_batch_output.sql) — `.data ?? []` di bawah gracefully jadi kosong kalau
+  // tabelnya belum ada, jadi TIDAK ditambahkan ke daftar error-check di atas (lihat komentar
+  // serupa di query lain yang juga tidak wajib ada).
+  const batchSizesByBatch = groupBy(productionBatchSizeRows.data ?? [], (r) => r.production_batch_id);
+  const productionBatches: ProductionBatch[] = (productionBatchRows.data ?? []).map((b) => {
+    const sizeRows = batchSizesByBatch[b.id] ?? [];
+    const sizeQty: Record<string, number> = {};
+    for (const s of sizeRows) sizeQty[s.size] = s.qty;
+    return {
+      id: b.id,
+      mrpId: b.mrp_id,
+      vendorProduksi: b.vendor_produksi,
+      aduanRowId: b.aduan_row_id,
+      kode: b.kode ?? "",
+      warna: b.warna,
+      lengan: b.lengan,
+      qtyRoll: Number(b.qty_roll),
+      gramasi: b.gramasi == null ? 0 : Number(b.gramasi),
+      restingAt: b.resting_at ?? "",
+      cuttingAt: b.cutting_at ?? undefined,
+      createdAt: b.created_at,
+      codeRoll: b.code_roll ?? undefined,
+      sizeQty: sizeRows.length > 0 ? sizeQty : undefined,
+    };
+  });
+  const productionYieldResolutions: Record<string, ProductionYieldResolution> = {};
+  for (const r of productionYieldResolutionRows.data ?? []) {
+    productionYieldResolutions[r.production_batch_id] = { note: r.note, resolvedAt: r.resolved_at };
+  }
 
   const sizesByResult = groupBy(productionResultSizeRows.data ?? [], (r) => r.production_result_id);
   const productionResults: ProductionResult[] = (productionResultRows.data ?? []).map((r) => {
@@ -489,6 +519,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     rejectRemarks,
     materialClaimResolutions,
     materialClaimReturRequests,
+    productionYieldResolutions,
     hargaMaklon,
     hargaKain,
     hargaKainPks,

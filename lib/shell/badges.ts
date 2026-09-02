@@ -2,15 +2,16 @@ import {
   cumulativeSizeQtyForGroup,
   cutWarnaLenganGroups,
   invoiceableMrpIdsFullQty,
-  invoiceFullyReceived,
+  invoiceFullyArrived,
   maklonPoInvoiceLockedBy,
   materialClaimsList,
   mrpIdsWithRemainingReject,
   mrpIdsWithUnpackedFg,
+  productionYieldAlertsList,
   targetSizesForGroup,
 } from "@/lib/mrp/derive";
 import type { MrpDetail } from "@/lib/mrp/store";
-import type { DeliveryKoli, MaklonInvoice, MaklonPO, MaterialPO, ProductionBatch, ProductionGroupMeta, ProductionResult, RawMaterialInvoice, VendorInvoice } from "@/lib/mrp/types";
+import type { DeliveryKoli, MaklonInvoice, MaklonPO, MaterialPO, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionYieldResolution, RawMaterialInvoice, VendorInvoice } from "@/lib/mrp/types";
 
 /** Minimal shape yang dibutuhkan dari `MrpDetail` — dideklarasikan lokal (bukan import
  *  dari lib/mrp/store) supaya lib/shell tidak bergantung ke store, cukup ke bentuk datanya. */
@@ -159,18 +160,29 @@ export function countRejectActionableGroups(
   return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails).filter((g) => !g.done && g.totalFg > 0 && g.totalFg < g.totalTarget).length;
 }
 
+/** Roll dengan alert yield <99% yang belum ditindaklanjuti — badge menu Yield Alert (portal
+ *  internal Produksi). */
+export function countProductionYieldUnresolved(
+  productionBatches: ProductionBatch[],
+  mrpDetails: MrpDetail[],
+  productionYieldResolutions: Record<string, ProductionYieldResolution>
+): number {
+  return productionYieldAlertsList(productionBatches, mrpDetails, productionYieldResolutions).filter((r) => !r.resolved).length;
+}
+
 /** MRP dengan sisa reject yang belum di-rework — badge tab Rework. */
 export function countRemainingRework(vendorId: string, productionBatches: ProductionBatch[], productionResults: ProductionResult[]): number {
   return mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults).length;
 }
 
-/** Invoice raw material yang masih ada roll/add-buy belum ditimbang & diinput di halaman
- *  Good Receive. Tidak cukup cek `status === "RECEIVING"` — status itu cuma berubah sekali
- *  saat roll pertama diinput dan tidak pernah balik lagi walau semua roll sudah lengkap
- *  (lihat `invoiceFullyReceived`), jadi badge harus cek kelengkapan asli datanya. */
+/** Invoice raw material yang masih ada roll/add-buy belum ditandai diterima di halaman Good
+ *  Receive (sekarang cuma tanggung jawab "tandai diterima" — menimbang pindah ke Cutting). Tidak
+ *  cukup cek `status === "RECEIVING"` — status itu cuma berubah sekali saat roll pertama ditandai
+ *  diterima dan tidak pernah balik lagi walau semua roll sudah lengkap (lihat
+ *  `invoiceFullyArrived`), jadi badge harus cek kelengkapan asli datanya. */
 export function countVendorGoodReceiveEligible(vendorId: string, invoices: RawMaterialInvoice[]): number {
   return invoices.filter(
-    (i) => i.destinationVendor === vendorId && (i.status === "DELIVERY" || i.status === "RECEIVING") && !invoiceFullyReceived(i)
+    (i) => i.destinationVendor === vendorId && (i.status === "DELIVERY" || i.status === "RECEIVING") && !invoiceFullyArrived(i)
   ).length;
 }
 

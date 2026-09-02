@@ -1,7 +1,7 @@
 import { EKSPEDISI_RATES, MATERIAL_RATE_PER_ROLL, VENDOR_PRODUKSI } from "./seed";
 import type { MrpDetail, PpicApprovalStatus } from "./store";
 import type { HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow } from "./masterData";
-import type { AduanPolaRow, ColorBreakdown, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, RawMaterialInvoice, ShippableKind, Usia, VendorInvoice } from "./types";
+import type { AduanPolaRow, ColorBreakdown, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, Usia, VendorInvoice } from "./types";
 
 export function formatRupiah(n: number) {
   return "Rp " + Math.round(n).toLocaleString("id-ID");
@@ -899,6 +899,86 @@ export function invoiceFullyReceived(inv: RawMaterialInvoice): boolean {
   return allRollsReceived && allAddBuysReceived;
 }
 
+/** True kalau SEMUA roll invoice ini sudah ditandai diterima (fisik datang) di Good Receive —
+ *  BELUM TENTU sudah ditimbang (lihat invoiceFullyReceived untuk itu; sekarang ditimbang di
+ *  halaman Cutting). Dipakai buat badge sidebar Good Receive, yang sekarang cuma tanggung jawab
+ *  "tandai diterima", bukan lagi menimbang. */
+export function invoiceFullyArrived(inv: RawMaterialInvoice): boolean {
+  const allRollsArrived = inv.colorEntries.every((c) => {
+    const key = c.warna + "|" + c.lengan;
+    const arrivals = inv.rollArrivals[key] ?? [];
+    return c.rolls.every((_, idx) => arrivals[idx] != null);
+  });
+  const allAddBuysReceived = inv.addBuys.every((b) => inv.addBuyReceipts[b.id] != null);
+  return allRollsArrived && allAddBuysReceived;
+}
+
+/** Roll count "X sudah diterima / Y total" per invoice — dipakai untuk indikator progres parsial
+ *  di Good Receive & Material Tracking (roll yang dikirim/diterima cuma sebagian). */
+export function rollArrivalProgress(inv: RawMaterialInvoice): { arrived: number; total: number } {
+  let arrived = 0;
+  let total = 0;
+  for (const c of inv.colorEntries) {
+    const key = c.warna + "|" + c.lengan;
+    const arrivals = inv.rollArrivals[key] ?? [];
+    total += c.rolls.length;
+    arrived += c.rolls.filter((_, idx) => arrivals[idx] != null).length;
+  }
+  return { arrived, total };
+}
+
+export type PendingWeighRoll = {
+  invoiceId: string;
+  poId: string;
+  warna: string;
+  lengan: Lengan;
+  rollIndex: number;
+  grossKg: number;
+  codeRoll?: string;
+  codeLot?: string;
+  arrivedAt: string;
+  /** Roll ini sudah pernah ditimbang tapi selisihnya di luar toleransi & belum ditimbang ulang
+   *  sesuai — perlu ditimbang ULANG (lihat materialClaimsList), bukan ditimbang pertama kali. */
+  netKg?: number;
+};
+
+/** Roll yang sudah ditandai diterima (Good Receive) untuk MRP+vendor ini tapi belum ditimbang —
+ *  atau sudah ditimbang tapi masih ada klaim selisih berat aktif (di luar toleransi, perlu
+ *  ditimbang ulang) — dipakai di halaman Cutting sebagai daftar "Timbang roll" sebelum roll itu
+ *  bisa dipilih untuk Resting (lihat availableCodeRollsForColor). */
+export function pendingWeighRolls(mrpId: string, vendorId: string, invoices: RawMaterialInvoice[]): PendingWeighRoll[] {
+  const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
+  const out: PendingWeighRoll[] = [];
+  for (const inv of invoices) {
+    if (inv.mrpId !== mrpId || inv.destinationVendor !== vendorId) continue;
+    for (const c of inv.colorEntries) {
+      const key = c.warna + "|" + c.lengan;
+      const arrivals = inv.rollArrivals[key] ?? [];
+      const receipts = inv.rollReceipts[key] ?? [];
+      c.rolls.forEach((grossKg, idx) => {
+        const arrival = arrivals[idx];
+        if (!arrival) return;
+        const receipt = receipts[idx];
+        const claimKey = `${inv.id}|${key}|${idx}`;
+        if (receipt && !activeClaimKeys.has(claimKey)) return;
+        out.push({
+          invoiceId: inv.id,
+          poId: inv.poId,
+          warna: c.warna,
+          lengan: c.lengan,
+          rollIndex: idx,
+          grossKg,
+          codeRoll: arrival.codeRoll,
+          codeLot: arrival.codeLot,
+          arrivedAt: arrival.arrivedAt,
+          netKg: receipt?.netKg,
+        });
+      });
+    }
+  }
+  return out;
+}
+
 export function startedRollsForAduan(aduanRowId: string, batches: ProductionBatch[]): number {
   return batches.filter((b) => b.aduanRowId === aduanRowId).reduce((s, b) => s + b.qtyRoll, 0);
 }
@@ -959,6 +1039,24 @@ export function formatDateTime(iso?: string): string {
   return d.toLocaleString("id-ID", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/** Format tanggal `yy-mm-dd` + jam 12-jam `hh:mm AM/PM`, mis. "26-09-02 03:45 PM" — dipakai di
+ *  riwayat pencatatan Finish Good/Reject supaya konsisten sortable-by-text dan jamnya tidak
+ *  ambigu (beda dari formatDateTime yang 24 jam ala id-ID). */
+export function formatDateTimeShort(iso?: string): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const yy = String(d.getFullYear()).slice(-2);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  let hours = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const ampm = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+  return `${yy}-${mm}-${dd} ${String(hours).padStart(2, "0")}:${minutes} ${ampm}`;
+}
+
 export function cutWarnaLenganGroups(mrpId: string, vendorProduksi: string, batches: ProductionBatch[]): { warna: string; lengan: Lengan }[] {
   const seen = new Map<string, { warna: string; lengan: Lengan }>();
   for (const b of batches) {
@@ -981,6 +1079,98 @@ export function targetSizesForGroup(mrpId: string, warna: string, lengan: Lengan
     for (const s of aduanRow.sizes) out[s.size] = (out[s.size] ?? 0) + Math.round(s.qty * ratio);
   }
   return out;
+}
+
+/** Target qty per SIZE untuk 1 roll/batch tertentu — aduanRow.sizes diprorate dengan rasio
+ *  qtyRoll batch ini terhadap total qtyRoll rencana aduan itu (sama logikanya dengan
+ *  targetSizesForGroup, tapi untuk 1 batch saja, bukan digabung se-grup). Dipakai untuk
+ *  menampilkan target di form "Timbang roll"/"Update ke Cutting" Cutting tab, dan sebagai
+ *  penyebut yield per roll (lihat productionYieldAlertsList). */
+export function targetSizesForBatch(batch: ProductionBatch, aduanRows: AduanPolaRow[]): Record<string, number> {
+  const aduanRow = aduanRows.find((a) => a.id === batch.aduanRowId);
+  if (!aduanRow || aduanRow.qtyRoll <= 0) return {};
+  const ratio = batch.qtyRoll / aduanRow.qtyRoll;
+  const out: Record<string, number> = {};
+  for (const s of aduanRow.sizes) out[s.size] = Math.round(s.qty * ratio);
+  return out;
+}
+
+/** Hasil aduan AKTUAL (bukan estimasi) per size untuk 1 grup warna/lengan — dijumlah dari
+ *  ProductionBatch.sizeQty semua roll yang sudah dicutting DAN sudah diisi hasil aduannya.
+ *  Kosong kalau belum ada batch yang diisi (batch lama sebelum fitur ini, atau migration 0006
+ *  belum jalan) — lihat cuttingSizesForGroup untuk fallback ke estimasi lama. */
+export function actualCutSizesForGroup(mrpId: string, warna: string, lengan: Lengan, batches: ProductionBatch[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const b of batches) {
+    if (b.mrpId !== mrpId || b.warna !== warna || b.lengan !== lengan || !b.cuttingAt || !b.sizeQty) continue;
+    for (const [size, qty] of Object.entries(b.sizeQty)) out[size] = (out[size] ?? 0) + qty;
+  }
+  return out;
+}
+
+/** "Total Qty" hasil cutting per grup warna/lengan — SUMBER UTAMA sekarang hasil aduan AKTUAL
+ *  yang diinput vendor per roll (actualCutSizesForGroup), fallback ke estimasi rasio lama
+ *  (targetSizesForGroup) hanya kalau belum ada satu pun batch grup ini yang diisi hasil aduannya.
+ *  Dipakai sebagai denominator progres Finish Good & basis target Reject (bukan lagi murni
+ *  estimasi dari rencana MRP, sesuai permintaan user). */
+export function cuttingSizesForGroup(mrpId: string, warna: string, lengan: Lengan, mrpDetails: MrpDetail[], batches: ProductionBatch[]): Record<string, number> {
+  const actual = actualCutSizesForGroup(mrpId, warna, lengan, batches);
+  if (Object.keys(actual).length > 0) return actual;
+  return targetSizesForGroup(mrpId, warna, lengan, mrpDetails, batches);
+}
+
+export const YIELD_ALERT_THRESHOLD_PCT = 99;
+
+export type ProductionYieldAlertRow = {
+  batchId: string;
+  mrpId: string;
+  vendorProduksi: string;
+  warna: string;
+  lengan: Lengan;
+  codeRoll?: string;
+  gramasi: number;
+  cuttingAt: string;
+  targetQty: number;
+  actualQty: number;
+  yieldPct: number;
+  resolved: boolean;
+};
+
+/** Roll yang sudah dicutting & diisi hasil aduannya tapi yield-nya (aktual/target) di bawah
+ *  YIELD_ALERT_THRESHOLD_PCT — mirip pola materialClaimsList (weight tolerance) tapi untuk yield
+ *  qty, dan dilempar ke portal internal Produksi (bukan Procurement) via
+ *  resolveProductionYieldAction/productionYieldResolutions. */
+export function productionYieldAlertsList(
+  batches: ProductionBatch[],
+  mrpDetails: MrpDetail[],
+  resolutions: Record<string, ProductionYieldResolution> = {}
+): ProductionYieldAlertRow[] {
+  const out: ProductionYieldAlertRow[] = [];
+  for (const b of batches) {
+    if (!b.cuttingAt || !b.sizeQty) continue;
+    const detail = mrpDetailFor(b.mrpId, mrpDetails);
+    const target = targetSizesForBatch(b, detail?.aduanRows ?? []);
+    const targetQty = Object.values(target).reduce((a, c) => a + c, 0);
+    if (targetQty <= 0) continue;
+    const actualQty = Object.values(b.sizeQty).reduce((a, c) => a + c, 0);
+    const yieldPct = (actualQty / targetQty) * 100;
+    if (yieldPct >= YIELD_ALERT_THRESHOLD_PCT) continue;
+    out.push({
+      batchId: b.id,
+      mrpId: b.mrpId,
+      vendorProduksi: b.vendorProduksi,
+      warna: b.warna,
+      lengan: b.lengan,
+      codeRoll: b.codeRoll,
+      gramasi: b.gramasi,
+      cuttingAt: b.cuttingAt,
+      targetQty,
+      actualQty,
+      yieldPct,
+      resolved: !!resolutions[b.id],
+    });
+  }
+  return out.sort((a, b) => (a.cuttingAt < b.cuttingAt ? 1 : -1));
 }
 
 export function cumulativeSizeQtyForGroup(groupKey: string, kind: ProductionResultKind, results: ProductionResult[]): Record<string, number> {
@@ -1517,6 +1707,15 @@ export function reworkQtyForGroup(groupKey: string, results: ProductionResult[])
     .reduce((sum, r) => sum + Object.values(r.sizeQty).reduce((a, b) => a + b, 0), 0);
 }
 
+/** Total reject yang dibuang jadi sisa/waste (majun, kain perca) — TIDAK bisa dirework jadi baju,
+ *  beda dari reworkQtyForGroup. Dijumlah langsung dari entri kind "WASTE" (positif), bukan dari
+ *  deduksi REJECT-nya (itu negatif, cuma buat ngurangi "sisa reject" — lihat wastedAwayBySize). */
+export function wasteQtyForGroup(groupKey: string, results: ProductionResult[]): number {
+  return results
+    .filter((r) => r.groupKey === groupKey && r.kind === "WASTE")
+    .reduce((sum, r) => sum + Object.values(r.sizeQty).reduce((a, b) => a + b, 0), 0);
+}
+
 export function rejectGrossForGroup(groupKey: string, results: ProductionResult[]): Record<string, number> {
   const out: Record<string, number> = {};
   for (const r of results) {
@@ -1534,7 +1733,23 @@ export function rejectGrossForGroup(groupKey: string, results: ProductionResult[
 export function reworkedAwayBySize(groupKey: string, results: ProductionResult[]): Record<string, number> {
   const out: Record<string, number> = {};
   for (const r of results) {
-    if (r.kind !== "REJECT" || r.groupKey !== groupKey || !r.note) continue;
+    // Note dicek prefix "Rework" secara eksplisit — sejak ada wasteRejectSizeAction, deduksi
+    // REJECT ber-note juga bisa berarti "dibuang ke sisa/waste" (note diawali "Waste"), bukan
+    // cuma rework, jadi tidak cukup cek `!r.note` saja lagi (lihat wastedAwayBySize).
+    if (r.kind !== "REJECT" || r.groupKey !== groupKey || !r.note?.startsWith("Rework")) continue;
+    for (const [size, qty] of Object.entries(r.sizeQty)) {
+      if (qty < 0) out[size] = (out[size] ?? 0) + -qty;
+    }
+  }
+  return out;
+}
+
+/** Per-size: berapa reject yang sudah dibuang ke sisa/waste (bukan dirework) — mirror
+ *  reworkedAwayBySize tapi untuk deduksi dari wasteRejectSizeAction (note diawali "Waste"). */
+export function wastedAwayBySize(groupKey: string, results: ProductionResult[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const r of results) {
+    if (r.kind !== "REJECT" || r.groupKey !== groupKey || !r.note?.startsWith("Waste")) continue;
     for (const [size, qty] of Object.entries(r.sizeQty)) {
       if (qty < 0) out[size] = (out[size] ?? 0) + -qty;
     }

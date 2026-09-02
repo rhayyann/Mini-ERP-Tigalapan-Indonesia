@@ -19,7 +19,7 @@ function PoProduksiContent({ vendorId }: { vendorId: string }) {
   const myPOs = maklonPOs.filter((p) => p.vendorProduksi === vendorId && p.approved);
 
   const columns: ColumnDef<MaklonPO>[] = [
-    { key: "noPo", label: "No PO", default: true, render: (p) => <span className="font-mono font-medium">{p.id}</span> },
+    { key: "noPo", label: "No PO", default: false, render: (p) => <span className="font-mono font-medium">{p.id}</span> },
     { key: "qty", label: "Qty", default: true, align: "right", render: (p) => formatPcs(p.qty) + " pcs" },
     { key: "nilai", label: "Nilai", default: true, align: "right", render: (p) => formatRupiah(p.amount) },
     // Entitas SENGAJA tidak ditampilkan — PO Maklon di sistem ini tidak menggunakan entitas.
@@ -32,9 +32,10 @@ function PoProduksiContent({ vendorId }: { vendorId: string }) {
         return <StatusPill tone={badge.tone}>{badge.label}</StatusPill>;
       },
     },
-    // default:false — Tgl PO & Target Prod dipindah ke toggle "Kolom" (dibatasi 7 kolom total);
+    // Tgl PO ditampilkan default (ganti No PO — vendor lebih butuh tanggal PO-nya daripada
+    // nomornya) sementara Target Prod dipindah ke toggle "Kolom" (dibatasi 7 kolom total);
     // Target Deadline dipertahankan karena itu tanggal paling actionable buat vendor dikejar.
-    { key: "tglPO", label: "Tgl PO", default: false, render: (p) => formatDate(mrpDetailFor(p.mrpId, mrpDetails)?.dates.poSent) },
+    { key: "tglPO", label: "Tanggal PO", default: true, render: (p) => formatDate(mrpDetailFor(p.mrpId, mrpDetails)?.dates.poSent) },
     {
       key: "targetProd",
       label: "Target Prod",
@@ -48,9 +49,10 @@ function PoProduksiContent({ vendorId }: { vendorId: string }) {
       key: "targetDeadline",
       label: "Target Deadline",
       default: true,
+      // Target deadline = 2 minggu dari tanggal PO diterbitkan (sebelumnya 3 minggu / +13+7 hari).
       render: (p) => {
         const poSent = mrpDetailFor(p.mrpId, mrpDetails)?.dates.poSent;
-        return poSent ? formatDate(addDays(addDays(poSent, 13), 7)) : "—";
+        return poSent ? formatDate(addDays(poSent, 14)) : "—";
       },
     },
     {
