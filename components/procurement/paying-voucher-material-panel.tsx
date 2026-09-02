@@ -103,6 +103,14 @@ export function PayingVoucherMaterialPanel() {
 
         {selectedPo && (
           <PayingVoucherWizard
+            // key=po.id -- WAJIB supaya React benar-benar me-remount wizard tiap kali PO yang
+            // dipilih berganti (bukan cuma re-render instance yang sama dengan prop baru).
+            // Tanpa ini, semua useState di dalam wizard (activeKey/warna terpilih, entries,
+            // dst.) yang di-inisialisasi dari `po` HANYA jalan sekali saat mount pertama --
+            // begitu user pindah dari PO A ke PO B lewat "Buat PV", activeKey nyangkut di warna
+            // PO A yang tidak ada di PO B, jadi form pilih warna/harga per roll tidak muncul
+            // sama sekali (harus mulai dari PO paling atas dulu baru "kepancing" state segar).
+            key={selectedPo.id}
             po={selectedPo}
             mrpDetails={mrpDetails}
             onCancel={() => setSelectedPoId(null)}
