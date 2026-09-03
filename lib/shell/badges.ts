@@ -7,6 +7,7 @@ import {
   materialClaimsList,
   mrpIdsWithRemainingReject,
   mrpIdsWithUnpackedFg,
+  pendingWeighRollsCount,
   productionYieldAlertsList,
   targetSizesForGroup,
 } from "@/lib/mrp/derive";
@@ -93,17 +94,28 @@ export function countMaterialClaimsUnresolved(invoices: RawMaterialInvoice[], re
 /** MRP/batch yang butuh aksi di halaman Produksi (tab Cutting & Reject — FG/Rework murni
  *  entri progres berkelanjutan, tidak dihitung supaya badge tidak nyala terus-menerus selama
  *  produksi berjalan normal):
+ *  - Roll yang sudah diterima (Good Receive) tapi belum ditimbang di Cutting (belum jadi batch
+ *    sama sekali, jadi tidak kelihatan dari productionBatches — lihat pendingWeighRollsCount).
  *  - Batch yang sudah masuk masa resting tapi belum di-"Update ke Cutting" (aksi nyata di tab Cutting).
  *  - MRP dengan sisa reject yang belum di-rework (aksi nyata di tab Reject/Rework). */
-export function countVendorProduksiActionable(vendorId: string, productionBatches: ProductionBatch[], productionResults: ProductionResult[]): number {
+export function countVendorProduksiActionable(
+  vendorId: string,
+  productionBatches: ProductionBatch[],
+  productionResults: ProductionResult[],
+  invoices: RawMaterialInvoice[]
+): number {
+  const awaitingWeigh = pendingWeighRollsCount(vendorId, invoices, productionBatches);
   const awaitingCuttingUpdate = productionBatches.filter((b) => b.vendorProduksi === vendorId && !b.cuttingAt).length;
   const mrpWithRemainingReject = mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults).length;
-  return awaitingCuttingUpdate + mrpWithRemainingReject;
+  return awaitingWeigh + awaitingCuttingUpdate + mrpWithRemainingReject;
 }
 
-/** Batch yang sudah masuk masa resting tapi belum di-"Update ke Cutting" — badge tab Cutting. */
-export function countCuttingAwaitingUpdate(vendorId: string, productionBatches: ProductionBatch[]): number {
-  return productionBatches.filter((b) => b.vendorProduksi === vendorId && !b.cuttingAt).length;
+/** Roll yang sudah diterima tapi belum ditimbang, plus batch yang sudah masuk masa resting
+ *  tapi belum di-"Update ke Cutting" — badge tab Cutting. */
+export function countCuttingAwaitingUpdate(vendorId: string, productionBatches: ProductionBatch[], invoices: RawMaterialInvoice[]): number {
+  const awaitingWeigh = pendingWeighRollsCount(vendorId, invoices, productionBatches);
+  const awaitingCuttingUpdate = productionBatches.filter((b) => b.vendorProduksi === vendorId && !b.cuttingAt).length;
+  return awaitingWeigh + awaitingCuttingUpdate;
 }
 
 /** Warna/lengan yang sudah tercutting tapi belum ditandai "Done Produksi" — masih terbuka untuk

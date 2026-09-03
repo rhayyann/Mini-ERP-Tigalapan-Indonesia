@@ -167,7 +167,7 @@ export function AppShell({
       // satu pun tombol aksi di halaman itu (semua trigger sudah pindah ke Good Receive,
       // Produksi, dan Invoice & Payment).
       "/vendor-maklon/receiving": countVendorGoodReceiveEligible(vendorId, invoices),
-      "/vendor-maklon/production": countVendorProduksiActionable(vendorId, productionBatches, productionResults),
+      "/vendor-maklon/production": countVendorProduksiActionable(vendorId, productionBatches, productionResults, invoices),
       "/vendor-maklon/pengiriman": countVendorPengirimanReady(vendorId, productionResults, deliveryKolis),
       "/vendor-maklon/invoice-payment": countVendorInvoicePaymentTotal(vendorId, mrpDetails, deliveryKolis, vendorInvoices, maklonInvoices),
     };
