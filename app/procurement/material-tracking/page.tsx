@@ -98,6 +98,13 @@ export default function MaterialTrackingPage() {
   const selectedRows = rows.filter((r) => selected.has(r.id));
   const selectedInvoiceOnly = selectedRows.filter((r) => r.kind === "invoice" && r.invoice).map((r) => r.invoice!);
   const selectedPaidList = selectedInvoiceOnly.filter((i) => i.status === "PAID");
+  // Pindah ke vendor lain cuma masuk akal SELAMA materialnya masih benar-benar roll utuh --
+  // begitu status sudah PRODUCTION ke atas (vendor sudah mulai potong/proses, lihat
+  // materialPoFullStatus), material itu sudah bukan roll lagi jadi tidak bisa dipindahkan lagi.
+  const TRANSFER_BLOCKED_STATUSES = new Set<MaterialPoFullStatus>(["PRODUCTION", "FINISH_GOOD", "DELIVERED_FROM_VENDOR", "SELESAI"]);
+  const transferEligibleRows = selectedRows.filter((r) => r.kind === "invoice" && r.invoice && !TRANSFER_BLOCKED_STATUSES.has(r.status));
+  const transferEligibleInvoices = transferEligibleRows.map((r) => r.invoice!);
+  const transferBlockedCount = selectedInvoiceOnly.length - transferEligibleInvoices.length;
 
   // Dibatasi ke 6 kolom default (+ No. MRP di firstColumn = 7 total) — sebelumnya 10 kolom
   // sekaligus nyala bikin tabel penuh & baris jadi bertumpuk-tumpuk (3 kolom tanggal terpisah,
@@ -152,12 +159,17 @@ export default function MaterialTrackingPage() {
                 Set Delivery ({selectedPaidList.length})
               </button>
             )}
-            {selectedInvoiceOnly.length > 0 && (
+            {transferEligibleInvoices.length > 0 && (
               <button onClick={() => setTransferOpen(true)} className="rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[5px] font-sans text-[11.5px] font-semibold text-action-primary">
-                Pindahkan {selectedInvoiceOnly.length} ke vendor lain
+                Pindahkan {transferEligibleInvoices.length} ke vendor lain
               </button>
             )}
           </div>
+          {transferBlockedCount > 0 && (
+            <span className="font-sans text-[11px] text-danger-fg">
+              {transferBlockedCount} baris tidak bisa dipindahkan — sudah masuk tahap produksi (bukan roll utuh lagi).
+            </span>
+          )}
         </div>
       )}
 
@@ -200,7 +212,7 @@ export default function MaterialTrackingPage() {
 
       {transferOpen && (
         <TransferMaterialModal
-          items={selectedInvoiceOnly.map(
+          items={transferEligibleInvoices.map(
             (i): TransferCandidate => ({ id: i.id, mrpId: i.mrpId, poId: i.poId, warna: i.colorEntries.map((c) => c.warna).join(", ") || "—", qtyReady: i.qtyReady })
           )}
           vendors={Object.keys(VENDOR_PRODUKSI).map((v) => ({ id: v, name: VENDOR_PRODUKSI[v].name }))}

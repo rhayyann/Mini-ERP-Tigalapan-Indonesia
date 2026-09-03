@@ -26,6 +26,7 @@ import {
   maklonAmountForVendor,
   materialAmountForPo,
   materialClaimsList,
+  materialPoFullStatus,
   splitMaterialPoByEntitas,
   advanceMaklonToDeliveryIfFullyDone,
   reassignAduanRowsVendor,
@@ -443,6 +444,15 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
     if (!inv) continue;
     const fromVendor = inv.destinationVendor;
     if (fromVendor === toVendor) continue;
+    // Begitu PO material ini sudah masuk tahap produksi (cutting) ke atas, materialnya sudah
+    // bukan roll utuh lagi -- tidak masuk akal dipindahkan ke vendor lain. UI (Material
+    // Tracking) sudah menyaring ini dari daftar yang bisa dipilih, dicek lagi di sini sebagai
+    // jaring pengaman kalau ada yang lolos.
+    const po = snapshot.materialPOs.find((p) => p.id === inv.poId);
+    if (po) {
+      const status = materialPoFullStatus(po, snapshot.invoices, snapshot.productionBatches, snapshot.productionResults, snapshot.mrpDetails, snapshot.deliveryKolis, snapshot.vendorInvoices, snapshot.maklonPOs);
+      if (["PRODUCTION", "FINISH_GOOD", "DELIVERED_FROM_VENDOR", "SELESAI"].includes(status)) continue;
+    }
     const moveQty = Math.max(0, Math.min(qty, inv.qtyReady));
     if (moveQty <= 0) continue;
 

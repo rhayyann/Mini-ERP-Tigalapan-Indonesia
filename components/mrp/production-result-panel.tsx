@@ -138,6 +138,14 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
         {mrpIds.length === 0 && <div className="mt-2 font-sans text-xs text-text-muted">Belum ada MRP yang sudah dicutting.</div>}
       </div>
 
+      {kind === "FG" && (
+        <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
+          Halaman ini murni untuk INPUT progres Finish Good. Begitu 1 warna/lengan benar-benar tidak akan ada penambahan lagi (termasuk kalau ada sisa yang
+          jadi reject), tandai <b>Selesai Produksi</b> di tab <b>Final Produksi</b> — reject baru dihitung otomatis di titik itu (hasil cutting dikurangi
+          Finish Good yang sudah diinput), dan hasil produksinya baru bisa dikirim di Pengiriman.
+        </div>
+      )}
+
       {selectedMrpId && (
         <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
           <div className="border-b border-border-subtle px-4 py-3 font-sans text-[13px] font-semibold text-text-primary">
