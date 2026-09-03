@@ -121,7 +121,7 @@ export function countCuttingAwaitingUpdate(vendorId: string, productionBatches: 
 /** Warna/lengan yang sudah tercutting tapi belum ditandai "Done Produksi" — masih terbuka untuk
  *  input Finish Good/Reject. Dipakai badge tab Finish Good & Reject (sinyal sama: kedua tab itu
  *  aksinya sama-sama "input data produksi" selama grup belum ditutup). */
-type GroupGap = { groupKey: string; totalTarget: number; totalFg: number; done: boolean };
+type GroupGap = { groupKey: string; totalTarget: number; totalFg: number; sisaReject: number; fgConfirmed: boolean; done: boolean };
 
 function productionGroupGaps(
   vendorId: string,
@@ -136,21 +136,24 @@ function productionGroupGaps(
     for (const g of cutWarnaLenganGroups(mrpId, vendorId, productionBatches)) {
       const groupKey = mrpId + "|" + g.warna + "|" + g.lengan;
       // Target dari hasil CUTTING AKTUAL (bukan rencana MRP) -- konsisten dengan
-      // production-result-panel.tsx & markProductionGroupDoneAction, supaya badge ini tidak
-      // ikut menghitung selisih rencana-vs-cutting sebagai "kekurangan Finish Good" yang
-      // sebetulnya bukan (lihat catatan di cuttingSizesForGroup, lib/mrp/derive.ts).
+      // production-result-panel.tsx & confirmFgDoneAction, supaya badge ini tidak ikut
+      // menghitung selisih rencana-vs-cutting sebagai "kekurangan Finish Good" yang sebetulnya
+      // bukan (lihat catatan di cuttingSizesForGroup, lib/mrp/derive.ts).
       const target = cuttingSizesForGroup(mrpId, g.warna, g.lengan, mrpDetails, productionBatches);
       const totalTarget = Object.values(target).reduce((a, b) => a + b, 0);
       const totalFg = Object.values(cumulativeSizeQtyForGroup(groupKey, "FG", productionResults)).reduce((a, b) => a + b, 0);
-      const done = !!productionGroupMeta.find((m) => m.groupKey === groupKey)?.doneAt;
-      out.push({ groupKey, totalTarget, totalFg, done });
+      const sisaReject = Object.values(cumulativeSizeQtyForGroup(groupKey, "REJECT", productionResults)).reduce((a, b) => a + b, 0);
+      const meta = productionGroupMeta.find((m) => m.groupKey === groupKey);
+      out.push({ groupKey, totalTarget, totalFg, sisaReject, fgConfirmed: !!meta?.fgConfirmedAt, done: !!meta?.doneAt });
     }
   }
   return out;
 }
 
-/** Warna/lengan yang Finish Good-nya belum menutup seluruh target cutting — badge tab Finish
- *  Good. Beda dari Reject: FG relevan begitu ada yang dicutting, jadi tidak butuh prasyarat lain. */
+/** Warna/lengan yang Finish Good-nya belum menutup seluruh target cutting DAN belum "Selesai
+ *  Produksi" (tahap 1, tab Finish Good) — badge tab Finish Good. Begitu fg-confirmed, tidak ada
+ *  lagi yang bisa diinput di tab ini, jadi badge berhenti nyala meski masih ada selisih (itu
+ *  sudah jadi tanggung jawab reject/rework). */
 export function countFgShortfallGroups(
   vendorId: string,
   productionBatches: ProductionBatch[],
@@ -158,14 +161,13 @@ export function countFgShortfallGroups(
   productionGroupMeta: ProductionGroupMeta[],
   mrpDetails: MrpDetail[]
 ): number {
-  return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails).filter((g) => !g.done && g.totalFg < g.totalTarget).length;
+  return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails).filter((g) => !g.fgConfirmed && g.totalFg < g.totalTarget).length;
 }
 
-/** Badge tab Reject — SENGAJA baru nyala begitu Finish Good sudah mulai dilaporkan (totalFg > 0)
- *  untuk grup itu, bukan langsung sejak cutting selesai. Sebelum ada input Finish Good sama
- *  sekali, belum ada dasar untuk bilang ada "reject" yang perlu ditindak (dulu badge ini salah
- *  ikut nyala dari sinyal yang sama dengan Finish Good, jadi tampil padahal belum ada input apa
- *  pun — lihat catatan di app/vendor-maklon/production/page.tsx). */
+/** Badge tab Reject — nyala begitu grup sudah "Selesai Produksi" di tab Finish Good (fg-confirmed,
+ *  reject-nya baru benar-benar dihitung & tersimpan di titik itu -- lihat confirmFgDoneAction)
+ *  DAN masih ada sisa reject yang belum dirework/dibuang ke sisa. Sebelum fg-confirmed, belum ada
+ *  dasar bilang "reject perlu ditindak" -- angkanya belum tersimpan sama sekali. */
 export function countRejectActionableGroups(
   vendorId: string,
   productionBatches: ProductionBatch[],
@@ -173,7 +175,7 @@ export function countRejectActionableGroups(
   productionGroupMeta: ProductionGroupMeta[],
   mrpDetails: MrpDetail[]
 ): number {
-  return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails).filter((g) => !g.done && g.totalFg > 0 && g.totalFg < g.totalTarget).length;
+  return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails).filter((g) => g.fgConfirmed && g.sisaReject > 0).length;
 }
 
 /** Roll dengan alert yield <99% yang belum ditindaklanjuti — badge menu Yield Alert (portal
@@ -191,9 +193,10 @@ export function countRemainingRework(vendorId: string, productionBatches: Produc
   return mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults).length;
 }
 
-/** Warna/lengan yang Finish Good-nya SUDAH menutup (atau lewat) target hasil cutting tapi belum
- *  ditandai "Selesai Produksi" — badge tab Final Produksi, sinyal "siap ditutup, tinggal Anda
- *  konfirmasi", beda dari badge tab Finish Good (yang justru nyala selagi MASIH kurang). */
+/** Warna/lengan yang sudah "Selesai Produksi" di tab Finish Good (tahap 1, fg-confirmed) tapi
+ *  belum ditandai "Selesai Produksi" di tab Final Produksi (tahap 2, final lock) — badge tab
+ *  Final Produksi, sinyal "siap direview & ditutup final, tinggal Anda konfirmasi (rework dulu
+ *  kalau masih perlu)". */
 export function countProductionFinalReady(
   vendorId: string,
   productionBatches: ProductionBatch[],
@@ -201,9 +204,7 @@ export function countProductionFinalReady(
   productionGroupMeta: ProductionGroupMeta[],
   mrpDetails: MrpDetail[]
 ): number {
-  return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails).filter(
-    (g) => !g.done && g.totalTarget > 0 && g.totalFg >= g.totalTarget
-  ).length;
+  return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails).filter((g) => g.fgConfirmed && !g.done).length;
 }
 
 /** Invoice raw material yang masih ada roll/add-buy belum ditandai diterima di halaman Good

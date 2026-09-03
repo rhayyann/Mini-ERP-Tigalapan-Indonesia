@@ -7,10 +7,12 @@ import { useMrpStore } from "@/lib/mrp/store";
 import {
   cumulativeSizeQtyForGroup,
   cutWarnaLenganGroups,
+  fgMurniAndReworkForGroup,
   formatDate,
   formatDateTimeShort,
   productionGroupMetaFor,
   rejectGrossForGroup,
+  reworkBySizeForGroup,
   reworkedAwayBySize,
   reworkQtyForGroup,
   targetDoneProduksiForGroup,
@@ -22,10 +24,11 @@ import type { ProductionResult } from "@/lib/mrp/types";
 
 // FG: Warna/lengan | Progres (target+terinput+bar digabung jadi satu kolom, bukan 3 kolom
 // sempit terpisah — jauh lebih mudah dipindai sekilas) | Target done produksi | Aksi.
-// Tombol "Selesai Produksi" TIDAK lagi di sini — sudah pindah ke tab Final Produksi (satu
-// tempat, digabung dengan rekap Reject & Rework — lihat production-final-tab.tsx) supaya tidak
-// ambigu dengan tombol "Simpan hasil produksi" di panel ini.
-const FG_COLUMNS = "minmax(170px,1.3fr) minmax(190px,1.5fr) minmax(150px,1fr) minmax(150px,1fr)";
+// Tombol "Selesai Produksi" DI SINI (tab Finish Good) = TAHAP 1 dari 2 -- hitung reject &
+// kunci input FG, tapi BELUM mengunci Rework/Waste (itu tahap 2, tab Final Produksi, lihat
+// production-final-tab.tsx). Dua tahap terpisah supaya reject yang baru dihitung masih sempat
+// dirework sebelum benar-benar final.
+const FG_COLUMNS = "minmax(170px,1.3fr) minmax(190px,1.5fr) minmax(150px,1fr) minmax(160px,1fr)";
 // REJECT: tiap angka (target/awal/sisa/waste) tetap bermakna terpisah, jadi tetap kolom angka
 // masing-masing — Sisa/Waste ditambah supaya reject yang dibuang (bukan dirework) kelihatan
 // terpisah dari yang masih jadi rework.
@@ -82,6 +85,8 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
   const rejectRemarks = useMrpStore((s) => s.rejectRemarks);
   const submitProductionResult = useMrpStore((s) => s.submitProductionResult);
   const setRejectRemark = useMrpStore((s) => s.setRejectRemark);
+  const confirmFgDone = useMrpStore((s) => s.confirmFgDone);
+  const undoFgConfirm = useMrpStore((s) => s.undoFgConfirm);
 
   const [selectedMrpId, setSelectedMrpId] = useState("");
   const [expandedGroupKey, setExpandedGroupKey] = useState("");
@@ -140,9 +145,9 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
 
       {kind === "FG" && (
         <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-          Halaman ini murni untuk INPUT progres Finish Good. Begitu 1 warna/lengan benar-benar tidak akan ada penambahan lagi (termasuk kalau ada sisa yang
-          jadi reject), tandai <b>Selesai Produksi</b> di tab <b>Final Produksi</b> — reject baru dihitung otomatis di titik itu (hasil cutting dikurangi
-          Finish Good yang sudah diinput), dan hasil produksinya baru bisa dikirim di Pengiriman.
+          Ada 2 tahap &quot;Selesai Produksi&quot;: <b>(1) di sini</b> — begitu input Finish Good untuk 1 warna/lengan sudah final, reject langsung dihitung otomatis
+          (hasil cutting dikurangi Finish Good), tapi Rework/Buang ke Sisa TETAP bisa jalan pakai reject itu. <b>(2) di tab Final Produksi</b> — dilakukan
+          SETELAH rework (kalau ada) juga selesai, benar-benar mengunci semuanya & baru di titik itu hasilnya boleh masuk Pengiriman.
         </div>
       )}
 
@@ -190,9 +195,17 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                 const sizes = Array.from(new Set([...Object.keys(target), ...Object.keys(recorded)]));
                 const expanded = expandedGroupKey === groupKey;
                 const meta = productionGroupMetaFor(groupKey, productionGroupMeta);
-                const isDone = !!meta?.doneAt;
+                // isFgConfirmed = TAHAP 1 (tab ini) sudah diklik -- reject sudah dihitung, input FG
+                // dikunci, tapi Rework/Waste TETAP bisa jalan. isFinalDone = TAHAP 2 (Final Produksi)
+                // sudah diklik -- semuanya benar-benar dikunci.
+                const isFgConfirmed = !!meta?.fgConfirmedAt;
+                const isFinalDone = !!meta?.doneAt;
                 const targetDoneAt = kind === "FG" ? targetDoneProduksiForGroup(selectedMrpId, vendorId, g.warna, rawInvoices) : undefined;
                 const progressPct = totalTarget > 0 ? Math.min(100, Math.round((totalRecorded / totalTarget) * 100)) : 0;
+                // Finish Good murni (hasil cutting langsung) vs dari rework (reject dipotong ulang
+                // jadi baju) -- contoh: murni 100, dirework 3, totalnya tampil 103 (100 murni + 3
+                // rework), diminta supaya kelihatan jelas asalnya masing-masing.
+                const fgSplit = kind === "FG" ? fgMurniAndReworkForGroup(groupKey, productionResults) : null;
                 return (
                   <div key={groupKey}>
                     <div
@@ -203,10 +216,8 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                         <span className="font-medium">
                           {g.warna} · {g.lengan}
                         </span>
-                        {/* Status "Selesai" murni info di sini -- aksi tandai/buka kunci sekarang
-                            HANYA di tab Final Produksi (satu tempat, tidak lagi tersebar/ambigu
-                            dengan tombol "Simpan hasil produksi" di panel ini). */}
-                        {isDone && <StatusPill tone="success">Selesai</StatusPill>}
+                        {isFgConfirmed && <StatusPill tone="success">FG Selesai</StatusPill>}
+                        {isFinalDone && <StatusPill tone="success">Final</StatusPill>}
                       </span>
                       {kind === "REJECT" ? (
                         <>
@@ -224,6 +235,11 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                               <span className="font-semibold text-[#31414F]">{totalRecorded}</span>
                               <span className="text-text-muted">/ {totalTarget} pcs</span>
                             </div>
+                            {!!fgSplit?.rework && (
+                              <span className="font-mono text-[10px] text-text-muted">
+                                ({fgSplit.murni} murni + {fgSplit.rework} dari rework)
+                              </span>
+                            )}
                             <div className="flex items-center gap-1.5">
                               <span className="h-1.5 w-full max-w-[130px] flex-1 overflow-hidden rounded-full bg-[#EEF0F3]">
                                 <span className="block h-full rounded-full bg-success" style={{ width: `${progressPct}%` }} />
@@ -234,25 +250,34 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                           <span className="font-mono text-[11px] text-text-muted">{targetDoneAt ? formatDate(targetDoneAt) : "— (belum ada material diterima)"}</span>
                         </>
                       )}
-                      <span className="text-right">
-                        {/* REJECT tetap bisa dibuka walau grup sudah Done (isinya jadi tampilan
-                            hasil hitung otomatis, read-only). FG begitu Done tidak ada apa-apa lagi
-                            untuk dilihat di sini — riwayat inputnya sekarang ada di tabel "Riwayat
-                            & Hasil Finish Good — by PO" di bawah, bukan di sini lagi. */}
-                        {(!isDone || kind === "REJECT") && (
-                          <button onClick={() => toggleGroup(g.warna, g.lengan)} className="font-sans text-[11px] font-semibold text-action-primary">
-                            {expanded ? "Sembunyikan" : "Lihat by size →"}
-                          </button>
-                        )}
+                      <span className="flex flex-col items-end gap-1 text-right">
+                        <button onClick={() => toggleGroup(g.warna, g.lengan)} className="font-sans text-[11px] font-semibold text-action-primary">
+                          {expanded ? "Sembunyikan" : "Lihat by size →"}
+                        </button>
+                        {kind === "FG" &&
+                          (isFgConfirmed ? (
+                            !isFinalDone && (
+                              <button onClick={() => undoFgConfirm(groupKey)} className="font-sans text-[10.5px] font-semibold text-action-primary underline">
+                                Buka kunci ↺
+                              </button>
+                            )
+                          ) : (
+                            <button
+                              onClick={() => confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan)}
+                              className="flex-none rounded-md bg-action-primary px-2.5 py-[5px] font-sans text-[11px] font-semibold text-white"
+                            >
+                              Selesai Produksi
+                            </button>
+                          ))}
                       </span>
                     </div>
-                    {expanded && !isDone && kind === "REJECT" && (
+                    {expanded && !isFgConfirmed && kind === "REJECT" && (
                       <div className="border-b border-[#F0DFC2] bg-warning-bg px-4 py-3 font-sans text-[11.5px] leading-[1.5] text-warning-fg">
-                        Reject grup ini belum dihitung — tidak ada input manual lagi. Tandai {g.warna} · {g.lengan} &quot;Selesai Produksi&quot; di tab Final
-                        Produksi supaya reject dihitung otomatis dari hasil cutting dikurangi finish good.
+                        Reject grup ini belum dihitung — tidak ada input manual lagi. Tandai {g.warna} · {g.lengan} &quot;Selesai Produksi&quot; di tab Finish
+                        Good supaya reject dihitung otomatis dari hasil cutting dikurangi finish good.
                       </div>
                     )}
-                    {expanded && isDone && kind === "REJECT" && (
+                    {expanded && isFgConfirmed && kind === "REJECT" && (
                       <div className="border-b border-[#CFE0EF] bg-info-bg p-4">
                         <div className="overflow-hidden rounded-md border border-[#CFE0EF] bg-white">
                           <div className="grid grid-cols-5 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
@@ -283,7 +308,7 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                         </div>
                       </div>
                     )}
-                    {expanded && !isDone && kind === "FG" && (
+                    {expanded && !isFgConfirmed && kind === "FG" && (
                       <div className="border-b border-[#CFE0EF] bg-info-bg p-4">
                         <div className="overflow-hidden rounded-md border border-[#CFE0EF] bg-white">
                           <div className="grid grid-cols-5 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
@@ -322,6 +347,39 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                           <button onClick={() => submitGroup(g.warna, g.lengan)} className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white">
                             Simpan hasil produksi
                           </button>
+                        </div>
+                      </div>
+                    )}
+                    {expanded && isFgConfirmed && kind === "FG" && (
+                      <div className="border-b border-[#CFE0EF] bg-info-bg p-4">
+                        <div className="mb-2 font-sans text-[11px] text-info-fg">
+                          FG sudah dikunci (tahap 1) — read-only. Baris &quot;Dari rework&quot; bisa terus bertambah kalau ada reject dari grup lain yang
+                          dirework ke sini.
+                        </div>
+                        <div className="overflow-hidden rounded-md border border-[#CFE0EF] bg-white">
+                          <div className="grid grid-cols-4 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                            <span>Size</span>
+                            <span className="text-right">Target</span>
+                            <span className="text-right">Total</span>
+                            <span className="text-right">Murni / Dari rework</span>
+                          </div>
+                          {(() => {
+                            const reworkPerSize = reworkBySizeForGroup(groupKey, productionResults);
+                            return sizes.map((size) => {
+                              const total = recorded[size] ?? 0;
+                              const rw = reworkPerSize[size] ?? 0;
+                              return (
+                                <div key={size} className="grid grid-cols-4 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
+                                  <span className="font-mono font-medium">{size}</span>
+                                  <span className="text-right font-mono">{target[size] ?? 0}</span>
+                                  <span className="text-right font-mono font-semibold">{total}</span>
+                                  <span className="text-right font-mono text-[11px] text-text-muted">
+                                    {total - rw} murni{rw > 0 ? ` + ${rw} rework` : ""}
+                                  </span>
+                                </div>
+                              );
+                            });
+                          })()}
                         </div>
                       </div>
                     )}

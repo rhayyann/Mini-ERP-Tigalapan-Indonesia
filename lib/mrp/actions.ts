@@ -31,6 +31,8 @@ import {
   advanceMaklonToDeliveryIfFullyDone,
   reassignAduanRowsVendor,
   cuttingSizesForGroup,
+  reworkQtyForGroup,
+  wasteQtyForGroup,
   cumulativeSizeQtyForGroup,
   weightVariance,
 } from "./derive";
@@ -1392,7 +1394,14 @@ export async function wasteRejectSizeAction(input: { mrpId: string; vendorProduk
   ]);
 }
 
-export async function markProductionGroupDoneAction(groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan): Promise<void> {
+/** TAHAP 1 dari 2 -- diklik dari tab FINISH GOOD begitu input Finish Good untuk 1 warna/lengan
+ *  memang sudah final (tidak akan nambah lagi). Menghitung reject otomatis (cutting AKTUAL
+ *  dikurangi Finish Good yang sudah diinput) dan menyimpannya ke production_results, TAPI
+ *  SENGAJA belum mengunci Rework/Buang ke Sisa -- itu baru dikunci di TAHAP 2
+ *  (markProductionGroupDoneAction, tab Final Produksi), supaya reject yang baru dihitung di sini
+ *  masih sempat dirework jadi baju (ukuran/lengan lain) sebelum benar-benar final. Lihat
+ *  migration 0013_production_group_fg_confirmed.sql untuk kolom fg_confirmed_at. */
+export async function confirmFgDoneAction(groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan): Promise<void> {
   await requireVendorSession();
   const db = supabaseServer();
   const snapshot = await getFlowSnapshot();
@@ -1413,8 +1422,8 @@ export async function markProductionGroupDoneAction(groupKey: string, mrpId: str
   }
 
   // Buang entri auto-reject LAMA punya grup ini (note null = auto-generated, bukan hasil rework
-  // manual) sebelum nambah yang baru -- lihat catatan asli di lib/mrp/store.ts soal kenapa ini
-  // wajib supaya reject tidak menumpuk saat Done -> Undo -> Done lagi.
+  // manual) sebelum nambah yang baru -- wajib supaya reject tidak menumpuk saat
+  // Selesai -> Buka kunci -> Selesai lagi.
   const { data: oldAutoRejects } = await db.from("production_results").select("id").eq("group_key", groupKey).eq("kind", "REJECT").is("note", null);
   if (oldAutoRejects && oldAutoRejects.length > 0) {
     await db.from("production_results").delete().in("id", oldAutoRejects.map((r) => r.id));
@@ -1428,9 +1437,54 @@ export async function markProductionGroupDoneAction(groupKey: string, mrpId: str
   }
 
   const { data: existing } = await db.from("production_group_meta").select("group_key").eq("group_key", groupKey).maybeSingle();
-  if (existing) await db.from("production_group_meta").update({ done_at: today() }).eq("group_key", groupKey);
-  else await db.from("production_group_meta").insert({ group_key: groupKey, mrp_id: mrpId, vendor_produksi: vendorProduksi, warna, lengan, done_at: today() });
+  if (existing) await db.from("production_group_meta").update({ fg_confirmed_at: today() }).eq("group_key", groupKey);
+  else await db.from("production_group_meta").insert({ group_key: groupKey, mrp_id: mrpId, vendor_produksi: vendorProduksi, warna, lengan, fg_confirmed_at: today() });
 
+  await maybeAdvanceMaklonToDelivery(mrpId, vendorProduksi);
+}
+
+/** Kebalikan confirmFgDoneAction -- buka kunci Finish Good grup ini supaya bisa input lagi.
+ *  Ditolak kalau: (a) TAHAP 2 (Final Produksi) sudah dikunci duluan -- harus dibuka dulu di sana
+ *  (undoProductionGroupDoneAction) sebelum bisa buka tahap 1; atau (b) reject hasil hitungan di
+ *  sini SUDAH SEMPAT dirework/dibuang -- membuka lagi bisa bikin data reject/rework tidak
+ *  konsisten (deduksi rework tanpa reject dasar yang jelas), jadi diblokir sebagai pengaman. */
+export async function undoFgConfirmAction(groupKey: string): Promise<void> {
+  await requireVendorSession();
+  const db = supabaseServer();
+  const { data: meta } = await db.from("production_group_meta").select("done_at").eq("group_key", groupKey).maybeSingle();
+  if (meta?.done_at) {
+    throw new Error('Grup ini sudah "Selesai Produksi" di tab Final Produksi -- buka kunci itu dulu sebelum bisa buka kunci Finish Good.');
+  }
+  const snapshot = await getFlowSnapshot();
+  if (reworkQtyForGroup(groupKey, snapshot.productionResults) > 0 || wasteQtyForGroup(groupKey, snapshot.productionResults) > 0) {
+    throw new Error("Sebagian reject grup ini sudah dirework/dibuang ke sisa -- tidak bisa dibuka lagi supaya data reject tidak jadi tidak konsisten.");
+  }
+  const { data: oldAutoRejects } = await db.from("production_results").select("id").eq("group_key", groupKey).eq("kind", "REJECT").is("note", null);
+  if (oldAutoRejects && oldAutoRejects.length > 0) {
+    await db.from("production_results").delete().in("id", oldAutoRejects.map((r) => r.id));
+  }
+  await db.from("production_group_meta").update({ fg_confirmed_at: null }).eq("group_key", groupKey);
+}
+
+/** TAHAP 2 dari 2 -- diklik dari tab FINAL PRODUKSI, SETELAH rework/buang ke sisa (kalau ada)
+ *  juga sudah selesai. Ini yang benar-benar mengunci grup (Finish Good/Reject/Rework/Waste tidak
+ *  bisa berubah lagi -- lihat guard di reworkRejectSizeAction/wasteRejectSizeAction) dan baru di
+ *  titik ini hasilnya boleh masuk Pengiriman (lihat gate di availableFgToShip). Butuh
+ *  fg_confirmed_at (TAHAP 1) sudah terisi duluan -- reject tidak dihitung ulang di sini lagi,
+ *  itu sudah tugas confirmFgDoneAction. */
+export async function markProductionGroupDoneAction(groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan): Promise<void> {
+  // warna/lengan dipertahankan di signature (dipanggil dgn argumen yang sama seperti
+  // confirmFgDoneAction dari UI) walau tidak dipakai lagi di sini -- reject sudah dihitung di
+  // TAHAP 1 (confirmFgDoneAction), bukan tugas action ini lagi.
+  void warna;
+  void lengan;
+  await requireVendorSession();
+  const db = supabaseServer();
+  const { data: existing } = await db.from("production_group_meta").select("group_key,fg_confirmed_at").eq("group_key", groupKey).maybeSingle();
+  if (!existing?.fg_confirmed_at) {
+    throw new Error('Selesaikan dulu Finish Good ("Selesai Produksi" di tab Finish Good) sebelum bisa Selesai Produksi di sini -- supaya reject sempat dihitung & dirework dulu kalau perlu.');
+  }
+  await db.from("production_group_meta").update({ done_at: today() }).eq("group_key", groupKey);
   await maybeAdvanceMaklonToDelivery(mrpId, vendorProduksi);
 }
 

@@ -244,6 +244,10 @@ type FlowActions = {
   updateDeliveryKoli: (koliId: string, patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }) => Promise<void>;
   setVendorInvoiceDueDate: (invoiceId: string, dueDate: string) => Promise<void>;
   setVendorInvoiceOngkir: (invoiceId: string, ongkirTotal: number) => Promise<void>;
+  /** TAHAP 1 -- "Selesai Produksi" di tab Finish Good (hitung reject, tidak mengunci rework). */
+  confirmFgDone: (groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan) => Promise<void>;
+  undoFgConfirm: (groupKey: string) => Promise<void>;
+  /** TAHAP 2 -- "Selesai Produksi" di tab Final Produksi (kunci final, gate Pengiriman). */
   markProductionGroupDone: (groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan) => Promise<void>;
   undoProductionGroupDone: (groupKey: string) => Promise<void>;
   setRejectRemark: (poId: string, remark: string) => Promise<void>;
@@ -632,6 +636,14 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) =>
   },
   setVendorInvoiceOngkir: async (invoiceId, ongkirTotal) => {
     await actions.setVendorInvoiceOngkirAction(invoiceId, ongkirTotal);
+    await get().refresh();
+  },
+  confirmFgDone: async (groupKey, mrpId, vendorProduksi, warna, lengan) => {
+    await actions.confirmFgDoneAction(groupKey, mrpId, vendorProduksi, warna, lengan);
+    await get().refresh();
+  },
+  undoFgConfirm: async (groupKey) => {
+    await actions.undoFgConfirmAction(groupKey);
     await get().refresh();
   },
   markProductionGroupDone: async (groupKey, mrpId, vendorProduksi, warna, lengan) => {

@@ -1912,13 +1912,34 @@ export function productionYieldByWarna(mrpId: string, vendorProduksi: string, mr
   });
 }
 
-function reworkBySizeForGroup(groupKey: string, results: ProductionResult[]): Record<string, number> {
+/** Per size: Finish Good yang berasal dari REWORK (reject dipotong ulang jadi baju size/lengan
+ *  lain) untuk 1 grup -- subset dari cumulativeSizeQtyForGroup(groupKey,"FG",...), dibedakan dari
+ *  Finish Good "murni" (hasil cutting langsung) lewat isReworkResult (note diawali "Rework
+ *  dari..."). Dipakai buat kasih label mana Finish Good asli, mana hasil rework -- lihat juga
+ *  fgMurniAndReworkForGroup untuk versi totalnya. */
+export function reworkBySizeForGroup(groupKey: string, results: ProductionResult[]): Record<string, number> {
   const out: Record<string, number> = {};
   for (const r of results) {
     if (r.groupKey !== groupKey || r.kind !== "FG" || !isReworkResult(r)) continue;
     for (const [size, qty] of Object.entries(r.sizeQty)) out[size] = (out[size] ?? 0) + qty;
   }
   return out;
+}
+
+/** Total Finish Good 1 grup, dipecah "murni" (hasil cutting langsung) vs "dari rework" (reject
+ *  yang dipotong ulang jadi baju) -- murni + rework = totalFg dari cumulativeSizeQtyForGroup.
+ *  Contoh kasus yang diminta: Finish Good murni 100, lalu 3 reject di-rework jadi baju -> total
+ *  Finish Good tampil 103, dengan rincian "100 murni + 3 dari rework". */
+export function fgMurniAndReworkForGroup(groupKey: string, results: ProductionResult[]): { murni: number; rework: number } {
+  let murni = 0;
+  let rework = 0;
+  for (const r of results) {
+    if (r.groupKey !== groupKey || r.kind !== "FG") continue;
+    const qty = Object.values(r.sizeQty).reduce((a, b) => a + b, 0);
+    if (isReworkResult(r)) rework += qty;
+    else murni += qty;
+  }
+  return { murni, rework };
 }
 
 export function productionYieldBySize(mrpId: string, warna: string, lengan: Lengan, mrpDetails: MrpDetail[], batches: ProductionBatch[], results: ProductionResult[]): ProductionYieldRow[] {
