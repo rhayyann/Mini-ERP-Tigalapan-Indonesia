@@ -31,15 +31,13 @@ export function PayingVoucherMaterialPanel() {
     { key: "noInvoice", label: "No Invoice", default: true, render: (i) => <span className="font-mono font-medium">{i.id}</span> },
     { key: "noPo", label: "No PO", default: true, render: (i) => <span className="font-mono">{i.poId}</span> },
     { key: "supplierVendor", label: "Supplier → Vendor", default: true, render: (i) => `${i.supplier} → ${VENDOR_PRODUKSI[i.destinationVendor]?.name ?? i.destinationVendor}` },
-    // default:false — dibatasi 7 kolom total (lihat konvensi "kolom penting saja default" di
-    // halaman lain), kode transaksi masih bisa dicek lewat toggle "Kolom" kalau perlu.
-    { key: "kodeTransaksi", label: "Kode Transaksi", default: false, render: (i) => <span className="font-mono">{i.kodeTransaksi}</span> },
+    { key: "kodeTransaksi", label: "Kode Transaksi", default: true, render: (i) => <span className="font-mono">{i.kodeTransaksi}</span> },
     { key: "total", label: "Total PV", default: true, align: "right", render: (i) => formatRupiah(i.totalBiaya) },
     { key: "tglPv", label: "Tanggal PV", default: true, render: (i) => formatDate(i.bookedAt) },
     { key: "status", label: "Status", default: true, render: (i) => <StatusPill tone={invoiceBadge(i.status).tone}>{invoiceBadge(i.status).label}</StatusPill> },
     {
       key: "bukti",
-      label: "Bukti PV",
+      label: "Lampiran Invoice",
       default: true,
       render: (i) =>
         i.buktiPvDataUrl ? (

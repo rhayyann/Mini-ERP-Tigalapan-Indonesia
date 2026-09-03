@@ -82,7 +82,10 @@ export function PayingVoucherWizard({
   const [draftRolls, setDraftRolls] = useState<number[] | null>(null);
   const [addBuys, setAddBuys] = useState<AddBuyItem[]>([]);
   const [diskon, setDiskon] = useState(0);
-  const [kodeTransaksi, setKodeTransaksi] = useState("TRX-" + String(Math.floor(1000 + Math.random() * 9000)));
+  // Dulu auto-generate "TRX-xxxx" acak dan langsung dipakai sebagai isi field -- sekarang kosong,
+  // cuma format 4-digit-nya yang ditampilkan sebagai placeholder (lihat <input> di bawah), user
+  // wajib isi sendiri.
+  const [kodeTransaksi, setKodeTransaksi] = useState("");
   const [noInvoiceVendor, setNoInvoiceVendor] = useState("");
   const [buktiPvDataUrl, setBuktiPvDataUrl] = useState<string | undefined>(undefined);
   const [buktiPvFileName, setBuktiPvFileName] = useState<string | undefined>(undefined);
@@ -393,7 +396,14 @@ export function PayingVoucherWizard({
         </div>
         <div>
           <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Kode transaksi</div>
-          <input value={kodeTransaksi} onChange={(e) => setKodeTransaksi(e.target.value)} className="input mt-1" />
+          <input
+            value={kodeTransaksi}
+            onChange={(e) => setKodeTransaksi(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            placeholder="1234"
+            maxLength={4}
+            inputMode="numeric"
+            className="input mt-1"
+          />
         </div>
         <div>
           <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Total pembelian</div>

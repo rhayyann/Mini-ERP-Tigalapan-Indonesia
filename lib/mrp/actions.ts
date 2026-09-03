@@ -154,9 +154,15 @@ export async function approvePpicMrpAction(mrpId: string): Promise<void> {
   await insertNotification(notif(`MRP ${mrpId} disetujui SCM — siap diproses Procurement`, ["ppic", "procurement"]));
 }
 
-export async function assignMaterialSupplierAction(mrpId: string, materialRowId: string, supplier: string): Promise<void> {
+/** Terima array materialRowIds (bukan satu id) -- 1 warna bisa punya beberapa baris (per lengan),
+ *  dan dulu dipanggil sekali per baris lewat `.forEach()` di UI (page.tsx), masing-masing dengan
+ *  refresh() snapshot penuhnya sendiri-sendiri -- selain lambat (N round-trip buat 1 klik), juga
+ *  race condition (beberapa refresh() saling susul-menyusul, urutan selesainya tidak terjamin).
+ *  Sekarang 1 UPDATE untuk semua baris sekaligus, 1 refresh() saja. */
+export async function assignMaterialSupplierAction(mrpId: string, materialRowIds: string[], supplier: string): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
-  const { error } = await supabaseServer().from("material_rows").update({ supplier }).eq("id", materialRowId).eq("mrp_id", mrpId);
+  if (materialRowIds.length === 0) return;
+  const { error } = await supabaseServer().from("material_rows").update({ supplier }).in("id", materialRowIds).eq("mrp_id", mrpId);
   if (error) throw new Error(error.message);
 }
 

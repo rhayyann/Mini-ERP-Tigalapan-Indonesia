@@ -61,7 +61,13 @@ export function materialGroupsByWarna(materialRows: MaterialRow[]): MaterialGrou
     cur.rowIds.push(m.id);
     map.set(m.warna, cur);
   }
-  return Array.from(map.values());
+  // Sort eksplisit by warna -- Map insertion order sebelumnya dipakai apa adanya, yang berarti
+  // urutannya cuma sama dengan urutan `materialRows` datang dari Supabase. Query-nya sendiri
+  // TIDAK punya `.order()` (lihat snapshot.ts), jadi urutan fisik baris di Postgres bisa berubah
+  // stelah UPDATE (mis. assignMaterialSupplierAction) -- bikin daftar warna kelihatan "acak
+  // ulang" urutannya cuma karena user pilih vendor untuk satu warna. Sort di sini menjamin
+  // urutan selalu sama terlepas dari urutan fetch.
+  return Array.from(map.values()).sort((a, b) => a.warna.localeCompare(b.warna));
 }
 
 // ===== Fase 2: kalkulasi PO Bahan & PO Maklon dari Master Data =====
@@ -600,6 +606,7 @@ export type MaterialPoFullStatus =
   | "WAITING_INVOICE"
   | "WAITING_INVOICE_PARTIAL"
   | "INVOICE"
+  | "PAID"
   | "CANCEL"
   | "DELIVERY"
   | "RECEIVING"
@@ -639,7 +646,11 @@ export function materialPoFullStatus(
   }
   const bestStatus = bestIdx >= 0 ? rank[bestIdx] : "INVOICED";
 
-  if (bestStatus === "INVOICED" || bestStatus === "PAID") return "INVOICE";
+  // INVOICED (sudah dibuatkan Paying Voucher, belum dibayar Finance) dan PAID (sudah dibayar)
+  // dulu digabung jadi satu label "INVOICE" -- Finance klik "Bayar" tidak kelihatan bedanya sama
+  // sekali di Material Tracking. Sekarang dipisah jadi 2 status.
+  if (bestStatus === "INVOICED") return "INVOICE";
+  if (bestStatus === "PAID") return "PAID";
   if (bestStatus === "DELIVERY") return "DELIVERY";
 
   // "Sudah mulai produksi" sekarang juga dianggap benar begitu vendor klik "Mulai Produksi" di
@@ -678,6 +689,7 @@ export function materialPoFullStatusBadge(status: MaterialPoFullStatus) {
     WAITING_INVOICE: { label: "WAITING INVOICE", tone: "neutral" },
     WAITING_INVOICE_PARTIAL: { label: "WAITING INVOICE PARTIAL", tone: "rework" },
     INVOICE: { label: "INVOICE", tone: "info" },
+    PAID: { label: "PAID", tone: "success" },
     CANCEL: { label: "CANCEL", tone: "danger" },
     DELIVERY: { label: "DELIVERY", tone: "active" },
     RECEIVING: { label: "RECEIVING", tone: "rework" },
@@ -718,7 +730,12 @@ export function maklonPoBadge(po: Pick<MaklonPO, "status" | "qty">) {
   // status yang tersimpan) begitu qty sudah 0, supaya baris cancelledLines/histori tetap utuh.
   if (po.qty === 0) return { label: "DIPINDAHKAN — QTY KOSONG", tone: "neutral" as const };
   const map: Record<MaklonPO["status"], { label: string; tone: "neutral" | "info" | "warning" | "success" | "danger" }> = {
-    FULL_WAITING_MATERIAL: { label: "FULL WAITING MATERIAL", tone: "warning" },
+    // Label tampilan diganti "WAITING APPROVAL" atas permintaan user (status ASLI/value-nya tetap
+    // "FULL_WAITING_MATERIAL", cuma teks yang ditampilkan yang beda) -- CATATAN: status ini
+    // sebenarnya bukan murni "menunggu approval Finance" (field approved terpisah, lihat
+    // MaklonPO.approved), PO yang SUDAH di-approve pun bisa tetap di status ini sambil menunggu
+    // vendor mulai produksi. Dipertahankan apa adanya sesuai keputusan user, bukan logic baru.
+    FULL_WAITING_MATERIAL: { label: "WAITING APPROVAL", tone: "warning" },
     PARTIAL_WAITING_MATERIAL: { label: "PARTIAL WAITING MATERIAL", tone: "warning" },
     PRODUCTION: { label: "PRODUCTION", tone: "info" },
     PARTIAL_PRODUCTION: { label: "PARTIAL PRODUCTION", tone: "info" },

@@ -155,7 +155,7 @@ type FlowActions = {
   refresh: () => Promise<void>;
 
   importMrp: (parsed: ParsedMrpImport, customId?: string) => Promise<string>;
-  assignMaterialSupplier: (mrpId: string, materialRowId: string, supplier: string) => Promise<void>;
+  assignMaterialSupplier: (mrpId: string, materialRowIds: string[], supplier: string) => Promise<void>;
   assignMaterialEntitas: (mrpId: string, materialRowId: string, entitas: string) => Promise<void>;
   switchAduanVendor: (mrpId: string, aduanId: string, toVendor: string) => Promise<void>;
   approvePpicMrp: (mrpId: string) => Promise<void>;
@@ -353,8 +353,8 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) =>
     await get().refresh();
     return id;
   },
-  assignMaterialSupplier: async (mrpId, materialRowId, supplier) => {
-    await actions.assignMaterialSupplierAction(mrpId, materialRowId, supplier);
+  assignMaterialSupplier: async (mrpId, materialRowIds, supplier) => {
+    await actions.assignMaterialSupplierAction(mrpId, materialRowIds, supplier);
     await get().refresh();
   },
   assignMaterialEntitas: async (mrpId, materialRowId, entitas) => {
