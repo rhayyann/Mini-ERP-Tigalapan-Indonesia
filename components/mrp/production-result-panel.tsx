@@ -6,7 +6,6 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
   cumulativeSizeQtyForGroup,
-  cutWarnaLenganGroups,
   fgMurniAndReworkForGroup,
   formatDate,
   formatDateTimeShort,
@@ -17,6 +16,7 @@ import {
   reworkQtyForGroup,
   targetDoneProduksiForGroup,
   cuttingSizesForGroup,
+  warnaLenganGroupsWithFg,
   wasteQtyForGroup,
   wastedAwayBySize,
 } from "@/lib/mrp/derive";
@@ -94,7 +94,10 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
   const [expandedPoId, setExpandedPoId] = useState("");
 
   const mrpIds = Array.from(new Set(productionBatches.filter((b) => b.vendorProduksi === vendorId && b.cuttingAt).map((b) => b.mrpId)));
-  const groups = selectedMrpId ? cutWarnaLenganGroups(selectedMrpId, vendorId, productionBatches) : [];
+  // warnaLenganGroupsWithFg (bukan cutWarnaLenganGroups) -- ikutkan grup TUJUAN rework lintas
+  // lengan yang tidak pernah dicutting sendiri (lihat catatan di lib/mrp/derive.ts), supaya FG
+  // hasil rework itu punya baris sendiri yang bisa di-"Selesai Produksi"-kan juga.
+  const groups = selectedMrpId ? warnaLenganGroupsWithFg(selectedMrpId, vendorId, productionBatches, productionResults) : [];
   const gridColumns = kind === "FG" ? FG_COLUMNS : REJECT_COLUMNS;
 
   function toggleGroup(warna: string, lengan: string) {

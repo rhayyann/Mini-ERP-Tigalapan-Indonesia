@@ -1192,6 +1192,26 @@ export function cutWarnaLenganGroups(mrpId: string, vendorProduksi: string, batc
   return Array.from(seen.values());
 }
 
+/** Sama seperti cutWarnaLenganGroups, TAPI juga menyertakan grup warna/lengan yang TIDAK PERNAH
+ *  dicutting tapi punya Finish Good tercatat -- ini bisa terjadi karena rework lintas lengan
+ *  (reject PANJANG dirework jadi baju di lengan PENDEK, lihat reworkRejectSizeAction) menghasilkan
+ *  FG dengan groupKey TUJUAN yang boleh jadi belum pernah punya batch cutting sendiri. Tanpa ini,
+ *  grup tujuan itu jadi "hantu" -- tidak pernah muncul di tab Finish Good/Final Produksi, sehingga
+ *  TIDAK PERNAH bisa di-"Selesai Produksi"-kan / masuk Pengiriman selamanya (availableFgToShip
+ *  mensyaratkan productionGroupMeta.doneAt per groupKey, yang tidak akan pernah bisa diisi kalau
+ *  grupnya sendiri tidak pernah tampil di UI). Dipakai di tab Finish Good/Final Produksi & badges
+ *  supaya grup tujuan rework begini tetap kelihatan dan bisa diselesaikan seperti grup biasa. */
+export function warnaLenganGroupsWithFg(mrpId: string, vendorProduksi: string, batches: ProductionBatch[], results: ProductionResult[]): { warna: string; lengan: Lengan }[] {
+  const seen = new Map<string, { warna: string; lengan: Lengan }>();
+  for (const g of cutWarnaLenganGroups(mrpId, vendorProduksi, batches)) seen.set(g.warna + "|" + g.lengan, g);
+  for (const r of results) {
+    if (r.mrpId !== mrpId || r.vendorProduksi !== vendorProduksi || r.kind !== "FG") continue;
+    const key = r.warna + "|" + r.lengan;
+    if (!seen.has(key)) seen.set(key, { warna: r.warna, lengan: r.lengan });
+  }
+  return Array.from(seen.values());
+}
+
 export function targetSizesForGroup(mrpId: string, warna: string, lengan: Lengan, mrpDetails: MrpDetail[], batches: ProductionBatch[]): Record<string, number> {
   const detail = mrpDetailFor(mrpId, mrpDetails);
   if (!detail) return {};
@@ -1843,10 +1863,15 @@ export type ProductionYieldRow = {
   yieldPct: number;
 };
 
+/** Total reject GRUP INI yang sudah dirework jadi baju -- dihitung dari sisi ASAL (deduksi
+ *  reject-nya, lewat reworkedAwayBySize), BUKAN dari sisi hasil FG-nya. Ini penting karena rework
+ *  boleh lintas lengan (reject PANJANG -> baju PENDEK, lihat reworkRejectSizeAction) sehingga FG
+ *  hasil rework itu tercatat dengan groupKey TUJUAN yang beda dari groupKey grup ini -- kalau
+ *  dihitung dari sisi FG (groupKey tujuan) maka rework lintas-lengan salah dianggap 0 padahal
+ *  reject-nya sudah berkurang. Dipakai juga sebagai pengaman `undoFgConfirmAction` (menolak buka
+ *  kunci kalau reject grup ini sudah dirework), jadi harus benar-benar mencerminkan sisi asal. */
 export function reworkQtyForGroup(groupKey: string, results: ProductionResult[]): number {
-  return results
-    .filter((r) => r.groupKey === groupKey && r.kind === "FG" && isReworkResult(r))
-    .reduce((sum, r) => sum + Object.values(r.sizeQty).reduce((a, b) => a + b, 0), 0);
+  return Object.values(reworkedAwayBySize(groupKey, results)).reduce((a, b) => a + b, 0);
 }
 
 /** Total reject yang dibuang jadi sisa/waste (majun, kain perca) — TIDAK bisa dirework jadi baju,

@@ -16,6 +16,7 @@
 // Business logic di sini mengikuti PERSIS lib/mrp/store.ts (dibaca penuh saat migrasi) -- lihat
 // komentar di masing-masing fungsi kalau ada penyesuaian dari bentuk aslinya.
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireSession, requireInternalRole } from "../auth/session";
 import { supabaseServer } from "../supabase/server";
 import { nextReadableId } from "./repo/ids";
@@ -38,7 +39,26 @@ import {
 } from "./derive";
 import { ENTITAS_LIST } from "./seed";
 import type { ParsedMrpImport } from "./parseImport";
-import type { AddBuyItem, ColorBreakdown, ColorEntry, DeliveryKoliItem, Lengan, MaterialPO, Notification, NotificationAudience, Usia, VendorInvoiceAdjustmentKind } from "./types";
+import type { MrpDetail } from "./store";
+import type {
+  AddBuyItem,
+  AduanPolaRow,
+  ColorBreakdown,
+  ColorEntry,
+  DeliveryKoliItem,
+  Lengan,
+  MaklonPO,
+  MaterialPO,
+  MaterialRow,
+  Notification,
+  NotificationAudience,
+  ProductionBatch,
+  ProductionResult,
+  RawMaterialInvoice,
+  RollReceipt,
+  Usia,
+  VendorInvoiceAdjustmentKind,
+} from "./types";
 
 function today() {
   return localDateString(new Date());
@@ -197,12 +217,41 @@ export async function rejectPpicMrpAction(mrpId: string, reason: string): Promis
 export async function sendPoToFinanceAction(mrpId: string): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
   const db = supabaseServer();
-  const snapshot = await getFlowSnapshot();
-  const detail = snapshot.mrpDetails.find((d) => d.mrp.id === mrpId);
-  if (!detail) throw new Error("MRP tidak ditemukan.");
+  // Targeted (bukan getFlowSnapshot() penuh): aduanRows/materialRows di-scope ke mrpId ini saja;
+  // hargaMaklon/hargaKain/hargaKainPks/entitasList tabel lookup GLOBAL kecil, tetap di-fetch
+  // penuh tapi cuma tabel-tabel itu (bukan 32 tabel seluruh app).
+  const [aduanRows, materialRowsRes, hargaMaklonRes, harga, entitasRes] = await Promise.all([
+    fetchAduanRowsForMrp(db, mrpId),
+    db.from("material_rows").select("*").eq("mrp_id", mrpId),
+    db.from("harga_maklon").select("*"),
+    fetchHargaTables(db),
+    db.from("entitas").select("*"),
+  ]);
+  if (aduanRows.length === 0) throw new Error("MRP tidak ditemukan.");
+  const materialRows: MaterialRow[] = (materialRowsRes.data ?? []).map((r) => ({
+    id: r.id,
+    lenganGroupId: r.lengan_group_id,
+    warna: r.warna,
+    lengan: r.lengan,
+    qtyRoll: Number(r.qty_roll),
+    ribKg: Number(r.rib_kg),
+    supplier: r.supplier,
+    entitas: r.entitas ?? undefined,
+  }));
+  const hargaMaklon: HargaMaklonRow[] = (hargaMaklonRes.data ?? []).map((r) => ({
+    id: r.id,
+    kodeVendor: r.kode_vendor,
+    namaVendor: r.nama_vendor,
+    tipeLengan: r.tipe_lengan,
+    jenisHarga: r.jenis_harga,
+    kapasitasMin: r.kapasitas_min ?? undefined,
+    kapasitasMax: r.kapasitas_max ?? undefined,
+    harga: Number(r.harga),
+  }));
+  const entitasList: EntitasRow[] = (entitasRes.data ?? []).map((r) => ({ id: r.id, nama: r.nama }));
 
-  const vendorRows = new Map<string, typeof detail.aduanRows>();
-  for (const a of detail.aduanRows) vendorRows.set(a.vendor, [...(vendorRows.get(a.vendor) ?? []), a]);
+  const vendorRows = new Map<string, typeof aduanRows>();
+  for (const a of aduanRows) vendorRows.set(a.vendor, [...(vendorRows.get(a.vendor) ?? []), a]);
 
   const maklonPoIds = await Promise.all(Array.from(vendorRows.keys()).map(() => nextReadableId("PO-MKL")));
   const maklonPOs = Array.from(vendorRows.entries()).map(([vendor, rows], idx) => ({
@@ -210,16 +259,16 @@ export async function sendPoToFinanceAction(mrpId: string): Promise<void> {
     mrpId,
     vendorProduksi: vendor,
     qty: rows.reduce((s, r) => s + r.qty, 0),
-    amount: maklonAmountForVendor(snapshot.hargaMaklon, vendor, rows),
+    amount: maklonAmountForVendor(hargaMaklon, vendor, rows),
     entity: "Tigalapan Indonesia",
     status: "FULL_WAITING_MATERIAL" as const,
     approved: false,
   }));
 
   const pairTotals = new Map<string, { vendor: string; supplier: string; rolls: number; colorMap: Map<string, ColorBreakdown> }>();
-  const defaultEntitas = snapshot.entitasList[0]?.nama ?? ENTITAS_LIST[0];
-  for (const a of detail.aduanRows) {
-    const mr = detail.materialRows.find((m) => m.lenganGroupId === a.lenganGroupId);
+  const defaultEntitas = entitasList[0]?.nama ?? ENTITAS_LIST[0];
+  for (const a of aduanRows) {
+    const mr = materialRows.find((m) => m.lenganGroupId === a.lenganGroupId);
     const supplier = mr?.supplier;
     if (!supplier) continue;
     const key = a.vendor + "|" + supplier;
@@ -247,7 +296,7 @@ export async function sendPoToFinanceAction(mrpId: string): Promise<void> {
       lengan: colorBreakdown[0].lengan,
       colorBreakdown,
       rollCount: p.rolls,
-      amount: materialAmountForPo(snapshot.hargaKain, snapshot.hargaKainPks, p.supplier, colorBreakdown),
+      amount: materialAmountForPo(harga.hargaKain, harga.hargaKainPks, p.supplier, colorBreakdown),
       entity: majorityEntitas,
     };
   });
@@ -285,11 +334,78 @@ export async function sendPoToFinanceAction(mrpId: string): Promise<void> {
   await insertNotification(notif(`PO untuk ${mrpId} dikirim ke Finance — ${materialPOs.length} PO material, ${maklonPOs.length} PO maklon`, ["finance"]));
 }
 
+/** Fetch SATU MaterialPO by id (+colorBreakdown & invoicedByColor-nya) -- targeted 3-tabel query
+ *  paralel, bukan getFlowSnapshot() penuh (32 tabel). Pemetaan kolom persis
+ *  lib/mrp/repo/snapshot.ts (dibaca ulang saat menulis ini) supaya bentuk objeknya identik dengan
+ *  yang dulu dari snapshot -- caller-nya (splitMaterialPoByEntitas dkk, semua fungsi murni di
+ *  derive.ts) tidak berubah sama sekali. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapMaterialPoRow(p: any, colorRows: any[], invoicedRows: any[]): MaterialPO {
+  const colorBreakdown: ColorBreakdown[] = colorRows.map((c) => ({
+    warna: c.warna,
+    lengan: c.lengan,
+    rollCount: Number(c.roll_count),
+    entitas: c.entitas ?? undefined,
+  }));
+  const invoicedByColor: Record<string, number> = {};
+  for (const row of invoicedRows) invoicedByColor[row.color_key] = Number(row.invoiced_rolls);
+  return {
+    id: p.id,
+    mrpId: p.mrp_id,
+    vendorProduksi: p.vendor_produksi,
+    supplier: p.supplier,
+    warna: p.warna,
+    lengan: p.lengan,
+    colorBreakdown,
+    invoicedByColor,
+    rollCount: Number(p.roll_count),
+    availableRolls: Number(p.available_rolls),
+    invoicedRolls: Number(p.invoiced_rolls),
+    amount: Number(p.amount),
+    entity: p.entity ?? "",
+    status: p.status,
+    approved: p.approved,
+    daysSincePO: p.days_since_po,
+  };
+}
+
+async function fetchOneMaterialPo(db: SupabaseClient, id: string): Promise<MaterialPO | undefined> {
+  const [poRes, colorRes, invoicedRes] = await Promise.all([
+    db.from("material_pos").select("*").eq("id", id).maybeSingle(),
+    db.from("material_po_color_breakdown").select("*").eq("material_po_id", id),
+    db.from("material_po_invoiced_by_color").select("*").eq("material_po_id", id),
+  ]);
+  if (!poRes.data) return undefined;
+  return mapMaterialPoRow(poRes.data, colorRes.data ?? [], invoicedRes.data ?? []);
+}
+
+/** Fetch materialPOs yang cocok filter (mis. belum approved & belum cancelled, untuk 1
+ *  mrp+vendor atau seluruh app) -- 3 query (bukan getFlowSnapshot() 32-tabel): baris PO yang
+ *  match `whereApproved`/`whereMrpVendor`, LALU color-breakdown/invoiced-by-color-nya di-scope
+ *  ke id PO yang ketemu itu saja (`.in("material_po_id", ids)`). Dipakai
+ *  approveAllMaterialPosAction (seluruh app) & approveVendorMaterialPosAction (1 mrp+vendor). */
+async function fetchUnapprovedMaterialPos(db: SupabaseClient, scope: { mrpId: string; vendorProduksi: string } | undefined): Promise<MaterialPO[]> {
+  let q = db.from("material_pos").select("*").eq("approved", false).neq("status", "CANCELLED");
+  if (scope) q = q.eq("mrp_id", scope.mrpId).eq("vendor_produksi", scope.vendorProduksi);
+  const poRes = await q;
+  const rows = poRes.data ?? [];
+  if (rows.length === 0) return [];
+  const ids = rows.map((r) => r.id);
+  const [colorRes, invoicedRes] = await Promise.all([
+    db.from("material_po_color_breakdown").select("*").in("material_po_id", ids),
+    db.from("material_po_invoiced_by_color").select("*").in("material_po_id", ids),
+  ]);
+  const colorByPo = new Map<string, typeof colorRes.data>();
+  for (const c of colorRes.data ?? []) colorByPo.set(c.material_po_id, [...(colorByPo.get(c.material_po_id) ?? []), c]);
+  const invoicedByPo = new Map<string, typeof invoicedRes.data>();
+  for (const i of invoicedRes.data ?? []) invoicedByPo.set(i.material_po_id, [...(invoicedByPo.get(i.material_po_id) ?? []), i]);
+  return rows.map((p) => mapMaterialPoRow(p, colorByPo.get(p.id) ?? [], invoicedByPo.get(p.id) ?? []));
+}
+
 export async function approveMaterialPoAction(id: string): Promise<void> {
   await requireInternalRole(await requireSession(), "finance");
   const db = supabaseServer();
-  const snapshot = await getFlowSnapshot();
-  const po = snapshot.materialPOs.find((p) => p.id === id);
+  const po = await fetchOneMaterialPo(db, id);
   if (!po) return;
 
   const distinctEntitas = new Set(po.colorBreakdown.map((c) => c.entitas ?? po.entity));
@@ -789,8 +905,7 @@ export async function setMaterialPoColorEntityAction(poId: string, warna: string
 export async function approveAllMaterialPosAction(): Promise<void> {
   await requireInternalRole(await requireSession(), "finance");
   const db = supabaseServer();
-  const snapshot = await getFlowSnapshot();
-  const toApprove = snapshot.materialPOs.filter((po) => !po.approved && po.status !== "CANCELLED");
+  const toApprove = await fetchUnapprovedMaterialPos(db, undefined);
   const mrpIds = Array.from(new Set(toApprove.map((po) => po.mrpId)));
   for (const po of toApprove) {
     const distinctEntitas = new Set(po.colorBreakdown.map((c) => c.entitas ?? po.entity));
@@ -804,8 +919,7 @@ export async function approveAllMaterialPosAction(): Promise<void> {
 export async function approveVendorMaterialPosAction(mrpId: string, vendor: string): Promise<void> {
   await requireInternalRole(await requireSession(), "finance");
   const db = supabaseServer();
-  const snapshot = await getFlowSnapshot();
-  const toApprove = snapshot.materialPOs.filter((po) => po.mrpId === mrpId && po.vendorProduksi === vendor && !po.approved && po.status !== "CANCELLED");
+  const toApprove = await fetchUnapprovedMaterialPos(db, { mrpId, vendorProduksi: vendor });
   for (const po of toApprove) {
     const distinctEntitas = new Set(po.colorBreakdown.map((c) => c.entitas ?? po.entity));
     const newIds = await Promise.all(Array.from({ length: Math.max(0, distinctEntitas.size - 1) }).map(() => nextReadableId("PO-SUP")));
@@ -815,7 +929,13 @@ export async function approveVendorMaterialPosAction(mrpId: string, vendor: stri
   await checkPoApproved(mrpId);
 }
 
-export async function updateBatchToCuttingAction(batchId: string, cuttingAt: string, sizeQty: Record<string, number> = {}): Promise<void> {
+/** PERFORMA: mengembalikan cuttingAt/sizeQty yang baru ditulis supaya store.ts bisa nge-patch
+ *  baris ProductionBatch ini LANGSUNG di client (optimistic), tanpa nunggu backgroundRefresh
+ *  (snapshot 32-tabel) buat lihat roll-nya sudah "Cutting" -- ini yang secara konkret diminta user
+ *  (kasus "10 roll, 5-10 detik per roll" harus kerasa ~instan per klik). Query di fungsi ini
+ *  sendiri sudah selalu murah (2 tulis kecil, tidak pernah pakai getFlowSnapshot()) -- baru berasa
+ *  lambat kalau UI-nya nunggu refresh penuh sesudahnya, itu yang dipotong di sini. */
+export async function updateBatchToCuttingAction(batchId: string, cuttingAt: string, sizeQty: Record<string, number> = {}): Promise<{ cuttingAt: string; sizeQty?: Record<string, number> }> {
   await requireVendorSession();
   const db = supabaseServer();
   const { error } = await db.from("production_batches").update({ cutting_at: cuttingAt }).eq("id", batchId);
@@ -830,6 +950,7 @@ export async function updateBatchToCuttingAction(batchId: string, cuttingAt: str
     const { error: sizeErr } = await db.from("production_batch_sizes").insert(rows.map(([size, qty]) => ({ production_batch_id: batchId, size, qty })));
     if (sizeErr) console.error("updateBatchToCuttingAction: gagal simpan hasil aduan (migration 0006 sudah jalan?)", sizeErr.message);
   }
+  return { cuttingAt, sizeQty: rows.length > 0 ? Object.fromEntries(rows) : undefined };
 }
 
 /** Tandai alert yield <99% roll ini sudah ditindaklanjuti/di-approve dari portal internal
@@ -957,6 +1078,51 @@ export async function unresolveMaterialClaimAction(key: string): Promise<void> {
   }
 }
 
+/** Fetch SATU RawMaterialInvoice by id -- CUMA field yang dibaca materialClaimsList (colorEntries
+ *  + rollReceipts, plus id/poId/mrpId/supplier/destinationVendor buat isi MaterialClaimRow) --
+ *  bukan getFlowSnapshot() penuh (32 tabel). Field lain (addBuys/status pembayaran/dst) sengaja
+ *  di-stub kosong -- 3 pemanggilnya (request/markDelivered/confirmReceived retur klaim) semua
+ *  cuma butuh materialClaimsList([inv]).find((c) => c.key === key), tidak baca field lain. */
+async function fetchOneInvoiceForClaims(db: SupabaseClient, invoiceId: string): Promise<RawMaterialInvoice | undefined> {
+  const [invRes, colorRes] = await Promise.all([
+    db.from("raw_material_invoices").select("*").eq("id", invoiceId).maybeSingle(),
+    db.from("raw_material_invoice_colors").select("*, raw_material_invoice_rolls(*)").eq("invoice_id", invoiceId),
+  ]);
+  const inv = invRes.data;
+  if (!inv) return undefined;
+  const colorEntries: ColorEntry[] = [];
+  const rollReceipts: Record<string, (RollReceipt | null)[]> = {};
+  for (const c of colorRes.data ?? []) {
+    const colorKey = `${c.warna}|${c.lengan}`;
+    const rolls = (c.raw_material_invoice_rolls ?? []).sort((a: { roll_index: number }, b: { roll_index: number }) => a.roll_index - b.roll_index);
+    colorEntries.push({ warna: c.warna, lengan: c.lengan, hargaPerRoll: Number(c.harga_per_roll), rolls: rolls.map((r: { gross_kg: number }) => Number(r.gross_kg)) });
+    rollReceipts[colorKey] = rolls.map((r: { net_kg: number | null; received_at: string | null; code_roll: string | null; code_lot: string | null }) =>
+      r.net_kg == null ? null : { netKg: Number(r.net_kg), receivedAt: r.received_at ?? "", codeRoll: r.code_roll ?? undefined, codeLot: r.code_lot ?? undefined }
+    );
+  }
+  return {
+    id: inv.id,
+    poId: inv.po_id,
+    mrpId: inv.mrp_id,
+    vendorProduksi: inv.vendor_produksi,
+    supplier: inv.supplier,
+    colorEntries,
+    addBuys: [],
+    qtyReady: 0,
+    diskon: 0,
+    totalBiaya: 0,
+    kodeTransaksi: "",
+    noInvoiceVendor: "",
+    entity: "",
+    status: inv.status,
+    destinationVendor: inv.destination_vendor ?? "",
+    bookedAt: inv.booked_at,
+    rollReceipts,
+    rollArrivals: {},
+    addBuyReceipts: {},
+  };
+}
+
 export async function requestMaterialClaimReturAction(key: string, note: string): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
   const parsed = parseClaimKey(key);
@@ -969,8 +1135,8 @@ export async function requestMaterialClaimReturAction(key: string, note: string)
   } catch {
     // arsip opsional.
   }
-  const snapshot = await getFlowSnapshot();
-  const claim = materialClaimsList(snapshot.invoices).find((c) => c.key === key);
+  const inv = await fetchOneInvoiceForClaims(db, parsed.invoiceId);
+  const claim = inv && materialClaimsList([inv]).find((c) => c.key === key);
   if (claim) {
     await insertNotification(
       notif(
@@ -1022,8 +1188,8 @@ export async function markMaterialClaimReturDeliveredAction(key: string, note?: 
   } catch {
     // arsip opsional.
   }
-  const snapshot = await getFlowSnapshot();
-  const claim = materialClaimsList(snapshot.invoices).find((c) => c.key === key);
+  const invForNotif = await fetchOneInvoiceForClaims(db, parsed.invoiceId);
+  const claim = invForNotif && materialClaimsList([invForNotif]).find((c) => c.key === key);
   if (claim) {
     await insertNotification(
       notif(
@@ -1050,8 +1216,8 @@ export async function confirmMaterialClaimReturReceivedAction(key: string): Prom
   } catch {
     // arsip opsional.
   }
-  const snapshot = await getFlowSnapshot();
-  const claim = materialClaimsList(snapshot.invoices).find((c) => c.key === key);
+  const invForNotif = await fetchOneInvoiceForClaims(db, parsed.invoiceId);
+  const claim = invForNotif && materialClaimsList([invForNotif]).find((c) => c.key === key);
   if (claim) {
     await insertNotification(
       notif(
@@ -1063,11 +1229,55 @@ export async function confirmMaterialClaimReturReceivedAction(key: string): Prom
   void vendorId;
 }
 
+/** Fetch aduan_pola_rows (+sizes) untuk SATU mrpId -- targeted, dipakai
+ *  fetchProductionScopeForMrp maupun closePoWithReasonAction/reassignMaterialToSupplierAction di
+ *  bawah (dua-duanya cuma butuh potongan .aduanRows ini, bukan MrpDetail penuh). */
+async function fetchAduanRowsForMrp(db: SupabaseClient, mrpId: string): Promise<AduanPolaRow[]> {
+  const { data } = await db.from("aduan_pola_rows").select("*, aduan_pola_sizes(size,qty)").eq("mrp_id", mrpId);
+  return (data ?? []).map((a) => ({
+    id: a.id,
+    lenganGroupId: a.lengan_group_id,
+    warna: a.warna,
+    lengan: a.lengan,
+    kode: a.kode,
+    qtyRoll: Number(a.qty_roll),
+    sizes: (a.aduan_pola_sizes ?? []).map((s: { size: string; qty: number }) => ({ size: s.size, qty: s.qty })),
+    qty: a.qty,
+    vendor: a.vendor,
+    ribAllocatedRoll: a.rib_allocated_roll == null ? undefined : Number(a.rib_allocated_roll),
+  }));
+}
+
+/** Fetch tabel rate harga kain (harga_kain + harga_kain_pks) -- dipakai materialAmountForPo.
+ *  Tabel LOOKUP GLOBAL kecil (harga per supplier/kategori/warna, bukan per-MRP), jadi tetap
+ *  di-fetch penuh (bukan getFlowSnapshot() 32-tabel, tapi 2 tabel kecil ini saja). */
+async function fetchHargaTables(db: SupabaseClient): Promise<{ hargaKain: HargaKainRow[]; hargaKainPks: HargaKainPksRow[] }> {
+  const [kainRes, pksRes] = await Promise.all([db.from("harga_kain").select("*"), db.from("harga_kain_pks").select("*")]);
+  const hargaKain: HargaKainRow[] = (kainRes.data ?? []).map((r) => ({
+    id: r.id,
+    kodeSupplier: r.kode_supplier,
+    namaSupplier: r.nama_supplier,
+    kategori: r.kategori,
+    warna: r.warna,
+    hargaPerKg: Number(r.harga_per_kg),
+  }));
+  const hargaKainPks: HargaKainPksRow[] = (pksRes.data ?? []).map((r) => ({
+    id: r.id,
+    kodeSupplier: r.kode_supplier,
+    kategori: r.kategori,
+    warna: r.warna,
+    satuan: r.satuan,
+    tonaseMin: r.tonase_min == null ? undefined : Number(r.tonase_min),
+    tonaseMax: r.tonase_max == null ? undefined : Number(r.tonase_max),
+    hargaPerKg: Number(r.harga_per_kg),
+  }));
+  return { hargaKain, hargaKainPks };
+}
+
 export async function closePoWithReasonAction(poId: string, reason: string, warna: string, lengan: Lengan, closeQty: number): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
   const db = supabaseServer();
-  const snapshot = await getFlowSnapshot();
-  const po = snapshot.materialPOs.find((p) => p.id === poId);
+  const po = await fetchOneMaterialPo(db, poId);
   if (!po) return;
   const colorKey = `${warna}|${lengan}`;
   const colorEntry = po.colorBreakdown.find((c) => c.warna === warna && c.lengan === lengan);
@@ -1080,22 +1290,24 @@ export async function closePoWithReasonAction(poId: string, reason: string, warn
   const newRollCount = po.rollCount - qty;
   const fullyClosed = newRollCount <= po.invoicedRolls;
 
-  const detail = snapshot.mrpDetails.find((d) => d.mrp.id === po.mrpId);
+  const [aduanRows, { hargaKain, hargaKainPks }, maklonRes] = await Promise.all([
+    fetchAduanRowsForMrp(db, po.mrpId),
+    fetchHargaTables(db),
+    db.from("maklon_pos").select("id,qty,amount,status").eq("mrp_id", po.mrpId).eq("vendor_produksi", po.vendorProduksi).maybeSingle(),
+  ]);
   let pcsRemoved = 0;
-  if (detail) {
-    const colorAduanRows = detail.aduanRows.filter((a) => a.vendor === po.vendorProduksi && a.warna === warna && a.lengan === lengan);
-    const colorTotalRolls = colorAduanRows.reduce((s, a) => s + a.qtyRoll, 0);
-    const colorTotalQty = colorAduanRows.reduce((s, a) => s + a.qty, 0);
-    if (colorTotalRolls > 0) pcsRemoved = Math.round(colorTotalQty * (qty / colorTotalRolls));
-  }
+  const colorAduanRows = aduanRows.filter((a) => a.vendor === po.vendorProduksi && a.warna === warna && a.lengan === lengan);
+  const colorTotalRolls = colorAduanRows.reduce((s, a) => s + a.qtyRoll, 0);
+  const colorTotalQty = colorAduanRows.reduce((s, a) => s + a.qty, 0);
+  if (colorTotalRolls > 0) pcsRemoved = Math.round(colorTotalQty * (qty / colorTotalRolls));
 
   await db.from("material_po_color_breakdown").update({ roll_count: newColorBreakdown.find((c) => c.warna === warna && c.lengan === lengan)!.rollCount }).eq("material_po_id", poId).eq("warna", warna).eq("lengan", lengan);
   await db
     .from("material_pos")
-    .update({ roll_count: newRollCount, amount: materialAmountForPo(snapshot.hargaKain, snapshot.hargaKainPks, po.supplier, newColorBreakdown), status: fullyClosed ? "CANCELLED" : po.status })
+    .update({ roll_count: newRollCount, amount: materialAmountForPo(hargaKain, hargaKainPks, po.supplier, newColorBreakdown), status: fullyClosed ? "CANCELLED" : po.status })
     .eq("id", poId);
 
-  const maklon = snapshot.maklonPOs.find((m) => m.mrpId === po.mrpId && m.vendorProduksi === po.vendorProduksi);
+  const maklon = maklonRes.data;
   if (maklon) {
     const newQty = Math.max(0, maklon.qty - pcsRemoved);
     await db
@@ -1121,8 +1333,7 @@ export async function closePoWithReasonAction(poId: string, reason: string, warn
 export async function reassignMaterialToSupplierAction(poId: string, warna: string, lengan: Lengan, moveQty: number, newSupplier: string, reason: string): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
   const db = supabaseServer();
-  const snapshot = await getFlowSnapshot();
-  const po = snapshot.materialPOs.find((p) => p.id === poId);
+  const po = await fetchOneMaterialPo(db, poId);
   if (!po) return;
   const colorKey = `${warna}|${lengan}`;
   const colorEntry = po.colorBreakdown.find((c) => c.warna === warna && c.lengan === lengan);
@@ -1135,14 +1346,15 @@ export async function reassignMaterialToSupplierAction(poId: string, warna: stri
   const newRollCount = po.rollCount - qty;
   const fullyClosed = newRollCount <= po.invoicedRolls;
 
+  const { hargaKain, hargaKainPks } = await fetchHargaTables(db);
   const newPoColorBreakdown = [{ warna, lengan, rollCount: qty, entitas: colorEntry.entitas ?? po.entity }];
   const newPoId = await nextReadableId("PO-SUP");
-  const newPoAmount = materialAmountForPo(snapshot.hargaKain, snapshot.hargaKainPks, newSupplier, newPoColorBreakdown);
+  const newPoAmount = materialAmountForPo(hargaKain, hargaKainPks, newSupplier, newPoColorBreakdown);
 
   await db.from("material_po_color_breakdown").update({ roll_count: newColorBreakdown.find((c) => c.warna === warna && c.lengan === lengan)!.rollCount }).eq("material_po_id", poId).eq("warna", warna).eq("lengan", lengan);
   await db
     .from("material_pos")
-    .update({ roll_count: newRollCount, amount: materialAmountForPo(snapshot.hargaKain, snapshot.hargaKainPks, po.supplier, newColorBreakdown), status: fullyClosed ? "CANCELLED" : po.status })
+    .update({ roll_count: newRollCount, amount: materialAmountForPo(hargaKain, hargaKainPks, po.supplier, newColorBreakdown), status: fullyClosed ? "CANCELLED" : po.status })
     .eq("id", poId);
 
   await db.from("material_pos").insert({
@@ -1268,16 +1480,122 @@ export async function submitProductionResultAction(input: { mrpId: string; vendo
   await maybeAdvanceMaklonToDelivery(input.mrpId, input.vendorProduksi);
 }
 
-/** Refetch snapshot & jalankan derive.advanceMaklonToDeliveryIfFullyDone (fungsi murni yang sama
- *  persis dipakai UI lama) -- kalau hasilnya bilang PO maklon harus pindah ke DELIVERY, tulis
- *  balik status itu. Dipanggil setelah tiap kali ada ProductionResult baru. */
+/** Data pendukung TARGETED (bukan getFlowSnapshot() penuh) untuk 1 mrpId+vendorProduksi -- persis
+ *  yang dibutuhkan cuttingSizesForGroup/targetSizesForGroup/cumulativeSizeQtyForGroup
+ *  (lib/mrp/derive.ts), yang terbukti CUMA PERNAH baca data untuk SATU mrp (+vendor untuk
+ *  batch/hasil), tidak pernah lintas-MRP. Dipakai bareng oleh confirmFgDoneAction &
+ *  maybeAdvanceMaklonToDelivery -- dua-duanya jalur Produksi paling sering diklik.
+ *
+ *  PERFORMA: dulu masing-masing fetch lewat getFlowSnapshot() (32 tabel, ratusan KB, ~0.6-1.4
+ *  detik terukur langsung ke Supabase). Sekarang 3 query kecil paralel, di-scope ke 1 mrp+vendor.
+ *
+ *  Pemetaan kolom persis lib/mrp/repo/snapshot.ts (dibaca ulang saat menulis ini) supaya bentuk
+ *  objeknya SAMA dengan yang dipakai getFlowSnapshot() -- fungsi murni derive.ts-nya tidak
+ *  berubah sama sekali, cuma sumber datanya yang di-target-kan. `MrpDetail` yang dikembalikan
+ *  CUMA benar untuk field `.aduanRows` (satu-satunya yang dibaca fungsi2 di atas lewat
+ *  mrpDetailFor) -- field lain (lenganGroups/materialRows/dates/dst) sengaja kosong/dummy, JANGAN
+ *  dipakai untuk keperluan lain. */
+async function fetchProductionScopeForMrp(
+  db: SupabaseClient,
+  mrpId: string,
+  vendorProduksi: string
+): Promise<{ mrpDetail: MrpDetail; batches: ProductionBatch[]; results: ProductionResult[] }> {
+  const [aduanRows, batchRes, resultRes] = await Promise.all([
+    fetchAduanRowsForMrp(db, mrpId),
+    db.from("production_batches").select("*").eq("mrp_id", mrpId).eq("vendor_produksi", vendorProduksi),
+    db.from("production_results").select("*, production_result_sizes(size,qty)").eq("mrp_id", mrpId).eq("vendor_produksi", vendorProduksi).eq("kind", "FG"),
+  ]);
+
+  const mrpDetail: MrpDetail = {
+    mrp: { id: mrpId, kategori: "", warna: "", targetDate: "", live: true, qty: 0 },
+    lenganGroups: [],
+    aduanRows,
+    materialRows: [],
+    poSent: false,
+    dates: { created: "" },
+    ppicApproval: "DRAFT",
+  };
+
+  const batches: ProductionBatch[] = (batchRes.data ?? []).map((b) => ({
+    id: b.id,
+    mrpId: b.mrp_id,
+    vendorProduksi: b.vendor_produksi,
+    aduanRowId: b.aduan_row_id,
+    kode: b.kode ?? "",
+    warna: b.warna,
+    lengan: b.lengan,
+    qtyRoll: Number(b.qty_roll),
+    gramasi: b.gramasi == null ? 0 : Number(b.gramasi),
+    restingAt: b.resting_at ?? "",
+    cuttingAt: b.cutting_at ?? undefined,
+    createdAt: b.created_at,
+    codeRoll: b.code_roll ?? undefined,
+    // sizeQty (hasil aduan aktual) sengaja tidak di-fetch -- tidak dibaca oleh
+    // targetSizesForGroup/maklonProductionFullyDone.
+  }));
+
+  const results: ProductionResult[] = (resultRes.data ?? []).map((r) => {
+    const sizeQty: Record<string, number> = {};
+    for (const s of r.production_result_sizes ?? []) sizeQty[s.size] = s.qty;
+    return {
+      id: r.id,
+      groupKey: r.group_key,
+      mrpId: r.mrp_id,
+      vendorProduksi: r.vendor_produksi,
+      poId: r.po_id,
+      warna: r.warna,
+      lengan: r.lengan,
+      kind: r.kind,
+      sizeQty,
+      recordedAt: r.recorded_at,
+      note: r.note ?? undefined,
+      usia: r.usia ?? undefined,
+    };
+  });
+
+  return { mrpDetail, batches, results };
+}
+
+/** Jalankan derive.advanceMaklonToDeliveryIfFullyDone (fungsi murni yang sama persis dipakai UI
+ *  lama) -- kalau hasilnya bilang PO maklon harus pindah ke DELIVERY, tulis balik status itu.
+ *  Dipanggil setelah tiap kali ada ProductionResult baru (submitProductionResult, rework/waste,
+ *  confirmFgDone, markProductionGroupDone -- 4 action Produksi paling sering diklik). Begitu
+ *  status PO BUKAN "PRODUCTION" (early-return pertama fungsi murninya), berhenti setelah 1 query
+ *  kecil tanpa perlu fetchProductionScopeForMrp sama sekali. */
 async function maybeAdvanceMaklonToDelivery(mrpId: string, vendorProduksi: string) {
   const db = supabaseServer();
-  const snapshot = await getFlowSnapshot();
-  const updated = advanceMaklonToDeliveryIfFullyDone(mrpId, vendorProduksi, snapshot.maklonPOs, snapshot.mrpDetails, snapshot.productionBatches, snapshot.productionResults);
-  const before = snapshot.maklonPOs.find((m) => m.mrpId === mrpId && m.vendorProduksi === vendorProduksi);
-  const after = updated.find((m) => m.mrpId === mrpId && m.vendorProduksi === vendorProduksi);
-  if (before && after && before.status !== after.status) {
+
+  const { data: poRow } = await db.from("maklon_pos").select("*").eq("mrp_id", mrpId).eq("vendor_produksi", vendorProduksi).maybeSingle();
+  if (!poRow || poRow.status !== "PRODUCTION") return;
+
+  const [cancelledRes, scope] = await Promise.all([
+    db.from("maklon_po_cancelled_lines").select("*").eq("maklon_po_id", poRow.id),
+    fetchProductionScopeForMrp(db, mrpId, vendorProduksi),
+  ]);
+
+  const po: MaklonPO = {
+    id: poRow.id,
+    mrpId: poRow.mrp_id,
+    vendorProduksi: poRow.vendor_produksi,
+    qty: poRow.qty,
+    amount: Number(poRow.amount),
+    entity: poRow.entity ?? "",
+    status: poRow.status,
+    approved: poRow.approved,
+    cancelledLines: (cancelledRes.data ?? []).map((c) => ({
+      note: c.note,
+      rolls: Number(c.rolls),
+      warna: c.warna ?? undefined,
+      lengan: c.lengan ?? undefined,
+      pcs: c.pcs ?? undefined,
+      from: c.from_vendor ?? undefined,
+      time: c.time,
+    })),
+  };
+
+  const updated = advanceMaklonToDeliveryIfFullyDone(mrpId, vendorProduksi, [po], [scope.mrpDetail], scope.batches, scope.results);
+  const after = updated.find((m) => m.id === po.id);
+  if (after && after.status !== po.status) {
     await db.from("maklon_pos").update({ status: after.status }).eq("id", after.id);
   }
 }
@@ -1404,7 +1722,7 @@ export async function wasteRejectSizeAction(input: { mrpId: string; vendorProduk
 export async function confirmFgDoneAction(groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan): Promise<void> {
   await requireVendorSession();
   const db = supabaseServer();
-  const snapshot = await getFlowSnapshot();
+  const scope = await fetchProductionScopeForMrp(db, mrpId, vendorProduksi);
 
   // Target reject = hasil CUTTING AKTUAL (bukan rencana MRP) dikurangi Finish Good yang sudah
   // diinput -- konsisten dengan cara production-result-panel.tsx menghitung "Progres" &
@@ -1413,8 +1731,8 @@ export async function confirmFgDoneAction(groupKey: string, mrpId: string, vendo
   // selisih itu ikut ke-hitung reject padahal roll-nya memang cuma segitu yang jadi -- bukan
   // reject beneran (lihat feedback: "kenapa yang target cutting kurang dari target awal jadi
   // reject? harusnya dari hasil cutting - finish good").
-  const target = cuttingSizesForGroup(mrpId, warna, lengan, snapshot.mrpDetails, snapshot.productionBatches);
-  const fgRecorded = cumulativeSizeQtyForGroup(groupKey, "FG", snapshot.productionResults);
+  const target = cuttingSizesForGroup(mrpId, warna, lengan, [scope.mrpDetail], scope.batches);
+  const fgRecorded = cumulativeSizeQtyForGroup(groupKey, "FG", scope.results);
   const rejectSizeQty: Record<string, number> = {};
   for (const [size, t] of Object.entries(target)) {
     const shortfall = t - (fgRecorded[size] ?? 0);
@@ -1430,9 +1748,9 @@ export async function confirmFgDoneAction(groupKey: string, mrpId: string, vendo
   }
 
   if (Object.keys(rejectSizeQty).length > 0) {
-    const maklon = snapshot.maklonPOs.find((m) => m.mrpId === mrpId && m.vendorProduksi === vendorProduksi);
+    const { data: maklonRow } = await db.from("maklon_pos").select("id").eq("mrp_id", mrpId).eq("vendor_produksi", vendorProduksi).maybeSingle();
     const id = await nextReadableId("PR");
-    await db.from("production_results").insert({ id, group_key: groupKey, mrp_id: mrpId, vendor_produksi: vendorProduksi, po_id: maklon?.id ?? "", warna, lengan, kind: "REJECT", recorded_at: nowIso() });
+    await db.from("production_results").insert({ id, group_key: groupKey, mrp_id: mrpId, vendor_produksi: vendorProduksi, po_id: maklonRow?.id ?? "", warna, lengan, kind: "REJECT", recorded_at: nowIso() });
     await db.from("production_result_sizes").insert(Object.entries(rejectSizeQty).map(([size, qty]) => ({ production_result_id: id, size, qty })));
   }
 
@@ -1455,8 +1773,18 @@ export async function undoFgConfirmAction(groupKey: string): Promise<void> {
   if (meta?.done_at) {
     throw new Error('Grup ini sudah "Selesai Produksi" di tab Final Produksi -- buka kunci itu dulu sebelum bisa buka kunci Finish Good.');
   }
-  const snapshot = await getFlowSnapshot();
-  if (reworkQtyForGroup(groupKey, snapshot.productionResults) > 0 || wasteQtyForGroup(groupKey, snapshot.productionResults) > 0) {
+  // reworkQtyForGroup/wasteQtyForGroup cuma butuh production_results GRUP INI (kind/groupKey/
+  // sizeQty/note) -- di-scope by group_key langsung, bukan getFlowSnapshot() penuh.
+  const { data: groupResultRows } = await db
+    .from("production_results")
+    .select("group_key, kind, note, production_result_sizes(size,qty)")
+    .eq("group_key", groupKey);
+  const groupResults: Pick<ProductionResult, "groupKey" | "kind" | "note" | "sizeQty">[] = (groupResultRows ?? []).map((r) => {
+    const sizeQty: Record<string, number> = {};
+    for (const s of r.production_result_sizes ?? []) sizeQty[s.size] = s.qty;
+    return { groupKey: r.group_key, kind: r.kind, note: r.note ?? undefined, sizeQty };
+  });
+  if (reworkQtyForGroup(groupKey, groupResults as ProductionResult[]) > 0 || wasteQtyForGroup(groupKey, groupResults as ProductionResult[]) > 0) {
     throw new Error("Sebagian reject grup ini sudah dirework/dibuang ke sisa -- tidak bisa dibuka lagi supaya data reject tidak jadi tidak konsisten.");
   }
   const { data: oldAutoRejects } = await db.from("production_results").select("id").eq("group_key", groupKey).eq("kind", "REJECT").is("note", null);

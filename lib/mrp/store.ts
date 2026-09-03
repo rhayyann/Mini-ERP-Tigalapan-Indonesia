@@ -360,330 +360,358 @@ function withBusyTracking<T extends Record<string, unknown>>(set: Setter, obj: T
 
 type Setter = (partial: Partial<FlowState & FlowActions>) => void;
 
-export const useMrpStore = create<FlowState & FlowActions>()((set, get) =>
-  withBusyTracking(set, {
+export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
+  // PERFORMA: dulu SETIAP action di bawah ini nge-`await get().refresh()` sebelum selesai -- itu
+  // artinya klik user menunggu 2 round-trip server BERURUTAN (tulis data, LALU fetch ulang
+  // SELURUH data app -- 32 tabel, ratusan KB -- via getFlowSnapshotAction) sebelum tombolnya
+  // "selesai loading". Diukur langsung ke Supabase: RPC snapshot penuh itu sendiri ~0.6-1.4 detik,
+  // di atas biaya tulis datanya -- jadi tiap klik gampang kerasa 1-2+ detik hanya dari refresh-nya
+  // saja, sebelum ditambah proses reshape & round-trip Server Action ke browser.
+  //
+  // refresh() sekarang dipanggil TANPA di-await (backgroundRefresh) di semua action -- write-nya
+  // tetap ditunggu (jadi kalau gagal, errornya tetap kelempar ke caller seperti biasa), tapi
+  // sync-ulang data TIDAK lagi memblokir selesainya klik. Ini aman karena refresh() cuma
+  // re-fetch (read-only, idempotent) lalu `set()` ke store Zustand -- komponen yang subscribe
+  // tetap otomatis re-render begitu itu selesai di background (biasanya <1 detik kemudian), tidak
+  // ada komponen manapun yang butuh state ter-refresh SEBELUM action-nya sendiri selesai (tidak
+  // ada pemanggilan `useMrpStore.getState()` sinkron setelah `await store.xxxAction(...)` di
+  // seluruh components/app -- polanya selalu subscription `useMrpStore((s) => s.x)`).
+  function backgroundRefresh() {
+    get()
+      .refresh()
+      .catch((err) => console.warn("[mrp-store] background refresh gagal:", err));
+  }
+
+  return withBusyTracking(set, {
   ...emptyState,
 
   hydrate: (snapshot) => set({ ...snapshot, hydrated: true }),
   refresh: async () => {
     const { busy: _snapshotBusy, ...snapshot } = await actions.getFlowSnapshotAction();
-    // `busy` SENGAJA tidak ikut di-spread -- refresh() ini sendiri sudah berjalan DI DALAM sebuah
-    // action yang sedang di-tandai busy=true oleh withBusyTracking (lihat di atas); menimpanya di
-    // sini akan bikin overlay loading kedip mati sesaat sebelum action pemanggilnya benar-benar
-    // selesai.
+    // `busy` SENGAJA tidak ikut di-spread -- ini flag UI lokal punya store.ts (lihat
+    // withBusyTracking), bukan bagian data server; overwrite balik pakai kosong/false dari sini
+    // akan salah kalau ada action LAIN yang kebetulan masih berjalan bersamaan.
     set({ ...snapshot, hydrated: true });
   },
 
   importMrp: async (parsed, customId) => {
     const id = await actions.importMrpAction(parsed, customId);
-    await get().refresh();
+    backgroundRefresh();
     return id;
   },
   assignMaterialSupplier: async (mrpId, materialRowIds, supplier) => {
     await actions.assignMaterialSupplierAction(mrpId, materialRowIds, supplier);
-    await get().refresh();
+    backgroundRefresh();
   },
   assignMaterialEntitas: async (mrpId, materialRowId, entitas) => {
     await actions.assignMaterialEntitasAction(mrpId, materialRowId, entitas);
-    await get().refresh();
+    backgroundRefresh();
   },
   switchAduanVendor: async (mrpId, aduanId, toVendor) => {
     await actions.switchAduanVendorAction(mrpId, aduanId, toVendor);
-    await get().refresh();
+    backgroundRefresh();
   },
   approvePpicMrp: async (mrpId) => {
     await actions.approvePpicMrpAction(mrpId);
-    await get().refresh();
+    backgroundRefresh();
   },
   rejectPpicMrp: async (mrpId, reason) => {
     await actions.rejectPpicMrpAction(mrpId, reason);
-    await get().refresh();
+    backgroundRefresh();
   },
   sendPoToFinance: async (mrpId) => {
     await actions.sendPoToFinanceAction(mrpId);
-    await get().refresh();
+    backgroundRefresh();
   },
   approveMaterialPo: async (id) => {
     await actions.approveMaterialPoAction(id);
-    await get().refresh();
+    backgroundRefresh();
   },
   approveMaklonPo: async (id) => {
     await actions.approveMaklonPoAction(id);
-    await get().refresh();
+    backgroundRefresh();
   },
   bookInvoice: async (poId, input) => {
     await actions.bookInvoiceAction(poId, input);
-    await get().refresh();
+    backgroundRefresh();
   },
   setInvoicesPaid: async (invoiceIds, paid) => {
     await actions.setInvoicesPaidAction(invoiceIds, paid);
-    await get().refresh();
+    backgroundRefresh();
   },
   setInvoicesDelivery: async (invoiceIds, deliveryDate) => {
     await actions.setInvoicesDeliveryAction(invoiceIds, deliveryDate);
-    await get().refresh();
+    backgroundRefresh();
   },
   markRollArrived: async (invoiceId, warna, lengan, rollIndex, codeRoll, codeLot) => {
     await actions.markRollArrivedAction(invoiceId, warna, lengan, rollIndex, codeRoll, codeLot);
-    await get().refresh();
+    backgroundRefresh();
   },
   receiveRawMaterialRoll: async (invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll) => {
     await actions.receiveRawMaterialRollAction(invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll);
-    await get().refresh();
+    backgroundRefresh();
   },
   startProductionBatch: async (input) => {
     await actions.startProductionBatchAction(input);
-    await get().refresh();
+    backgroundRefresh();
   },
   submitProductionResult: async (input) => {
     await actions.submitProductionResultAction(input);
-    await get().refresh();
+    backgroundRefresh();
   },
   createDeliveryKoli: async (input) => {
     await actions.createDeliveryKoliAction(input);
-    await get().refresh();
+    backgroundRefresh();
   },
   setKoliWeight: async (koliId, beratKoli) => {
     await actions.setKoliWeightAction(koliId, beratKoli);
-    await get().refresh();
+    backgroundRefresh();
   },
   markKoliDelivered: async (koliId) => {
     await actions.markKoliDeliveredAction(koliId);
-    await get().refresh();
+    backgroundRefresh();
   },
   createVendorInvoice: async (input) => {
     await actions.createVendorInvoiceAction(input);
-    await get().refresh();
+    backgroundRefresh();
   },
   setVendorInvoiceStatus: async (invoiceId, status) => {
     await actions.setVendorInvoiceStatusAction(invoiceId, status);
-    await get().refresh();
+    backgroundRefresh();
   },
   addVendorInvoiceAdjustment: async (invoiceId, input) => {
     await actions.addVendorInvoiceAdjustmentAction(invoiceId, input);
-    await get().refresh();
+    backgroundRefresh();
   },
   payVendorInvoice: async (invoiceId) => {
     await actions.payVendorInvoiceAction(invoiceId);
-    await get().refresh();
+    backgroundRefresh();
   },
   markNotificationRead: async (id) => {
     await actions.markNotificationReadAction(id);
-    await get().refresh();
+    backgroundRefresh();
   },
   markAllNotificationsRead: async (ids) => {
     await actions.markAllNotificationsReadAction(ids);
-    await get().refresh();
+    backgroundRefresh();
   },
   dismissNotification: async (id) => {
     await actions.dismissNotificationAction(id);
-    await get().refresh();
+    backgroundRefresh();
   },
 
   addHargaMaklonRow: async () => {
     await actions.addHargaMaklonRowAction();
-    await get().refresh();
+    backgroundRefresh();
   },
   updateHargaMaklonRow: async (id, patch) => {
     await actions.updateHargaMaklonRowAction(id, patch);
-    await get().refresh();
+    backgroundRefresh();
   },
   deleteHargaMaklonRow: async (id) => {
     await actions.deleteHargaMaklonRowAction(id);
-    await get().refresh();
+    backgroundRefresh();
   },
   replaceHargaMaklon: async (rows) => {
     await actions.replaceHargaMaklonAction(rows);
-    await get().refresh();
+    backgroundRefresh();
   },
   addHargaKainRow: async () => {
     await actions.addHargaKainRowAction();
-    await get().refresh();
+    backgroundRefresh();
   },
   updateHargaKainRow: async (id, patch) => {
     await actions.updateHargaKainRowAction(id, patch);
-    await get().refresh();
+    backgroundRefresh();
   },
   deleteHargaKainRow: async (id) => {
     await actions.deleteHargaKainRowAction(id);
-    await get().refresh();
+    backgroundRefresh();
   },
   replaceHargaKain: async (rows) => {
     await actions.replaceHargaKainAction(rows);
-    await get().refresh();
+    backgroundRefresh();
   },
   addHargaKainPksRow: async () => {
     await actions.addHargaKainPksRowAction();
-    await get().refresh();
+    backgroundRefresh();
   },
   updateHargaKainPksRow: async (id, patch) => {
     await actions.updateHargaKainPksRowAction(id, patch);
-    await get().refresh();
+    backgroundRefresh();
   },
   deleteHargaKainPksRow: async (id) => {
     await actions.deleteHargaKainPksRowAction(id);
-    await get().refresh();
+    backgroundRefresh();
   },
   replaceHargaKainPks: async (rows) => {
     await actions.replaceHargaKainPksAction(rows);
-    await get().refresh();
+    backgroundRefresh();
   },
   addEntitas: async (nama) => {
     await actions.addEntitasAction(nama);
-    await get().refresh();
+    backgroundRefresh();
   },
   updateEntitas: async (id, nama) => {
     await actions.updateEntitasAction(id, nama);
-    await get().refresh();
+    backgroundRefresh();
   },
   deleteEntitas: async (id) => {
     await actions.deleteEntitasAction(id);
-    await get().refresh();
+    backgroundRefresh();
   },
   replaceEntitas: async (rows) => {
     await actions.replaceEntitasAction(rows);
-    await get().refresh();
+    backgroundRefresh();
   },
   addSupplier: async (nama) => {
     await actions.addSupplierAction(nama);
-    await get().refresh();
+    backgroundRefresh();
   },
   updateSupplier: async (id, nama) => {
     await actions.updateSupplierAction(id, nama);
-    await get().refresh();
+    backgroundRefresh();
   },
   deleteSupplier: async (id) => {
     await actions.deleteSupplierAction(id);
-    await get().refresh();
+    backgroundRefresh();
   },
   replaceSupplier: async (rows) => {
     await actions.replaceSupplierAction(rows);
-    await get().refresh();
+    backgroundRefresh();
   },
 
   setMaterialPoEntity: async (poId, entitas) => {
     await actions.setMaterialPoEntityAction(poId, entitas);
-    await get().refresh();
+    backgroundRefresh();
   },
   setMaterialPoColorEntity: async (poId, warna, lengan, entitas) => {
     await actions.setMaterialPoColorEntityAction(poId, warna, lengan, entitas);
-    await get().refresh();
+    backgroundRefresh();
   },
   approveAllMaterialPos: async () => {
     await actions.approveAllMaterialPosAction();
-    await get().refresh();
+    backgroundRefresh();
   },
   approveVendorMaterialPos: async (mrpId, vendor) => {
     await actions.approveVendorMaterialPosAction(mrpId, vendor);
-    await get().refresh();
+    backgroundRefresh();
   },
   closePoWithReason: async (poId, reason, warna, lengan, closeQty) => {
     await actions.closePoWithReasonAction(poId, reason, warna, lengan, closeQty);
-    await get().refresh();
+    backgroundRefresh();
   },
   reassignMaterialToSupplier: async (poId, warna, lengan, moveQty, newSupplier, reason) => {
     await actions.reassignMaterialToSupplierAction(poId, warna, lengan, moveQty, newSupplier, reason);
-    await get().refresh();
+    backgroundRefresh();
   },
   transferMaterial: async (items, toVendor, deliveryDate) => {
     await actions.transferMaterialAction(items, toVendor, deliveryDate);
-    await get().refresh();
+    backgroundRefresh();
   },
   advanceMaklonProduction: async (id) => {
     await actions.advanceMaklonProductionAction(id);
-    await get().refresh();
+    backgroundRefresh();
   },
   submitMaklonInvoice: async () => {}, // sudah no-op sejak sebelum migrasi (jalur ditutup, lihat lib/mrp/actions.ts)
   approveMaklonInvoice: async (invoiceId) => {
     await actions.approveMaklonInvoiceAction(invoiceId);
-    await get().refresh();
+    backgroundRefresh();
   },
   payMaklonInvoice: async (invoiceId) => {
     await actions.payMaklonInvoiceAction(invoiceId);
-    await get().refresh();
+    backgroundRefresh();
   },
   receiveRawMaterialAddBuy: async (invoiceId, addBuyId) => {
     await actions.receiveRawMaterialAddBuyAction(invoiceId, addBuyId);
-    await get().refresh();
+    backgroundRefresh();
   },
   updateBatchToCutting: async (batchId, cuttingAt, sizeQty) => {
-    await actions.updateBatchToCuttingAction(batchId, cuttingAt, sizeQty);
-    await get().refresh();
+    const result = await actions.updateBatchToCuttingAction(batchId, cuttingAt, sizeQty);
+    // Optimistic PATCH lokal -- baris roll ini di tabel Cutting berubah jadi "sudah cutting"
+    // SEKETIKA (tidak nunggu backgroundRefresh snapshot penuh), langsung dari hasil tulis di
+    // atas. Kasus nyata yang diminta: 10 roll di-"Update ke Cutting" satu-satu, tiap klik harus
+    // kerasa instan, bukan nunggu ~1 detik+ snapshot ulang cuma buat lihat 1 baris berubah.
+    set({
+      productionBatches: get().productionBatches.map((b) => (b.id === batchId ? { ...b, cuttingAt: result.cuttingAt, sizeQty: result.sizeQty ?? b.sizeQty } : b)),
+    });
+    backgroundRefresh();
   },
   resolveProductionYield: async (batchId, note) => {
     await actions.resolveProductionYieldAction(batchId, note);
-    await get().refresh();
+    backgroundRefresh();
   },
   unresolveProductionYield: async (batchId) => {
     await actions.unresolveProductionYieldAction(batchId);
-    await get().refresh();
+    backgroundRefresh();
   },
   reworkRejectSize: async (input) => {
     await actions.reworkRejectSizeAction(input);
-    await get().refresh();
+    backgroundRefresh();
   },
   wasteRejectSize: async (input) => {
     await actions.wasteRejectSizeAction(input);
-    await get().refresh();
+    backgroundRefresh();
   },
   updateDeliveryKoli: async (koliId, patch) => {
     await actions.updateDeliveryKoliAction(koliId, patch);
-    await get().refresh();
+    backgroundRefresh();
   },
   setVendorInvoiceDueDate: async (invoiceId, dueDate) => {
     await actions.setVendorInvoiceDueDateAction(invoiceId, dueDate);
-    await get().refresh();
+    backgroundRefresh();
   },
   setVendorInvoiceOngkir: async (invoiceId, ongkirTotal) => {
     await actions.setVendorInvoiceOngkirAction(invoiceId, ongkirTotal);
-    await get().refresh();
+    backgroundRefresh();
   },
   confirmFgDone: async (groupKey, mrpId, vendorProduksi, warna, lengan) => {
     await actions.confirmFgDoneAction(groupKey, mrpId, vendorProduksi, warna, lengan);
-    await get().refresh();
+    backgroundRefresh();
   },
   undoFgConfirm: async (groupKey) => {
     await actions.undoFgConfirmAction(groupKey);
-    await get().refresh();
+    backgroundRefresh();
   },
   markProductionGroupDone: async (groupKey, mrpId, vendorProduksi, warna, lengan) => {
     await actions.markProductionGroupDoneAction(groupKey, mrpId, vendorProduksi, warna, lengan);
-    await get().refresh();
+    backgroundRefresh();
   },
   undoProductionGroupDone: async (groupKey) => {
     await actions.undoProductionGroupDoneAction(groupKey);
-    await get().refresh();
+    backgroundRefresh();
   },
   setRejectRemark: async (poId, remark) => {
     await actions.setRejectRemarkAction(poId, remark);
-    await get().refresh();
+    backgroundRefresh();
   },
   resolveMaterialClaim: async (key, note) => {
     await actions.resolveMaterialClaimAction(key, note);
-    await get().refresh();
+    backgroundRefresh();
   },
   unresolveMaterialClaim: async (key) => {
     await actions.unresolveMaterialClaimAction(key);
-    await get().refresh();
+    backgroundRefresh();
   },
   requestMaterialClaimRetur: async (key, note) => {
     await actions.requestMaterialClaimReturAction(key, note);
-    await get().refresh();
+    backgroundRefresh();
   },
   cancelMaterialClaimReturRequest: async (key) => {
     await actions.cancelMaterialClaimReturRequestAction(key);
-    await get().refresh();
+    backgroundRefresh();
   },
   markMaterialClaimReturDelivered: async (key, note) => {
     await actions.markMaterialClaimReturDeliveredAction(key, note);
-    await get().refresh();
+    backgroundRefresh();
   },
   confirmMaterialClaimReturReceived: async (key) => {
     await actions.confirmMaterialClaimReturReceivedAction(key);
-    await get().refresh();
+    backgroundRefresh();
   },
   resetAll: async () => {
     await actions.resetAllAction();
-    await get().refresh();
+    backgroundRefresh();
   },
-}));
+  });
+});
