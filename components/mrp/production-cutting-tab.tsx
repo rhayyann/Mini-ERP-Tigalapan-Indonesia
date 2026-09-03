@@ -39,6 +39,9 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const startProductionBatch = useMrpStore((s) => s.startProductionBatch);
   const updateBatchToCutting = useMrpStore((s) => s.updateBatchToCutting);
   const receiveRawMaterialRoll = useMrpStore((s) => s.receiveRawMaterialRoll);
+  const materialClaimReturDeliveries = useMrpStore((s) => s.materialClaimReturDeliveries);
+  const materialClaimReturReceipts = useMrpStore((s) => s.materialClaimReturReceipts);
+  const confirmMaterialClaimReturReceived = useMrpStore((s) => s.confirmMaterialClaimReturReceived);
 
   const [selectedMrpId, setSelectedMrpId] = useState("");
   const [selectedGroupKey, setSelectedGroupKey] = useState("");
@@ -74,7 +77,7 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const selectedDetail = mrpDetails.find((d) => d.mrp.id === selectedMrpId);
   const aduanRows = (selectedDetail?.aduanRows ?? []).filter((a) => a.vendor === vendorId);
 
-  const weighRows = selectedMrpId ? pendingWeighRolls(selectedMrpId, vendorId, invoices) : [];
+  const weighRows = selectedMrpId ? pendingWeighRolls(selectedMrpId, vendorId, invoices, productionBatches) : [];
   function weighKey(r: PendingWeighRoll): string {
     return `${r.invoiceId}|${r.warna}|${r.lengan}|${r.rollIndex}`;
   }
@@ -221,7 +224,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
       {selectedMrpId && weighRows.length > 0 && (
         <div className="w-full overflow-x-auto rounded-lg border border-[#F0DFC2] bg-warning-bg">
           <div className="border-b border-[#F0DFC2] px-4 py-3 font-sans text-[13px] font-semibold text-warning-fg">
-            Timbang roll — {weighRows.length} roll sudah diterima, belum ditimbang / masih di luar toleransi
+            Timbang roll — {weighRows.length} roll perlu ditimbang atau dikonfirmasi ulang
+          </div>
+          <div className="border-b border-[#F0DFC2] bg-white/60 px-4 py-2 font-sans text-[11px] leading-[1.5] text-warning-fg">
+            Roll yang sudah disimpan TETAP muncul di sini (bisa diedit lagi) selama belum dipilih code roll-nya di Aduan Pola &amp; di-submit Resting — kalau salah timbang, tinggal koreksi angkanya lalu Simpan lagi.
           </div>
           <div
             className="grid min-w-[900px] gap-x-3 border-b border-[#F0DFC2] bg-white/40 px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
@@ -240,34 +246,52 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
             const key = weighKey(r);
             const netVal = weighDraft[key] ?? r.netKg ?? r.grossKg;
             const variance = weightVariance(r.grossKg, netVal);
+            const delivery = materialClaimReturDeliveries[key];
+            const receipt = materialClaimReturReceipts[key];
+            const awaitingReceiveConfirm = !!delivery && !receipt;
             return (
-              <div
-                key={key}
-                className="grid min-w-[900px] items-center gap-x-3 border-b border-[#F0DFC2] bg-white px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0"
-                style={{ gridTemplateColumns: "minmax(140px,1.1fr) minmax(70px,0.6fr) minmax(120px,0.9fr) minmax(110px,0.9fr) minmax(110px,0.9fr) minmax(120px,1fr) minmax(110px,0.8fr) minmax(110px,0.9fr)" }}
-              >
-                <span>
-                  {r.warna} · {r.lengan}
-                  {r.netKg !== undefined && <span className="ml-1.5 font-mono text-[10px] text-danger-fg">(timbang ulang)</span>}
-                </span>
-                <span className="font-mono font-medium">Roll {r.rollIndex + 1}</span>
-                <span className="font-mono text-[11px]">{r.codeRoll || "—"}</span>
-                <span className="text-right font-mono">{formatDecimal(r.grossKg)}</span>
-                <span className="flex justify-end">
-                  <NumberInput value={netVal} decimals={2} onChange={(v) => setWeighDraft((prev) => ({ ...prev, [key]: v }))} className="input w-[100px] text-right" />
-                </span>
-                <span className={"text-right font-mono " + (variance.withinTolerance ? "text-success-fg" : "text-danger-fg")}>
-                  {variance.diff >= 0 ? "+" : ""}
-                  {formatDecimal(variance.diff)} kg ({variance.pct.toFixed(1)}%)
-                </span>
-                <span>
-                  <StatusPill tone={variance.withinTolerance ? "success" : "danger"}>{variance.withinTolerance ? "SESUAI" : "DI LUAR TOLERANSI"}</StatusPill>
-                </span>
-                <span>
-                  <Button onClick={() => saveWeigh(r)} variant="primary" size="xs">
-                    Simpan
-                  </Button>
-                </span>
+              <div key={key} className="border-b border-[#F0DFC2] last:border-b-0">
+                {awaitingReceiveConfirm && (
+                  <div className="flex items-center justify-between gap-2 bg-info-bg px-4 py-2">
+                    <span className="font-sans text-[11px] text-info-fg">
+                      Roll pengganti untuk klaim retur roll ini sudah dikirim Procurement{delivery.note ? ` (${delivery.note})` : ""} — sudah diterima fisik?
+                    </span>
+                    <Button onClick={() => confirmMaterialClaimReturReceived(key)} variant="primary" size="xs">
+                      Tandai Diterima
+                    </Button>
+                  </div>
+                )}
+                <div
+                  className="grid min-w-[900px] items-center gap-x-3 bg-white px-4 py-[11px] font-sans text-xs text-[#31414F]"
+                  style={{ gridTemplateColumns: "minmax(140px,1.1fr) minmax(70px,0.6fr) minmax(120px,0.9fr) minmax(110px,0.9fr) minmax(110px,0.9fr) minmax(120px,1fr) minmax(110px,0.8fr) minmax(110px,0.9fr)" }}
+                >
+                  <span>
+                    {r.warna} · {r.lengan}
+                    {r.netKg !== undefined && (
+                      <span className={"ml-1.5 font-mono text-[10px] " + (variance.withinTolerance ? "text-text-muted" : "text-danger-fg")}>
+                        {variance.withinTolerance ? "(sudah ditimbang — bisa diedit)" : "(timbang ulang)"}
+                      </span>
+                    )}
+                  </span>
+                  <span className="font-mono font-medium">Roll {r.rollIndex + 1}</span>
+                  <span className="font-mono text-[11px]">{r.codeRoll || "—"}</span>
+                  <span className="text-right font-mono">{formatDecimal(r.grossKg)}</span>
+                  <span className="flex justify-end">
+                    <NumberInput value={netVal} decimals={2} onChange={(v) => setWeighDraft((prev) => ({ ...prev, [key]: v }))} className="input w-[100px] text-right" />
+                  </span>
+                  <span className={"text-right font-mono " + (variance.withinTolerance ? "text-success-fg" : "text-danger-fg")}>
+                    {variance.diff >= 0 ? "+" : ""}
+                    {formatDecimal(variance.diff)} kg ({variance.pct.toFixed(1)}%)
+                  </span>
+                  <span>
+                    <StatusPill tone={variance.withinTolerance ? "success" : "danger"}>{variance.withinTolerance ? "SESUAI" : "DI LUAR TOLERANSI"}</StatusPill>
+                  </span>
+                  <span>
+                    <Button onClick={() => saveWeigh(r)} variant="primary" size="xs">
+                      Simpan
+                    </Button>
+                  </span>
+                </div>
               </div>
             );
           })}

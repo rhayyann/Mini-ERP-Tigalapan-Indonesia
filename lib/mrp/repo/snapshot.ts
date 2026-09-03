@@ -445,6 +445,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
   const addBuysByInvoice = groupBy(invoiceAddBuyRows.data ?? [], (r) => r.invoice_id);
   const materialClaimResolutions: FlowState["materialClaimResolutions"] = {};
   const materialClaimReturRequests: FlowState["materialClaimReturRequests"] = {};
+  const materialClaimReturDeliveries: FlowState["materialClaimReturDeliveries"] = {};
+  const materialClaimReturReceipts: FlowState["materialClaimReturReceipts"] = {};
 
   const invoices: RawMaterialInvoice[] = (invoiceRows.data ?? []).map((inv) => {
     const colors = colorsByInvoice[inv.id] ?? [];
@@ -471,6 +473,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
         const claimKey = `${inv.id}|${c.warna}|${c.lengan}|${r.roll_index}`;
         if (r.claim_resolved_note != null) materialClaimResolutions[claimKey] = { note: r.claim_resolved_note, resolvedAt: r.claim_resolved_at ?? "" };
         if (r.claim_retur_note != null) materialClaimReturRequests[claimKey] = { note: r.claim_retur_note, requestedAt: r.claim_retur_requested_at ?? "" };
+        if (r.claim_retur_delivered_at != null) materialClaimReturDeliveries[claimKey] = { note: r.claim_retur_delivered_note ?? "", deliveredAt: r.claim_retur_delivered_at };
+        if (r.claim_retur_received_at != null) materialClaimReturReceipts[claimKey] = { receivedAt: r.claim_retur_received_at };
       }
     }
     const addBuys: AddBuyItem[] = (addBuysByInvoice[inv.id] ?? []).map((a) => ({
@@ -702,6 +706,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     rejectRemarks,
     materialClaimResolutions,
     materialClaimReturRequests,
+    materialClaimReturDeliveries,
+    materialClaimReturReceipts,
     productionYieldResolutions,
     hargaMaklon,
     hargaKain,

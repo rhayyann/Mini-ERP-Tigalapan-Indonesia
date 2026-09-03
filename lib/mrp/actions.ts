@@ -836,7 +836,62 @@ export async function cancelMaterialClaimReturRequestAction(key: string): Promis
   await requireInternalRole(await requireSession(), "procurement");
   const parsed = parseClaimKey(key);
   if (!parsed) return;
-  await supabaseServer().from("raw_material_invoice_rolls").update({ claim_retur_note: null, claim_retur_requested_at: null }).eq("invoice_color_id", parsed.invoiceColorId).eq("roll_index", parsed.rollIndex);
+  // Batalkan mereset SELURUH progres retur (diminta -> dikirim -> diterima), bukan cuma
+  // permintaan awal -- kalau tidak, sisa kolom delivered/received bisa nyangkut dan bikin
+  // stageOf() di halaman Klaim Material salah baca status setelah dibatalkan.
+  await supabaseServer()
+    .from("raw_material_invoice_rolls")
+    .update({ claim_retur_note: null, claim_retur_requested_at: null, claim_retur_delivered_note: null, claim_retur_delivered_at: null, claim_retur_received_at: null })
+    .eq("invoice_color_id", parsed.invoiceColorId)
+    .eq("roll_index", parsed.rollIndex);
+}
+
+/** Procurement menandai roll pengganti (hasil "Minta Retur") sudah dikirim ke vendor -- biasanya
+ *  dipicu setelah supplier mengabari lewat WA. Tahap antara "Retur diminta" dan vendor benar2
+ *  timbang ulang di Cutting, supaya progresnya kelihatan di ERP bukan cuma di chat WA. */
+export async function markMaterialClaimReturDeliveredAction(key: string, note?: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "procurement");
+  const parsed = parseClaimKey(key);
+  if (!parsed) return;
+  const db = supabaseServer();
+  await db
+    .from("raw_material_invoice_rolls")
+    .update({ claim_retur_delivered_note: note ?? null, claim_retur_delivered_at: today() })
+    .eq("invoice_color_id", parsed.invoiceColorId)
+    .eq("roll_index", parsed.rollIndex);
+  const snapshot = await getFlowSnapshot();
+  const claim = materialClaimsList(snapshot.invoices).find((c) => c.key === key);
+  if (claim) {
+    await insertNotification(
+      notif(
+        `Roll pengganti untuk klaim retur roll #${claim.rollIndex + 1} (${claim.warna} · ${claim.lengan}, invoice ${claim.invoiceId}) sudah dikirim Procurement. Konfirmasi setelah diterima di halaman Produksi (tab Cutting).${note ? " Catatan: " + note : ""}`,
+        ["vendorMaklon"],
+        claim.vendorProduksi
+      )
+    );
+  }
+}
+
+/** Vendor mengonfirmasi roll pengganti (hasil "Minta Retur") sudah diterima secara fisik --
+ *  dicatat terpisah dari timbang ulang (net_kg) karena konfirmasi terima bisa duluan sebelum
+ *  sempat ditimbang. Tombolnya ada di halaman Produksi > Cutting, section "Timbang roll". */
+export async function confirmMaterialClaimReturReceivedAction(key: string): Promise<void> {
+  const vendorId = await requireVendorSession();
+  const parsed = parseClaimKey(key);
+  if (!parsed) return;
+  const db = supabaseServer();
+  await db.from("raw_material_invoice_rolls").update({ claim_retur_received_at: today() }).eq("invoice_color_id", parsed.invoiceColorId).eq("roll_index", parsed.rollIndex);
+  const snapshot = await getFlowSnapshot();
+  const claim = materialClaimsList(snapshot.invoices).find((c) => c.key === key);
+  if (claim) {
+    await insertNotification(
+      notif(
+        `Vendor konfirmasi roll pengganti untuk klaim retur roll #${claim.rollIndex + 1} (${claim.warna} · ${claim.lengan}, invoice ${claim.invoiceId}) sudah diterima -- tinggal ditimbang ulang.`,
+        ["procurement"]
+      )
+    );
+  }
+  void vendorId;
 }
 
 export async function closePoWithReasonAction(poId: string, reason: string, warna: string, lengan: Lengan, closeQty: number): Promise<void> {

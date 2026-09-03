@@ -111,6 +111,14 @@ export type FlowState = {
   rejectRemarks: Record<string, string>;
   materialClaimResolutions: Record<string, { note: string; resolvedAt: string }>;
   materialClaimReturRequests: Record<string, { note: string; requestedAt: string }>;
+  /** Procurement menandai roll pengganti (hasil "Minta Retur") sudah dikirim ke vendor — tahap
+   *  antara "Retur diminta" dan vendor benar2 timbang ulang di Cutting (lihat
+   *  markMaterialClaimReturDeliveredAction). */
+  materialClaimReturDeliveries: Record<string, { note: string; deliveredAt: string }>;
+  /** Vendor mengonfirmasi roll pengganti sudah diterima fisik — dicatat terpisah dari timbang
+   *  ulang karena konfirmasi terima bisa duluan sebelum sempat ditimbang (lihat
+   *  confirmMaterialClaimReturReceivedAction). */
+  materialClaimReturReceipts: Record<string, { receivedAt: string }>;
   /** Keyed by ProductionBatch.id — resolusi alert yield <99% (lihat productionYieldAlertsList di
    *  derive.ts), ditindaklanjuti dari portal internal Produksi (bukan Procurement). */
   productionYieldResolutions: Record<string, ProductionYieldResolution>;
@@ -234,6 +242,8 @@ type FlowActions = {
   unresolveMaterialClaim: (key: string) => Promise<void>;
   requestMaterialClaimRetur: (key: string, note: string) => Promise<void>;
   cancelMaterialClaimReturRequest: (key: string) => Promise<void>;
+  markMaterialClaimReturDelivered: (key: string, note?: string) => Promise<void>;
+  confirmMaterialClaimReturReceived: (key: string) => Promise<void>;
   /** Dulu menghapus semua data LOKAL (localStorage browser sendiri) + reload -- sekarang benar2
    *  menghapus data BERSAMA di Supabase (semua modul & vendor). Confirm dialog WAJIB ditampilkan
    *  di caller SEBELUM memanggil ini -- lihat components/shell/reset-data-button.tsx. */
@@ -256,6 +266,8 @@ const emptyState: FlowState = {
   rejectRemarks: {},
   materialClaimResolutions: {},
   materialClaimReturRequests: {},
+  materialClaimReturDeliveries: {},
+  materialClaimReturReceipts: {},
   productionYieldResolutions: {},
   hargaMaklon: [],
   hargaKain: [],
@@ -638,6 +650,14 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) =>
   },
   cancelMaterialClaimReturRequest: async (key) => {
     await actions.cancelMaterialClaimReturRequestAction(key);
+    await get().refresh();
+  },
+  markMaterialClaimReturDelivered: async (key, note) => {
+    await actions.markMaterialClaimReturDeliveredAction(key, note);
+    await get().refresh();
+  },
+  confirmMaterialClaimReturReceived: async (key) => {
+    await actions.confirmMaterialClaimReturReceivedAction(key);
     await get().refresh();
   },
   resetAll: async () => {

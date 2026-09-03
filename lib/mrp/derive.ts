@@ -982,7 +982,14 @@ export type PendingWeighRoll = {
  *  atau sudah ditimbang tapi masih ada klaim selisih berat aktif (di luar toleransi, perlu
  *  ditimbang ulang) — dipakai di halaman Cutting sebagai daftar "Timbang roll" sebelum roll itu
  *  bisa dipilih untuk Resting (lihat availableCodeRollsForColor). */
-export function pendingWeighRolls(mrpId: string, vendorId: string, invoices: RawMaterialInvoice[]): PendingWeighRoll[] {
+/** Roll yang sudah ditimbang & dalam toleransi TETAP ikut ditampilkan di sini selama roll itu
+ *  belum benar-benar dipakai di suatu ProductionBatch (dipilih code roll-nya lalu di-submit
+ *  Resting) — supaya salah timbang masih bisa dikoreksi sebelum benar-benar masuk tahap cutting
+ *  (dulu roll langsung "hilang" dari sini begitu disimpan, padahal cuma jadi tersedia dipilih,
+ *  belum jadi batch — tidak ada cara balik lihat/edit kalau salah timbang). Begitu code roll-nya
+ *  sudah terpakai di suatu batch, roll ini baru hilang dari daftar (edit sesudahnya akan bikin
+ *  data batch yang sudah tersimpan tidak konsisten). */
+export function pendingWeighRolls(mrpId: string, vendorId: string, invoices: RawMaterialInvoice[], batches: ProductionBatch[]): PendingWeighRoll[] {
   const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
   const out: PendingWeighRoll[] = [];
   for (const inv of invoices) {
@@ -991,12 +998,15 @@ export function pendingWeighRolls(mrpId: string, vendorId: string, invoices: Raw
       const key = c.warna + "|" + c.lengan;
       const arrivals = inv.rollArrivals[key] ?? [];
       const receipts = inv.rollReceipts[key] ?? [];
+      const usedCodeRolls = new Set(
+        batches.filter((b) => b.mrpId === mrpId && b.vendorProduksi === vendorId && b.warna === c.warna && b.lengan === c.lengan && b.codeRoll).map((b) => b.codeRoll!)
+      );
       c.rolls.forEach((grossKg, idx) => {
         const arrival = arrivals[idx];
         if (!arrival) return;
         const receipt = receipts[idx];
         const claimKey = `${inv.id}|${key}|${idx}`;
-        if (receipt && !activeClaimKeys.has(claimKey)) return;
+        if (receipt && !activeClaimKeys.has(claimKey) && receipt.codeRoll && usedCodeRolls.has(receipt.codeRoll)) return;
         out.push({
           invoiceId: inv.id,
           poId: inv.poId,
@@ -1013,6 +1023,39 @@ export function pendingWeighRolls(mrpId: string, vendorId: string, invoices: Raw
     }
   }
   return out;
+}
+
+/** Total roll yang muncul di section "Timbang roll" Cutting (belum ditimbang, ATAU sudah
+ *  ditimbang tapi belum terpakai di batch manapun — lihat catatan di pendingWeighRolls),
+ *  dihitung lintas SEMUA MRP untuk vendor ini — dipakai badge sidebar "Produksi" dan tab
+ *  "Cutting" (lib/shell/badges.ts) supaya roll yang nyangkut di sana ikut kelihatan. Sebelumnya
+ *  badge cuma menghitung ProductionBatch, padahal roll yang belum ditimbang belum jadi
+ *  ProductionBatch sama sekali (baru jadi batch setelah ditimbang + dipilih ke Resting) — jadi
+ *  roll yang menunggu ditimbang tidak pernah kelihatan di badge mana pun. Logic sama seperti
+ *  pendingWeighRolls di atas, cuma tidak dibatasi ke satu mrpId. */
+export function pendingWeighRollsCount(vendorId: string, invoices: RawMaterialInvoice[], batches: ProductionBatch[]): number {
+  const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
+  let count = 0;
+  for (const inv of invoices) {
+    if (inv.destinationVendor !== vendorId) continue;
+    for (const c of inv.colorEntries) {
+      const key = c.warna + "|" + c.lengan;
+      const arrivals = inv.rollArrivals[key] ?? [];
+      const receipts = inv.rollReceipts[key] ?? [];
+      const usedCodeRolls = new Set(
+        batches.filter((b) => b.mrpId === inv.mrpId && b.vendorProduksi === vendorId && b.warna === c.warna && b.lengan === c.lengan && b.codeRoll).map((b) => b.codeRoll!)
+      );
+      c.rolls.forEach((_grossKg, idx) => {
+        const arrival = arrivals[idx];
+        if (!arrival) return;
+        const receipt = receipts[idx];
+        const claimKey = `${inv.id}|${key}|${idx}`;
+        if (receipt && !activeClaimKeys.has(claimKey) && receipt.codeRoll && usedCodeRolls.has(receipt.codeRoll)) return;
+        count++;
+      });
+    }
+  }
+  return count;
 }
 
 export function startedRollsForAduan(aduanRowId: string, batches: ProductionBatch[]): number {
