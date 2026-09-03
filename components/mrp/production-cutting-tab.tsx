@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
   availableCodeRollsForColor,
-  availableRollsForAduanRow,
+  availableRollsByAduanRow,
   formatDateTime,
   formatDecimal,
   formatDuration,
@@ -46,6 +46,13 @@ function toUtcIso(localDatetimeValue: string): string {
 type AduanGroup = { kode: string; lengan: Lengan; rows: (AduanPolaRow & { available: number })[]; totalQty: number; totalAvailable: number };
 type CuttingLine = { id: string; warna: string; codeRoll: string; gramasi: number };
 
+// Kolom "Material dalam produksi" -- MRP | Kode | Warna/lengan | Code roll | Roll | Gramasi |
+// Resting | Cutting | Durasi Resting | Status Resting | Hasil Aduan/Yield. "Status Resting"
+// (badge "RESTING KURANG DARI TARGET") sekarang kolom TERSENDIRI, tidak lagi digabung dengan
+// "Durasi Resting" -- sebelumnya keduanya di satu sel bikin badge menabrak kolom sebelahnya.
+const CUTTING_BATCH_COLUMNS =
+  "minmax(85px,0.5fr) minmax(75px,0.4fr) minmax(150px,1fr) minmax(130px,0.8fr) minmax(60px,0.4fr) minmax(90px,0.5fr) minmax(160px,1fr) minmax(190px,1.1fr) minmax(110px,0.6fr) minmax(160px,0.9fr) minmax(230px,1.4fr)";
+
 export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
   const maklonPOs = useMrpStore((s) => s.maklonPOs);
@@ -76,6 +83,9 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   // — dulu tidak ada tempat mencatat ini sama sekali, cutting output cuma diestimasi dari rasio
   // rencana MRP (lihat cuttingSizesForGroup di derive.ts).
   const [cuttingSizeDraft, setCuttingSizeDraft] = useState<Record<string, Record<string, number>>>({});
+  // Input "Hasil aduan" (datetime cutting + qty per size) sekarang popup, bukan baris expand
+  // inline -- cuma SATU batch yang bisa diisi dalam satu waktu, ditentukan oleh id ini.
+  const [activeCuttingBatchId, setActiveCuttingBatchId] = useState<string | null>(null);
   const [submitNotice, setSubmitNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // Timbang roll — dulu ada di Good Receive (vendor timbang begitu roll fisik datang), sekarang
@@ -137,9 +147,12 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
     commitWeigh(r, netKg);
   }
 
+  // Dihitung SEKALIGUS untuk semua baris (bukan per-baris independen) -- baris dengan
+  // warna+lengan sama berbagi satu pool roll fisik, lihat catatan di availableRollsByAduanRow.
+  const availableByRow = selectedMrpId ? availableRollsByAduanRow(aduanRows, invoices, productionBatches, selectedMrpId) : {};
   const groups = new Map<string, AduanGroup>();
   for (const row of aduanRows) {
-    const available = selectedDetail ? availableRollsForAduanRow(row, selectedDetail.aduanRows, invoices, productionBatches, selectedMrpId) : 0;
+    const available = availableByRow[row.id] ?? 0;
     const key = row.kode + "|" + row.lengan;
     const g = groups.get(key) ?? { kode: row.kode, lengan: row.lengan, rows: [], totalQty: 0, totalAvailable: 0 };
     g.rows.push({ ...row, available });
@@ -534,10 +547,9 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
         <div className="overflow-x-auto">
           <div>
             <div
-              className="grid min-w-[1450px] gap-x-5 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
+              className="grid min-w-[1650px] gap-x-5 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
               style={{
-                gridTemplateColumns:
-                  "minmax(85px,0.5fr) minmax(75px,0.4fr) minmax(150px,1fr) minmax(130px,0.8fr) minmax(60px,0.4fr) minmax(90px,0.5fr) minmax(160px,1fr) minmax(190px,1.1fr) minmax(210px,1.2fr) minmax(190px,1.1fr)",
+                gridTemplateColumns: CUTTING_BATCH_COLUMNS,
               }}
             >
               <span>MRP</span>
@@ -549,30 +561,24 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
               <span>Resting</span>
               <span>Cutting</span>
               <span>Durasi Resting</span>
+              <span>Status Resting</span>
               <span>Hasil Aduan / Yield</span>
             </div>
             {myBatches.length === 0 && <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">Belum ada batch produksi.</div>}
             {myBatches.map((b) => {
-              const draft = cuttingDraft[b.id];
               const durasiKurang = b.cuttingAt ? restingMinutes(b.restingAt, b.cuttingAt) < RESTING_TARGET_MINUTES : false;
               const detail = mrpDetails.find((d) => d.mrp.id === b.mrpId);
               const targetSizes = targetSizesForBatch(b, detail?.aduanRows ?? []);
               const targetTotal = Object.values(targetSizes).reduce((a, c) => a + c, 0);
-              const sizeDraft = cuttingSizeDraft[b.id] ?? {};
-              const actualTotal = b.sizeQty
-                ? Object.values(b.sizeQty).reduce((a, c) => a + c, 0)
-                : Object.values(sizeDraft).reduce((a, c) => a + c, 0);
-              const yieldPct = targetTotal > 0 ? (actualTotal / targetTotal) * 100 : null;
+              const actualTotal = b.sizeQty ? Object.values(b.sizeQty).reduce((a, c) => a + c, 0) : 0;
+              const yieldPct = targetTotal > 0 && b.sizeQty ? (actualTotal / targetTotal) * 100 : null;
               const yieldAlert = yieldPct !== null && yieldPct < YIELD_ALERT_THRESHOLD_PCT;
+              // Rincian per size (bukan cuma total qty) -- diminta supaya kelihatan size mana
+              // yang hasilnya kurang, bukan cuma total gabungan yang bisa menyamarkan itu.
+              const sizesForDetail = Array.from(new Set([...Object.keys(targetSizes), ...Object.keys(b.sizeQty ?? {})]));
               return (
                 <div key={b.id} className="border-b border-[#F1F4F7] last:border-b-0">
-                  <div
-                    className="grid min-w-[1450px] items-center gap-x-5 px-4 py-[11px] font-sans text-xs text-[#31414F]"
-                    style={{
-                      gridTemplateColumns:
-                        "minmax(85px,0.5fr) minmax(75px,0.4fr) minmax(150px,1fr) minmax(130px,0.8fr) minmax(60px,0.4fr) minmax(90px,0.5fr) minmax(160px,1fr) minmax(190px,1.1fr) minmax(210px,1.2fr) minmax(190px,1.1fr)",
-                    }}
-                  >
+                  <div className="grid min-w-[1650px] items-center gap-x-5 px-4 py-[11px] font-sans text-xs text-[#31414F]" style={{ gridTemplateColumns: CUTTING_BATCH_COLUMNS }}>
                     <span className="font-mono">{b.mrpId}</span>
                     <span className="font-mono font-medium">{b.kode}</span>
                     <span>
@@ -585,18 +591,12 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                     <span className="font-mono text-[11px]">
                       {b.cuttingAt ? (
                         formatDateTime(b.cuttingAt)
-                      ) : draft !== undefined ? (
-                        <input
-                          type="datetime-local"
-                          value={draft}
-                          onChange={(e) => setCuttingDraft((prev) => ({ ...prev, [b.id]: e.target.value }))}
-                          className="w-full rounded-md border border-[#DDE4EB] px-1.5 py-1 font-mono text-[11px]"
-                        />
                       ) : (
                         <Button
                           onClick={() => {
-                            setCuttingDraft((prev) => ({ ...prev, [b.id]: nowLocalDatetime() }));
+                            setCuttingDraft((prev) => ({ ...prev, [b.id]: prev[b.id] ?? nowLocalDatetime() }));
                             setCuttingSizeDraft((prev) => ({ ...prev, [b.id]: prev[b.id] ?? {} }));
+                            setActiveCuttingBatchId(b.id);
                           }}
                           variant="primary"
                           size="xs"
@@ -605,19 +605,22 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                         </Button>
                       )}
                     </span>
-                    <span className="flex flex-col items-start gap-1 font-mono text-[11px] text-text-muted">
-                      <span>{formatDuration(b.restingAt, b.cuttingAt ?? new Date().toISOString())}</span>
-                      {durasiKurang && <StatusPill tone="warning">RESTING KURANG DARI TARGET</StatusPill>}
-                    </span>
-                    <span className="flex flex-wrap items-center gap-1 font-mono text-[11px]">
+                    <span className="font-mono text-[11px] text-text-muted">{formatDuration(b.restingAt, b.cuttingAt ?? new Date().toISOString())}</span>
+                    <span>{durasiKurang && <StatusPill tone="warning">RESTING KURANG DARI TARGET</StatusPill>}</span>
+                    <span className="flex flex-col gap-0.5 font-mono text-[11px]">
                       {b.cuttingAt ? (
                         b.sizeQty ? (
                           <>
-                            <span>
-                              {actualTotal} / {targetTotal} pcs
+                            <span className="flex flex-wrap items-center gap-1">
+                              <span>
+                                {actualTotal} / {targetTotal} pcs
+                              </span>
+                              {yieldPct !== null && <StatusPill tone={yieldAlert ? "danger" : "success"}>{yieldPct.toFixed(1)}%</StatusPill>}
                             </span>
-                            {yieldPct !== null && (
-                              <StatusPill tone={yieldAlert ? "danger" : "success"}>{yieldPct.toFixed(1)}%</StatusPill>
+                            {sizesForDetail.length > 0 && (
+                              <span className="text-[10px] text-text-muted">
+                                {sizesForDetail.map((size) => `${size} ${b.sizeQty?.[size] ?? 0}/${targetSizes[size] ?? 0}`).join(" · ")}
+                              </span>
                             )}
                           </>
                         ) : (
@@ -628,82 +631,107 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                       )}
                     </span>
                   </div>
-                  {!b.cuttingAt && draft !== undefined && (
-                    <div className="border-t border-[#CFE0EF] bg-info-bg px-4 py-3">
-                      <div className="font-sans text-[11px] font-semibold text-info-fg">
-                        Hasil aduan — {b.warna} · {b.lengan} (target {targetTotal} pcs dari roll ini)
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {Object.keys(targetSizes).length === 0 && (
-                          <span className="font-sans text-[11px] text-text-muted">Aduan pola untuk roll ini tidak punya rincian size.</span>
-                        )}
-                        {Object.entries(targetSizes).map(([size, tgt]) => (
-                          <div key={size} className="flex flex-col">
-                            <span className="font-sans text-[10px] text-text-muted">
-                              {size} <span className="text-[9px]">(target {tgt})</span>
-                            </span>
-                            <NumberInput
-                              value={sizeDraft[size] ?? 0}
-                              decimals={0}
-                              onChange={(v) =>
-                                setCuttingSizeDraft((prev) => ({ ...prev, [b.id]: { ...(prev[b.id] ?? {}), [size]: v } }))
-                              }
-                              className="input mt-0.5 w-[80px] text-right"
-                            />
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-2.5 flex items-center gap-2">
-                        <Button
-                          onClick={() => {
-                            updateBatchToCutting(b.id, toUtcIso(draft), sizeDraft);
-                            setCuttingDraft((prev) => {
-                              const next = { ...prev };
-                              delete next[b.id];
-                              return next;
-                            });
-                            setCuttingSizeDraft((prev) => {
-                              const next = { ...prev };
-                              delete next[b.id];
-                              return next;
-                            });
-                          }}
-                          variant="success"
-                          size="xs"
-                        >
-                          Simpan
-                        </Button>
-                        <button
-                          onClick={() => {
-                            setCuttingDraft((prev) => {
-                              const next = { ...prev };
-                              delete next[b.id];
-                              return next;
-                            });
-                            setCuttingSizeDraft((prev) => {
-                              const next = { ...prev };
-                              delete next[b.id];
-                              return next;
-                            });
-                          }}
-                          className="font-sans text-[11px] font-semibold text-action-primary"
-                        >
-                          Batal
-                        </button>
-                        {targetTotal > 0 && actualTotal > 0 && actualTotal / targetTotal < YIELD_ALERT_THRESHOLD_PCT / 100 && (
-                          <span className="font-sans text-[10.5px] text-danger-fg">
-                            Yield {((actualTotal / targetTotal) * 100).toFixed(1)}% — di bawah baseline {YIELD_ALERT_THRESHOLD_PCT}%, akan masuk alert yield ke portal Produksi.
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )}
                 </div>
               );
             })}
           </div>
         </div>
       </div>
+
+      {activeCuttingBatchId &&
+        (() => {
+          const b = myBatches.find((batch) => batch.id === activeCuttingBatchId);
+          if (!b || b.cuttingAt) return null;
+          const draft = cuttingDraft[b.id] ?? nowLocalDatetime();
+          const detail = mrpDetails.find((d) => d.mrp.id === b.mrpId);
+          const targetSizes = targetSizesForBatch(b, detail?.aduanRows ?? []);
+          const targetTotal = Object.values(targetSizes).reduce((a, c) => a + c, 0);
+          const sizeDraft = cuttingSizeDraft[b.id] ?? {};
+          const actualTotal = Object.values(sizeDraft).reduce((a, c) => a + c, 0);
+          function closeModal() {
+            setActiveCuttingBatchId(null);
+            setCuttingDraft((prev) => {
+              const next = { ...prev };
+              delete next[b!.id];
+              return next;
+            });
+            setCuttingSizeDraft((prev) => {
+              const next = { ...prev };
+              delete next[b!.id];
+              return next;
+            });
+          }
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B131B]/45 p-4">
+              <div className="w-full max-w-[520px] rounded-lg bg-white shadow-[0_8px_24px_rgba(11,19,27,.2)]">
+                <div className="border-b border-border-subtle px-5 py-3.5">
+                  <span className="font-sans text-[13px] font-semibold text-text-primary">
+                    Update ke Cutting — {b.warna} · {b.lengan} ({b.codeRoll || "roll " + b.qtyRoll})
+                  </span>
+                </div>
+                <div className="max-h-[70vh] overflow-y-auto px-5 py-4">
+                  <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Tanggal &amp; jam cutting</div>
+                  <input
+                    type="datetime-local"
+                    value={draft}
+                    onChange={(e) => setCuttingDraft((prev) => ({ ...prev, [b.id]: e.target.value }))}
+                    className="input mt-1"
+                  />
+
+                  <div className="mt-3.5 font-sans text-[11px] font-semibold text-text-primary">Hasil aduan (target {targetTotal} pcs dari roll ini)</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {Object.keys(targetSizes).length === 0 && (
+                      <span className="font-sans text-[11px] text-text-muted">Aduan pola untuk roll ini tidak punya rincian size.</span>
+                    )}
+                    {Object.entries(targetSizes).map(([size, tgt]) => (
+                      <div key={size} className="flex flex-col">
+                        <span className="font-sans text-[10px] text-text-muted">
+                          {size} <span className="text-[9px]">(target {tgt})</span>
+                        </span>
+                        <NumberInput
+                          value={sizeDraft[size] ?? 0}
+                          decimals={0}
+                          onChange={(v) => setCuttingSizeDraft((prev) => ({ ...prev, [b.id]: { ...(prev[b.id] ?? {}), [size]: v } }))}
+                          className="input mt-0.5 w-[86px] text-right"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {targetTotal > 0 && actualTotal > 0 && actualTotal / targetTotal < YIELD_ALERT_THRESHOLD_PCT / 100 && (
+                    <div className="mt-2.5 font-sans text-[10.5px] text-danger-fg">
+                      Yield {((actualTotal / targetTotal) * 100).toFixed(1)}% — di bawah baseline {YIELD_ALERT_THRESHOLD_PCT}%, akan masuk alert yield ke portal Produksi.
+                    </div>
+                  )}
+                </div>
+                <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-3.5">
+                  <button onClick={closeModal} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-[7px] font-sans text-xs font-semibold text-action-primary">
+                    Batal
+                  </button>
+                  <Button
+                    onClick={() => {
+                      updateBatchToCutting(b.id, toUtcIso(draft), sizeDraft);
+                      setActiveCuttingBatchId(null);
+                      setCuttingDraft((prev) => {
+                        const next = { ...prev };
+                        delete next[b.id];
+                        return next;
+                      });
+                      setCuttingSizeDraft((prev) => {
+                        const next = { ...prev };
+                        delete next[b.id];
+                        return next;
+                      });
+                    }}
+                    variant="success"
+                    size="sm"
+                  >
+                    Simpan
+                  </Button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
       {pendingClaim && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B131B]/45">

@@ -1086,13 +1086,35 @@ export function startedRollsForAduan(aduanRowId: string, batches: ProductionBatc
   return batches.filter((b) => b.aduanRowId === aduanRowId).reduce((s, b) => s + b.qtyRoll, 0);
 }
 
-export function availableRollsForAduanRow(row: AduanPolaRow, aduanRows: AduanPolaRow[], invoices: RawMaterialInvoice[], batches: ProductionBatch[], mrpId: string): number {
-  const received = receivedRollCountWithCodeForColor(mrpId, row.vendor, row.warna, row.lengan, invoices);
-  const sameColorRows = aduanRows.filter((a) => a.vendor === row.vendor && a.warna === row.warna && a.lengan === row.lengan);
-  const startedForColor = sameColorRows.reduce((s, r) => s + startedRollsForAduan(r.id, batches), 0);
-  const availableForColor = Math.max(0, received - startedForColor);
-  const remainingForRow = Math.max(0, row.qtyRoll - startedRollsForAduan(row.id, batches));
-  return Math.min(remainingForRow, availableForColor);
+/** Alokasi jumlah roll TERSEDIA (sudah ditimbang & dalam toleransi, punya code roll, belum
+ *  dipakai batch) ke SEMUA baris aduan pola satu MRP sekaligus — BUKAN dihitung independen per
+ *  baris seperti dulu (`availableRollsForAduanRow`). Baris aduan dengan warna+lengan yang sama
+ *  (mis. beberapa "kode" pola berbeda tapi warnanya sama) berbagi SATU pool roll fisik yang sama
+ *  — roll belum "milik" kode tertentu sampai benar-benar dipilih & di-Resting. Kalau tiap baris
+ *  dihitung independen (masing-masing dibatasi ke ANGKA POOL PENUH), jumlah gabungan lintas baris
+ *  bisa lebih besar dari roll yang benar-benar ada di pool — terutama begitu pool berkurang (mis.
+ *  1 roll terkunci klaim selisih berat, lihat pendingWeighRolls/materialClaimsList): tanpa fix
+ *  ini, 3 baris dengan qtyRoll 1/2/1 dari pool 3 roll bisa sama-sama tampil "tersedia" penuh dan
+ *  jumlahnya 4, bukan 3. Sekarang pool dialokasikan BERURUTAN sesuai urutan baris (array order),
+ *  jadi total gabungan selalu pas dengan roll yang benar-benar ada. */
+export function availableRollsByAduanRow(aduanRows: AduanPolaRow[], invoices: RawMaterialInvoice[], batches: ProductionBatch[], mrpId: string): Record<string, number> {
+  const poolByColor = new Map<string, number>();
+  const out: Record<string, number> = {};
+  for (const row of aduanRows) {
+    const colorKey = row.vendor + "|" + row.warna + "|" + row.lengan;
+    if (!poolByColor.has(colorKey)) {
+      const received = receivedRollCountWithCodeForColor(mrpId, row.vendor, row.warna, row.lengan, invoices);
+      const sameColorRows = aduanRows.filter((a) => a.vendor === row.vendor && a.warna === row.warna && a.lengan === row.lengan);
+      const startedForColor = sameColorRows.reduce((s, r) => s + startedRollsForAduan(r.id, batches), 0);
+      poolByColor.set(colorKey, Math.max(0, received - startedForColor));
+    }
+    const remainingForRow = Math.max(0, row.qtyRoll - startedRollsForAduan(row.id, batches));
+    const poolLeft = poolByColor.get(colorKey)!;
+    const claimed = Math.min(remainingForRow, poolLeft);
+    out[row.id] = claimed;
+    poolByColor.set(colorKey, poolLeft - claimed);
+  }
+  return out;
 }
 
 export function restingMinutes(fromIso: string, toIso: string): number {
@@ -1515,24 +1537,41 @@ export function fgPackedBySize(mrpId: string, vendorProduksi: string, kolis: Del
   return map;
 }
 
-export function availableFgToShip(mrpId: string, vendorProduksi: string, results: ProductionResult[], kolis: DeliveryKoli[], excludeKoliId?: string, source: ShippableKind = "FG"): AvailableFgRow[] {
+export function availableFgToShip(
+  mrpId: string,
+  vendorProduksi: string,
+  results: ProductionResult[],
+  kolis: DeliveryKoli[],
+  productionGroupMeta: ProductionGroupMeta[],
+  excludeKoliId?: string,
+  source: ShippableKind = "FG"
+): AvailableFgRow[] {
   const produced = fgProducedBySize(mrpId, vendorProduksi, results, source);
   const packed = fgPackedBySize(mrpId, vendorProduksi, kolis, excludeKoliId, source);
   const out: AvailableFgRow[] = [];
   for (const [key, producedQty] of produced.entries()) {
+    const [warna, lengan, size, usia] = key.split("|");
+    // Hasil produksi 1 warna/lengan baru boleh masuk Pengiriman setelah "Selesai Produksi"
+    // diklik di tab Final Produksi (productionGroupMeta.doneAt) -- sebelum itu Finish Good
+    // masih bisa berubah (belum tentu semuanya sudah diinput, reject/rework/waste-nya belum
+    // final), jadi belum boleh dikirim meski qty Finish Good yang sudah masuk sekilas terlihat
+    // "cukup". Dulu FG langsung kelihatan di Pengiriman begitu disimpan, terlepas dari status
+    // grupnya -- itu penyebab bisa kekirim sebelum Final Produksi dikonfirmasi.
+    if (!productionGroupMetaFor(mrpId + "|" + warna + "|" + lengan, productionGroupMeta)?.doneAt) continue;
     const available = producedQty - (packed.get(key) ?? 0);
     if (available > 0) {
-      const [warna, lengan, size, usia] = key.split("|");
       out.push({ warna, lengan: lengan as Lengan, size, usia: (usia || undefined) as Usia | undefined, available });
     }
   }
   return out;
 }
 
-export function mrpIdsWithUnpackedFg(vendorProduksi: string, results: ProductionResult[], kolis: DeliveryKoli[]): string[] {
+export function mrpIdsWithUnpackedFg(vendorProduksi: string, results: ProductionResult[], kolis: DeliveryKoli[], productionGroupMeta: ProductionGroupMeta[]): string[] {
   const sources: ShippableKind[] = ["FG", "REJECT", "REWORK"];
   const mrpIds = Array.from(new Set(results.filter((r) => r.vendorProduksi === vendorProduksi).map((r) => r.mrpId)));
-  return mrpIds.filter((mrpId) => sources.some((source) => availableFgToShip(mrpId, vendorProduksi, results, kolis, undefined, source).length > 0));
+  return mrpIds.filter((mrpId) =>
+    sources.some((source) => availableFgToShip(mrpId, vendorProduksi, results, kolis, productionGroupMeta, undefined, source).length > 0)
+  );
 }
 
 export type DeliveredQtyRow = { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; qty: number };

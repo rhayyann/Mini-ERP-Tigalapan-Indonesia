@@ -217,9 +217,15 @@ export function countVendorGoodReceiveEligible(vendorId: string, invoices: RawMa
   ).length;
 }
 
-/** MRP dengan hasil produksi (FG/reject/rework) yang belum dikemas ke koli pengiriman. */
-export function countVendorPengirimanReady(vendorId: string, productionResults: ProductionResult[], deliveryKolis: DeliveryKoli[]): number {
-  return mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis).length;
+/** MRP dengan hasil produksi (FG/reject/rework) yang belum dikemas ke koli pengiriman -- hanya
+ *  menghitung warna/lengan yang sudah "Selesai Produksi" (lihat gate di availableFgToShip). */
+export function countVendorPengirimanReady(
+  vendorId: string,
+  productionResults: ProductionResult[],
+  deliveryKolis: DeliveryKoli[],
+  productionGroupMeta: ProductionGroupMeta[]
+): number {
+  return mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta).length;
 }
 
 /** MRP yang sudah delivered tapi masih ada qty belum diinvoice — siap diajukan di sub-tab

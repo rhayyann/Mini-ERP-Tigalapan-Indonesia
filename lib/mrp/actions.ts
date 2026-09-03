@@ -710,13 +710,52 @@ export async function receiveRawMaterialRollAction(
   if (error) throw new Error(error.message);
 
   if (claim) {
-    const { data: inv } = await db.from("raw_material_invoices").select("po_id").eq("id", invoiceId).single();
+    const { data: inv } = await db.from("raw_material_invoices").select("po_id,mrp_id,supplier,destination_vendor").eq("id", invoiceId).single();
     await insertNotification(
       notif(
         `Claim selisih berat — ${inv?.po_id ?? ""} ${warna} · ${lengan} roll ${rollIndex + 1}: selisih ${claim.diffKg >= 0 ? "+" : ""}${claim.diffKg.toFixed(2)} kg (${claim.pct.toFixed(1)}%) di luar toleransi. Kode roll: ${codeRoll?.trim() || rollRow?.code_roll || "-"}, lot: ${rollRow?.code_lot || "-"}.`,
         ["procurement"]
       )
     );
+    // Catat ke arsip klaim (lihat findOpenClaimHistoryId) -- gagal di sini TIDAK menggagalkan
+    // aksi utama (claim di raw_material_invoice_rolls sudah tersimpan di atas).
+    try {
+      const historyId = await nextReadableId("MCH");
+      await db.from("material_claim_history").insert({
+        id: historyId,
+        invoice_id: invoiceId,
+        po_id: inv?.po_id ?? null,
+        mrp_id: inv?.mrp_id ?? null,
+        supplier: inv?.supplier ?? null,
+        vendor_produksi: inv?.destination_vendor ?? null,
+        warna,
+        lengan,
+        roll_index: rollIndex,
+        code_roll: codeRoll?.trim() || rollRow?.code_roll || null,
+        code_lot: rollRow?.code_lot ?? null,
+        gross_kg: rollRow?.gross_kg ?? null,
+        claimed_net_kg: netKg,
+        diff_kg: claim.diffKg,
+        pct: claim.pct,
+      });
+    } catch {
+      // tabel arsip belum ada (migration 0011 belum di-apply) -- diamkan, bukan fitur inti.
+    }
+  } else {
+    // Roll ditimbang & hasilnya sesuai toleransi -- kalau ada baris arsip TERBUKA untuk roll ini,
+    // tutup di sini (auto-resolve lewat timbang ulang, beda dari resolveMaterialClaimAction yang
+    // manual "Selesai" tanpa retur).
+    try {
+      const openId = await findOpenClaimHistoryId(db, invoiceId, warna, lengan, rollIndex);
+      if (openId) {
+        await db
+          .from("material_claim_history")
+          .update({ resolved_at: today(), resolution_kind: "AUTO_REWEIGH", resolved_net_kg: netKg, resolved_code_roll: codeRoll?.trim() || rollRow?.code_roll || null })
+          .eq("id", openId);
+      }
+    } catch {
+      // idem -- arsip opsional.
+    }
   }
   void vendorId;
 }
@@ -826,30 +865,84 @@ export async function setRejectRemarkAction(poId: string, remark: string): Promi
 
 /** Key format: "invoiceId|warna|lengan|rollIndex" (lihat materialClaimsList di derive.ts) --
  *  di-parse balik ke lokasi baris raw_material_invoice_rolls yang bersangkutan. */
-function parseClaimKey(key: string): { invoiceColorId: string; rollIndex: number } | null {
+function parseClaimKey(key: string): { invoiceId: string; warna: string; lengan: Lengan; invoiceColorId: string; rollIndex: number } | null {
   const parts = key.split("|");
   if (parts.length !== 4) return null;
   const [invoiceId, warna, lengan, rollIndexStr] = parts;
-  return { invoiceColorId: `${invoiceId}-${warna}-${lengan}`, rollIndex: parseInt(rollIndexStr, 10) };
+  return { invoiceId, warna, lengan: lengan as Lengan, invoiceColorId: `${invoiceId}-${warna}-${lengan}`, rollIndex: parseInt(rollIndexStr, 10) };
+}
+
+/** Cari baris material_claim_history yang masih TERBUKA (resolved_at kosong) untuk 1 roll --
+ *  dipakai buat update progres (retur diminta/dikirim/diterima/selesai) ke baris arsip yang
+ *  sama persis dengan progres yang ditulis ke kolom claim_retur_.../claim_resolved_... di
+ *  raw_material_invoice_rolls (lihat migration 0011_material_claim_history.sql). Kalau
+ *  tabelnya belum ada (migration belum di-apply) atau baris terbuka tidak ketemu, return null
+ *  diam-diam -- arsip ini fitur TAMBAHAN, gagal update di sini TIDAK BOLEH menggagalkan aksi
+ *  utamanya (mis. Minta Retur tetap harus jalan meski baris arsipnya entah kenapa tidak ada). */
+async function findOpenClaimHistoryId(db: ReturnType<typeof supabaseServer>, invoiceId: string, warna: string, lengan: Lengan, rollIndex: number): Promise<string | null> {
+  try {
+    const { data } = await db
+      .from("material_claim_history")
+      .select("id")
+      .eq("invoice_id", invoiceId)
+      .eq("warna", warna)
+      .eq("lengan", lengan)
+      .eq("roll_index", rollIndex)
+      .is("resolved_at", null)
+      .order("claimed_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return data?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function resolveMaterialClaimAction(key: string, note: string): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
   const parsed = parseClaimKey(key);
   if (!parsed) return;
-  const { error } = await supabaseServer()
+  const db = supabaseServer();
+  const { error } = await db
     .from("raw_material_invoice_rolls")
     .update({ claim_resolved_note: note, claim_resolved_at: today() })
     .eq("invoice_color_id", parsed.invoiceColorId)
     .eq("roll_index", parsed.rollIndex);
   if (error) throw new Error(error.message);
+  try {
+    const openId = await findOpenClaimHistoryId(db, parsed.invoiceId, parsed.warna, parsed.lengan, parsed.rollIndex);
+    if (openId) await db.from("material_claim_history").update({ resolved_at: today(), resolved_note: note, resolution_kind: "MANUAL" }).eq("id", openId);
+  } catch {
+    // arsip opsional.
+  }
 }
 
 export async function unresolveMaterialClaimAction(key: string): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
   const parsed = parseClaimKey(key);
   if (!parsed) return;
-  await supabaseServer().from("raw_material_invoice_rolls").update({ claim_resolved_note: null, claim_resolved_at: null }).eq("invoice_color_id", parsed.invoiceColorId).eq("roll_index", parsed.rollIndex);
+  const db = supabaseServer();
+  await db.from("raw_material_invoice_rolls").update({ claim_resolved_note: null, claim_resolved_at: null }).eq("invoice_color_id", parsed.invoiceColorId).eq("roll_index", parsed.rollIndex);
+  try {
+    // "Buka lagi" cuma bisa dipanggil untuk klaim yang statusnya masih SELESAI -- baris arsip
+    // yang relevan justru yang SUDAH resolved (bukan openId), jadi dicari langsung tanpa
+    // findOpenClaimHistoryId (yang khusus baris resolved_at kosong).
+    const { data } = await db
+      .from("material_claim_history")
+      .select("id")
+      .eq("invoice_id", parsed.invoiceId)
+      .eq("warna", parsed.warna)
+      .eq("lengan", parsed.lengan)
+      .eq("roll_index", parsed.rollIndex)
+      .eq("resolution_kind", "MANUAL")
+      .not("resolved_at", "is", null)
+      .order("resolved_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (data?.id) await db.from("material_claim_history").update({ resolved_at: null, resolved_note: null, resolution_kind: null }).eq("id", data.id);
+  } catch {
+    // arsip opsional.
+  }
 }
 
 export async function requestMaterialClaimReturAction(key: string, note: string): Promise<void> {
@@ -858,6 +951,12 @@ export async function requestMaterialClaimReturAction(key: string, note: string)
   if (!parsed) return;
   const db = supabaseServer();
   await db.from("raw_material_invoice_rolls").update({ claim_retur_note: note, claim_retur_requested_at: today() }).eq("invoice_color_id", parsed.invoiceColorId).eq("roll_index", parsed.rollIndex);
+  try {
+    const openId = await findOpenClaimHistoryId(db, parsed.invoiceId, parsed.warna, parsed.lengan, parsed.rollIndex);
+    if (openId) await db.from("material_claim_history").update({ retur_note: note, retur_requested_at: today() }).eq("id", openId);
+  } catch {
+    // arsip opsional.
+  }
   const snapshot = await getFlowSnapshot();
   const claim = materialClaimsList(snapshot.invoices).find((c) => c.key === key);
   if (claim) {
@@ -875,14 +974,21 @@ export async function cancelMaterialClaimReturRequestAction(key: string): Promis
   await requireInternalRole(await requireSession(), "procurement");
   const parsed = parseClaimKey(key);
   if (!parsed) return;
+  const db = supabaseServer();
   // Batalkan mereset SELURUH progres retur (diminta -> dikirim -> diterima), bukan cuma
   // permintaan awal -- kalau tidak, sisa kolom delivered/received bisa nyangkut dan bikin
   // stageOf() di halaman Klaim Material salah baca status setelah dibatalkan.
-  await supabaseServer()
+  await db
     .from("raw_material_invoice_rolls")
     .update({ claim_retur_note: null, claim_retur_requested_at: null, claim_retur_delivered_note: null, claim_retur_delivered_at: null, claim_retur_received_at: null })
     .eq("invoice_color_id", parsed.invoiceColorId)
     .eq("roll_index", parsed.rollIndex);
+  try {
+    const openId = await findOpenClaimHistoryId(db, parsed.invoiceId, parsed.warna, parsed.lengan, parsed.rollIndex);
+    if (openId) await db.from("material_claim_history").update({ retur_note: null, retur_requested_at: null, retur_delivered_note: null, retur_delivered_at: null, retur_received_at: null }).eq("id", openId);
+  } catch {
+    // arsip opsional.
+  }
 }
 
 /** Procurement menandai roll pengganti (hasil "Minta Retur") sudah dikirim ke vendor -- biasanya
@@ -898,6 +1004,12 @@ export async function markMaterialClaimReturDeliveredAction(key: string, note?: 
     .update({ claim_retur_delivered_note: note ?? null, claim_retur_delivered_at: today() })
     .eq("invoice_color_id", parsed.invoiceColorId)
     .eq("roll_index", parsed.rollIndex);
+  try {
+    const openId = await findOpenClaimHistoryId(db, parsed.invoiceId, parsed.warna, parsed.lengan, parsed.rollIndex);
+    if (openId) await db.from("material_claim_history").update({ retur_delivered_note: note ?? null, retur_delivered_at: today() }).eq("id", openId);
+  } catch {
+    // arsip opsional.
+  }
   const snapshot = await getFlowSnapshot();
   const claim = materialClaimsList(snapshot.invoices).find((c) => c.key === key);
   if (claim) {
@@ -920,6 +1032,12 @@ export async function confirmMaterialClaimReturReceivedAction(key: string): Prom
   if (!parsed) return;
   const db = supabaseServer();
   await db.from("raw_material_invoice_rolls").update({ claim_retur_received_at: today() }).eq("invoice_color_id", parsed.invoiceColorId).eq("roll_index", parsed.rollIndex);
+  try {
+    const openId = await findOpenClaimHistoryId(db, parsed.invoiceId, parsed.warna, parsed.lengan, parsed.rollIndex);
+    if (openId) await db.from("material_claim_history").update({ retur_received_at: today() }).eq("id", openId);
+  } catch {
+    // arsip opsional.
+  }
   const snapshot = await getFlowSnapshot();
   const claim = materialClaimsList(snapshot.invoices).find((c) => c.key === key);
   if (claim) {

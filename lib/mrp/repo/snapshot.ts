@@ -11,6 +11,7 @@ import type {
   LenganGroup,
   MaklonInvoice,
   MaklonPO,
+  MaterialClaimHistory,
   MaterialPO,
   MaterialRow,
   Mrp,
@@ -71,6 +72,7 @@ type RawTables = Record<
   | "vendorInvoiceRows"
   | "vendorInvoiceLineRows"
   | "vendorInvoiceAdjustmentRows"
+  | "materialClaimHistoryRows"
   | "notificationRows"
   | "hargaMaklonRows"
   | "hargaKainRows"
@@ -113,6 +115,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     vendorInvoiceRows,
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
+    materialClaimHistoryRows,
     notificationRows,
     hargaMaklonRows,
     hargaKainRows,
@@ -147,6 +150,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     db.from("vendor_invoices").select("*"),
     db.from("vendor_invoice_lines").select("*"),
     db.from("vendor_invoice_adjustments").select("*"),
+    db.from("material_claim_history").select("*"),
     db.from("notifications").select("*"),
     db.from("harga_maklon").select("*"),
     db.from("harga_kain").select("*"),
@@ -182,6 +186,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     vendorInvoiceRows,
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
+    materialClaimHistoryRows,
     notificationRows,
     hargaMaklonRows,
     hargaKainRows,
@@ -230,6 +235,7 @@ async function fetchFlowRowsFast(db: SupabaseClient): Promise<RawTables> {
     vendorInvoiceRows: wrap("vendor_invoices"),
     vendorInvoiceLineRows: wrap("vendor_invoice_lines"),
     vendorInvoiceAdjustmentRows: wrap("vendor_invoice_adjustments"),
+    materialClaimHistoryRows: wrap("material_claim_history"),
     notificationRows: wrap("notifications"),
     hargaMaklonRows: wrap("harga_maklon"),
     hargaKainRows: wrap("harga_kain"),
@@ -281,6 +287,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     vendorInvoiceRows,
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
+    materialClaimHistoryRows,
     notificationRows,
     hargaMaklonRows,
     hargaKainRows,
@@ -648,6 +655,36 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     ongkirTotal: v.ongkir_total == null ? undefined : Number(v.ongkir_total),
   }));
 
+  // ---- Arsip/histori klaim selisih berat (lihat migration 0011_material_claim_history.sql) ----
+  const materialClaimHistory: MaterialClaimHistory[] = (materialClaimHistoryRows.data ?? []).map((h) => ({
+    id: h.id,
+    invoiceId: h.invoice_id,
+    poId: h.po_id ?? undefined,
+    mrpId: h.mrp_id ?? undefined,
+    supplier: h.supplier ?? undefined,
+    vendorProduksi: h.vendor_produksi ?? undefined,
+    warna: h.warna,
+    lengan: h.lengan,
+    rollIndex: h.roll_index,
+    codeRoll: h.code_roll ?? undefined,
+    codeLot: h.code_lot ?? undefined,
+    grossKg: Number(h.gross_kg),
+    claimedNetKg: Number(h.claimed_net_kg),
+    diffKg: Number(h.diff_kg),
+    pct: Number(h.pct),
+    claimedAt: h.claimed_at,
+    returNote: h.retur_note ?? undefined,
+    returRequestedAt: h.retur_requested_at ?? undefined,
+    returDeliveredNote: h.retur_delivered_note ?? undefined,
+    returDeliveredAt: h.retur_delivered_at ?? undefined,
+    returReceivedAt: h.retur_received_at ?? undefined,
+    resolvedAt: h.resolved_at ?? undefined,
+    resolvedNote: h.resolved_note ?? undefined,
+    resolutionKind: h.resolution_kind ?? undefined,
+    resolvedNetKg: h.resolved_net_kg == null ? undefined : Number(h.resolved_net_kg),
+    resolvedCodeRoll: h.resolved_code_roll ?? undefined,
+  }));
+
   // ---- Notifikasi ----
   const notifications: Notification[] = (notificationRows.data ?? []).map((n) => ({
     id: n.id,
@@ -708,6 +745,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     materialClaimReturRequests,
     materialClaimReturDeliveries,
     materialClaimReturReceipts,
+    materialClaimHistory,
     productionYieldResolutions,
     hargaMaklon,
     hargaKain,
