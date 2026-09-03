@@ -534,10 +534,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
         <div className="overflow-x-auto">
           <div>
             <div
-              className="grid min-w-[1200px] gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
+              className="grid min-w-[1450px] gap-x-5 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
               style={{
                 gridTemplateColumns:
-                  "minmax(80px,0.6fr) minmax(70px,0.5fr) minmax(140px,1.1fr) minmax(120px,0.9fr) minmax(60px,0.5fr) minmax(90px,0.7fr) minmax(140px,1.1fr) minmax(170px,1.3fr) minmax(170px,1.3fr) minmax(160px,1.2fr)",
+                  "minmax(85px,0.5fr) minmax(75px,0.4fr) minmax(150px,1fr) minmax(130px,0.8fr) minmax(60px,0.4fr) minmax(90px,0.5fr) minmax(160px,1fr) minmax(190px,1.1fr) minmax(210px,1.2fr) minmax(190px,1.1fr)",
               }}
             >
               <span>MRP</span>
@@ -567,10 +567,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
               return (
                 <div key={b.id} className="border-b border-[#F1F4F7] last:border-b-0">
                   <div
-                    className="grid min-w-[1200px] items-center gap-x-3 px-4 py-[11px] font-sans text-xs text-[#31414F]"
+                    className="grid min-w-[1450px] items-center gap-x-5 px-4 py-[11px] font-sans text-xs text-[#31414F]"
                     style={{
                       gridTemplateColumns:
-                        "minmax(80px,0.6fr) minmax(70px,0.5fr) minmax(140px,1.1fr) minmax(120px,0.9fr) minmax(60px,0.5fr) minmax(90px,0.7fr) minmax(140px,1.1fr) minmax(170px,1.3fr) minmax(170px,1.3fr) minmax(160px,1.2fr)",
+                        "minmax(85px,0.5fr) minmax(75px,0.4fr) minmax(150px,1fr) minmax(130px,0.8fr) minmax(60px,0.4fr) minmax(90px,0.5fr) minmax(160px,1fr) minmax(190px,1.1fr) minmax(210px,1.2fr) minmax(190px,1.1fr)",
                     }}
                   >
                     <span className="font-mono">{b.mrpId}</span>
@@ -605,8 +605,8 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                         </Button>
                       )}
                     </span>
-                    <span className="flex items-center gap-1.5 font-mono text-[11px] text-text-muted">
-                      {formatDuration(b.restingAt, b.cuttingAt ?? new Date().toISOString())}
+                    <span className="flex flex-col items-start gap-1 font-mono text-[11px] text-text-muted">
+                      <span>{formatDuration(b.restingAt, b.cuttingAt ?? new Date().toISOString())}</span>
                       {durasiKurang && <StatusPill tone="warning">RESTING KURANG DARI TARGET</StatusPill>}
                     </span>
                     <span className="flex flex-wrap items-center gap-1 font-mono text-[11px]">

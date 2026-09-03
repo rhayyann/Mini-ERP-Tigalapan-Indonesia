@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { NumberInput } from "@/components/mrp/number-input";
-import { Checkbox } from "@/components/ui/checkbox";
 import { StatusPill } from "@/components/ui/status-pill";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
@@ -21,10 +20,12 @@ import {
 } from "@/lib/mrp/derive";
 import type { ProductionResult } from "@/lib/mrp/types";
 
-// FG: checkbox (tandai selesai) | Warna/lengan | Progres (target+terinput+bar digabung
-// jadi satu kolom, bukan 3 kolom sempit terpisah — jauh lebih mudah dipindai sekilas) |
-// Target done produksi | Aksi.
-const FG_COLUMNS = "28px minmax(170px,1.3fr) minmax(190px,1.5fr) minmax(150px,1fr) minmax(150px,1fr)";
+// FG: Warna/lengan | Progres (target+terinput+bar digabung jadi satu kolom, bukan 3 kolom
+// sempit terpisah — jauh lebih mudah dipindai sekilas) | Target done produksi | Aksi.
+// Tombol "Selesai Produksi" TIDAK lagi di sini — sudah pindah ke tab Final Produksi (satu
+// tempat, digabung dengan rekap Reject & Rework — lihat production-final-tab.tsx) supaya tidak
+// ambigu dengan tombol "Simpan hasil produksi" di panel ini.
+const FG_COLUMNS = "minmax(170px,1.3fr) minmax(190px,1.5fr) minmax(150px,1fr) minmax(150px,1fr)";
 // REJECT: tiap angka (target/awal/sisa/waste) tetap bermakna terpisah, jadi tetap kolom angka
 // masing-masing — Sisa/Waste ditambah supaya reject yang dibuang (bukan dirework) kelihatan
 // terpisah dari yang masih jadi rework.
@@ -80,15 +81,12 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
   const rawInvoices = useMrpStore((s) => s.invoices);
   const rejectRemarks = useMrpStore((s) => s.rejectRemarks);
   const submitProductionResult = useMrpStore((s) => s.submitProductionResult);
-  const markProductionGroupDone = useMrpStore((s) => s.markProductionGroupDone);
-  const undoProductionGroupDone = useMrpStore((s) => s.undoProductionGroupDone);
   const setRejectRemark = useMrpStore((s) => s.setRejectRemark);
 
   const [selectedMrpId, setSelectedMrpId] = useState("");
   const [expandedGroupKey, setExpandedGroupKey] = useState("");
   const [sizeDraft, setSizeDraft] = useState<Record<string, number>>({});
   const [expandedPoId, setExpandedPoId] = useState("");
-  const [checkedGroupKey, setCheckedGroupKey] = useState("");
 
   const mrpIds = Array.from(new Set(productionBatches.filter((b) => b.vendorProduksi === vendorId && b.cuttingAt).map((b) => b.mrpId)));
   const groups = selectedMrpId ? cutWarnaLenganGroups(selectedMrpId, vendorId, productionBatches) : [];
@@ -127,7 +125,6 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
           onChange={(e) => {
             setSelectedMrpId(e.target.value);
             setExpandedGroupKey("");
-            setCheckedGroupKey("");
           }}
           className="mt-1 w-full max-w-[420px] rounded-md border border-[#DDE4EB] px-[11px] py-[9px] font-sans text-[12.5px] font-medium text-text-primary"
         >
@@ -152,7 +149,6 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                 className="grid items-center gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
                 style={{ gridTemplateColumns: gridColumns }}
               >
-                {kind === "FG" && <span />}
                 <span>Warna / lengan</span>
                 {kind === "REJECT" ? (
                   <>
@@ -187,7 +183,6 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                 const expanded = expandedGroupKey === groupKey;
                 const meta = productionGroupMetaFor(groupKey, productionGroupMeta);
                 const isDone = !!meta?.doneAt;
-                const checked = checkedGroupKey === groupKey;
                 const targetDoneAt = kind === "FG" ? targetDoneProduksiForGroup(selectedMrpId, vendorId, g.warna, rawInvoices) : undefined;
                 const progressPct = totalTarget > 0 ? Math.min(100, Math.round((totalRecorded / totalTarget) * 100)) : 0;
                 return (
@@ -196,33 +191,14 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                       className="grid items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F]"
                       style={{ gridTemplateColumns: gridColumns }}
                     >
-                      {kind === "FG" && (
-                        <Checkbox
-                          checked={checked}
-                          onChange={() => setCheckedGroupKey(checked ? "" : groupKey)}
-                          disabled={isDone}
-                          className="p-0"
-                        />
-                      )}
                       <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                         <span className="font-medium">
                           {g.warna} · {g.lengan}
                         </span>
-                        {isDone && (
-                          <span className="flex items-center gap-1.5">
-                            <StatusPill tone="success">Selesai</StatusPill>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                undoProductionGroupDone(groupKey);
-                              }}
-                              title="Buka kunci grup ini supaya bisa input Finish Good / Reject lagi"
-                              className="font-sans text-[10.5px] font-semibold text-action-primary underline"
-                            >
-                              Buka kunci ↺
-                            </button>
-                          </span>
-                        )}
+                        {/* Status "Selesai" murni info di sini -- aksi tandai/buka kunci sekarang
+                            HANYA di tab Final Produksi (satu tempat, tidak lagi tersebar/ambigu
+                            dengan tombol "Simpan hasil produksi" di panel ini). */}
+                        {isDone && <StatusPill tone="success">Selesai</StatusPill>}
                       </span>
                       {kind === "REJECT" ? (
                         <>
@@ -262,26 +238,10 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                         )}
                       </span>
                     </div>
-                    {kind === "FG" && checked && !isDone && (
-                      <div className="flex items-center gap-2 border-b border-[#F0DFC2] bg-warning-bg px-4 py-2.5">
-                        <span className="font-sans text-[11.5px] text-warning-fg">
-                          Tandai {g.warna} · {g.lengan} selesai produksi — tidak ada lagi penambahan finish good, reject, dan rework untuk material ini.
-                        </span>
-                        <button
-                          onClick={() => {
-                            markProductionGroupDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan);
-                            setCheckedGroupKey("");
-                          }}
-                          className="ml-auto flex-none rounded-md bg-action-primary px-3 py-[6px] font-sans text-[11px] font-semibold text-white"
-                        >
-                          Done Produksi
-                        </button>
-                      </div>
-                    )}
                     {expanded && !isDone && kind === "REJECT" && (
                       <div className="border-b border-[#F0DFC2] bg-warning-bg px-4 py-3 font-sans text-[11.5px] leading-[1.5] text-warning-fg">
-                        Reject grup ini belum dihitung — tidak ada input manual lagi. Selesaikan dulu Finish Good untuk warna/lengan ini (tombol &quot;Done
-                        Produksi&quot; di tab Finish Good) supaya reject dihitung otomatis dari target dikurangi finish good.
+                        Reject grup ini belum dihitung — tidak ada input manual lagi. Tandai {g.warna} · {g.lengan} &quot;Selesai Produksi&quot; di tab Final
+                        Produksi supaya reject dihitung otomatis dari hasil cutting dikurangi finish good.
                       </div>
                     )}
                     {expanded && isDone && kind === "REJECT" && (
@@ -318,27 +278,37 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                     {expanded && !isDone && kind === "FG" && (
                       <div className="border-b border-[#CFE0EF] bg-info-bg p-4">
                         <div className="overflow-hidden rounded-md border border-[#CFE0EF] bg-white">
-                          <div className="grid grid-cols-4 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                          <div className="grid grid-cols-5 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                             <span>Size</span>
                             <span className="text-right">Target</span>
                             <span className="text-right">Qty sudah diinput</span>
+                            <span className="text-right">Selisih</span>
                             <span className="text-right">Input</span>
                           </div>
-                          {sizes.map((size) => (
-                            <div key={size} className="grid grid-cols-4 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
-                              <span className="font-mono font-medium">{size}</span>
-                              <span className="text-right font-mono">{target[size] ?? 0}</span>
-                              <span className="text-right font-mono text-text-muted">{recorded[size] ?? 0}</span>
-                              <span className="flex justify-end">
-                                <NumberInput
-                                  value={sizeDraft[size] ?? 0}
-                                  decimals={0}
-                                  onChange={(v) => setSizeDraft((prev) => ({ ...prev, [size]: v }))}
-                                  className="input w-[90px] text-right"
-                                />
-                              </span>
-                            </div>
-                          ))}
+                          {sizes.map((size) => {
+                            // Selisih = qty sudah diinput - target -- merah + tanda "-" kalau
+                            // masih kurang dari target, hijau + tanda "+" kalau sudah pas/lebih.
+                            const selisih = (recorded[size] ?? 0) - (target[size] ?? 0);
+                            return (
+                              <div key={size} className="grid grid-cols-5 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
+                                <span className="font-mono font-medium">{size}</span>
+                                <span className="text-right font-mono">{target[size] ?? 0}</span>
+                                <span className="text-right font-mono text-text-muted">{recorded[size] ?? 0}</span>
+                                <span className={"text-right font-mono font-semibold " + (selisih < 0 ? "text-danger-fg" : "text-success-fg")}>
+                                  {selisih >= 0 ? "+" : ""}
+                                  {selisih}
+                                </span>
+                                <span className="flex justify-end">
+                                  <NumberInput
+                                    value={sizeDraft[size] ?? 0}
+                                    decimals={0}
+                                    onChange={(v) => setSizeDraft((prev) => ({ ...prev, [size]: v }))}
+                                    className="input w-[90px] text-right"
+                                  />
+                                </span>
+                              </div>
+                            );
+                          })}
                         </div>
                         <div className="mt-2.5">
                           <button onClick={() => submitGroup(g.warna, g.lengan)} className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white">

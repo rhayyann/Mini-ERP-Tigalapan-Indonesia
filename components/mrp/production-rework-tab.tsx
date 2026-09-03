@@ -4,7 +4,7 @@ import { useState } from "react";
 import { NumberInput } from "@/components/mrp/number-input";
 import { Button } from "@/components/ui/button";
 import { useMrpStore } from "@/lib/mrp/store";
-import { cumulativeSizeQtyForGroup, cutWarnaLenganGroups, formatDateTimeShort, mrpDetailFor, mrpIdsWithRemainingReject } from "@/lib/mrp/derive";
+import { cumulativeSizeQtyForGroup, cutWarnaLenganGroups, formatDateTimeShort, mrpDetailFor, mrpIdsWithRemainingReject, productionGroupMetaFor } from "@/lib/mrp/derive";
 import type { Lengan, Usia } from "@/lib/mrp/types";
 
 const USIA_OPTIONS: Usia[] = ["DEWASA", "KIDS"];
@@ -21,6 +21,7 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
   const productionBatches = useMrpStore((s) => s.productionBatches);
   const productionResults = useMrpStore((s) => s.productionResults);
+  const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const reworkRejectSize = useMrpStore((s) => s.reworkRejectSize);
   const wasteRejectSize = useMrpStore((s) => s.wasteRejectSize);
 
@@ -30,6 +31,12 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
   const [toLengan, setToLengan] = useState<Lengan>("PENDEK");
   const [toSize, setToSize] = useState("");
   const [usia, setUsia] = useState<Usia>("DEWASA");
+  // Pesan error dari reworkRejectSize/wasteRejectSize -- dulu kalau grup sudah "Selesai Produksi"
+  // action-nya diam-diam tidak melakukan apa-apa (tidak ada error, tidak ada perubahan), jadi
+  // terlihat seperti tombol tidak berfungsi. Sekarang server melempar error yang ditangkap &
+  // ditampilkan di sini (lihat juga filter `groups` di bawah — grup yang sudah selesai sekarang
+  // tidak lagi ditampilkan di daftar sisa reject, supaya kasus ini jarang kejadian dari awal).
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Buang ke sisa/waste — alur terpisah dari rework, tidak butuh lengan/size tujuan (hasilnya
   // bukan garmen, jadi tidak dilaporkan availableFgToShip/Pengiriman).
@@ -38,10 +45,20 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
   const [wasteNote, setWasteNote] = useState("");
 
   const mrpIds = mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults);
-  const groups = selectedMrpId ? cutWarnaLenganGroups(selectedMrpId, vendorId, productionBatches) : [];
+  // Grup yang sudah "Selesai Produksi" dikunci (lihat markProductionGroupDoneAction) -- tidak
+  // ditampilkan lagi sebagai baris "sisa reject" yang bisa di-rework/buang, supaya tidak
+  // mengarahkan vendor ke aksi yang pasti akan ditolak server (buka kunci dulu di tab Final
+  // Produksi kalau memang masih perlu rework).
+  const allGroups = selectedMrpId ? cutWarnaLenganGroups(selectedMrpId, vendorId, productionBatches) : [];
+  const groups = allGroups.filter((g) => !productionGroupMetaFor(selectedMrpId + "|" + g.warna + "|" + g.lengan, productionGroupMeta)?.doneAt);
+  const lockedGroupCount = allGroups.length - groups.length;
   const selectedKategori = selectedMrpId ? (mrpDetailFor(selectedMrpId, mrpDetails)?.mrp.kategori ?? "—") : "";
+  // Size yang dikenal untuk MRP ini (dari rencana aduan pola) -- dipakai sebagai pilihan dropdown
+  // "Size baru (hasil rework)" supaya tidak salah ketik size yang tidak ada di rencana.
+  const knownSizes = Array.from(new Set((mrpDetailFor(selectedMrpId, mrpDetails)?.aduanRows ?? []).flatMap((a) => a.sizes.map((s) => s.size)))).sort();
 
   function openRework(warna: string, lengan: Lengan, size: string, max: number) {
+    setActionError(null);
     setWasting(null);
     setReworking({ warna, lengan, size, max });
     setQty(Math.min(1, max));
@@ -51,45 +68,56 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
   }
 
   function openWaste(warna: string, lengan: Lengan, size: string, max: number) {
+    setActionError(null);
     setReworking(null);
     setWasting({ warna, lengan, size, max });
     setWasteQty(Math.min(1, max));
     setWasteNote("");
   }
 
-  function submitRework() {
+  async function submitRework() {
     if (!reworking || !toSize.trim() || qty <= 0) return;
     // Guard lagi di client (selain di server) — dropdown toLengan sudah dibatasi opsinya lewat
     // reworkLenganOptionsFor, tapi dicek ulang di sini kalau-kalau state-nya nyangkut.
     if (reworking.lengan === "PENDEK" && toLengan === "PANJANG") return;
-    reworkRejectSize({
-      mrpId: selectedMrpId,
-      vendorProduksi: vendorId,
-      warna: reworking.warna,
-      lengan: reworking.lengan,
-      fromSize: reworking.size,
-      qty: Math.min(qty, reworking.max),
-      toLengan,
-      toSize: toSize.trim(),
-      usia,
-    });
-    setReworking(null);
-    setToSize("");
+    setActionError(null);
+    try {
+      await reworkRejectSize({
+        mrpId: selectedMrpId,
+        vendorProduksi: vendorId,
+        warna: reworking.warna,
+        lengan: reworking.lengan,
+        fromSize: reworking.size,
+        qty: Math.min(qty, reworking.max),
+        toLengan,
+        toSize: toSize.trim(),
+        usia,
+      });
+      setReworking(null);
+      setToSize("");
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Gagal menyimpan rework.");
+    }
   }
 
-  function submitWaste() {
+  async function submitWaste() {
     if (!wasting || wasteQty <= 0) return;
-    wasteRejectSize({
-      mrpId: selectedMrpId,
-      vendorProduksi: vendorId,
-      warna: wasting.warna,
-      lengan: wasting.lengan,
-      fromSize: wasting.size,
-      qty: Math.min(wasteQty, wasting.max),
-      note: wasteNote.trim() || undefined,
-    });
-    setWasting(null);
-    setWasteNote("");
+    setActionError(null);
+    try {
+      await wasteRejectSize({
+        mrpId: selectedMrpId,
+        vendorProduksi: vendorId,
+        warna: wasting.warna,
+        lengan: wasting.lengan,
+        fromSize: wasting.size,
+        qty: Math.min(wasteQty, wasting.max),
+        note: wasteNote.trim() || undefined,
+      });
+      setWasting(null);
+      setWasteNote("");
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Gagal menyimpan buang ke sisa/waste.");
+    }
   }
 
   const reworkHistory = productionResults.filter((r) => r.vendorProduksi === vendorId && r.kind === "FG" && (r.note ?? "").startsWith("Rework")).sort((a, b) => (a.recordedAt < b.recordedAt ? 1 : -1));
@@ -123,9 +151,18 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
         )}
       </div>
 
+      {actionError && (
+        <div className="rounded-lg border border-[#EFC9C4] bg-danger-bg px-4 py-3 font-sans text-[11.5px] leading-[1.5] text-danger-fg">{actionError}</div>
+      )}
+
       {selectedMrpId && (
         <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
           <div className="border-b border-border-subtle px-4 py-3 font-sans text-[13px] font-semibold text-text-primary">Sisa reject — {selectedMrpId}</div>
+          {lockedGroupCount > 0 && (
+            <div className="border-b border-border-subtle bg-[#F7F9FB] px-4 py-2 font-sans text-[11px] text-text-muted">
+              {lockedGroupCount} warna/lengan sudah ditandai &quot;Selesai Produksi&quot; — tidak ditampilkan di sini lagi. Buka kunci dulu di tab Final Produksi kalau masih perlu rework.
+            </div>
+          )}
           <div className="grid grid-cols-6 gap-x-2 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
             <span>Kategori</span>
             <span>Warna / lengan</span>
@@ -191,7 +228,17 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
                 </div>
                 <div>
                   <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Size baru (hasil rework)</div>
-                  <input value={toSize} onChange={(e) => setToSize(e.target.value)} placeholder="Contoh: S" className="input mt-1" />
+                  {/* Dulu free-text (rawan salah ketik) -- sekarang dropdown dari size yang
+                      benar-benar ada di rencana aduan pola MRP ini. */}
+                  <select value={toSize} onChange={(e) => setToSize(e.target.value)} className="input mt-1">
+                    <option value="">— pilih size —</option>
+                    {knownSizes.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                  {knownSizes.length === 0 && <div className="mt-1 font-sans text-[10px] text-danger-fg">Tidak ada size terdaftar untuk MRP ini.</div>}
                 </div>
                 <div>
                   <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Kids atau Dewasa</div>
