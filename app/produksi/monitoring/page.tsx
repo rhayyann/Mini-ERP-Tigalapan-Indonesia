@@ -5,7 +5,7 @@ import { AppShell } from "@/components/shell/app-shell";
 import { StatusPill } from "@/components/ui/status-pill";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatPcs, formatRupiah, maklonPoBadge, maklonPoDeliveryProgress, maklonPoDisplayStatus, maklonPoInvoiceLockedBy } from "@/lib/mrp/derive";
+import { formatPcs, formatRupiah, maklonPoBadgeWithApproval, maklonPoDeliveryProgress, maklonPoInvoiceLockedBy } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { MaklonPO } from "@/lib/mrp/types";
 
@@ -32,7 +32,7 @@ export default function ProduksiMonitoringPage() {
       label: "Status",
       default: true,
       render: (p) => {
-        const badge = maklonPoBadge({ ...p, status: maklonPoDisplayStatus(p, vendorInvoices) });
+        const badge = maklonPoBadgeWithApproval(p, vendorInvoices);
         return <StatusPill tone={badge.tone}>{badge.label}</StatusPill>;
       },
     },
@@ -102,8 +102,8 @@ export default function ProduksiMonitoringPage() {
           },
           {
             label: "Status",
-            options: Array.from(new Set(rows.map((p) => maklonPoBadge({ ...p, status: maklonPoDisplayStatus(p, vendorInvoices) }).label))),
-            test: (p, v) => maklonPoBadge({ ...p, status: maklonPoDisplayStatus(p, vendorInvoices) }).label === v,
+            options: Array.from(new Set(rows.map((p) => maklonPoBadgeWithApproval(p, vendorInvoices).label))),
+            test: (p, v) => maklonPoBadgeWithApproval(p, vendorInvoices).label === v,
           },
         ]}
         emptyText="Belum ada PO vendor produksi yang disetujui Finance."

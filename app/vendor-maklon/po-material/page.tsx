@@ -25,6 +25,11 @@ type Row = {
   poId: string;
   supplier: string;
   warna: string;
+  // Rincian per warna/lengan (dipakai buat baris expand DataTable) -- `warna` di atas cuma
+  // string gabungan buat kolom ringkas, `roll` juga TOTAL gabungan semua warna dalam baris ini
+  // (bisa nyampur "warna A berapa roll, warna B berapa roll" jadi satu angka kalau tidak
+  // dipecah lagi di sini).
+  colorDetail: { warna: string; lengan: Lengan; roll: number }[];
   roll: number;
   rollReceiving: number;
   rollProduksi: number;
@@ -58,6 +63,7 @@ function PoMaterialContent({ vendorId }: { vendorId: string }) {
           poId: p.id,
           supplier: p.supplier,
           warna: p.colorBreakdown.map((c) => `${c.warna} · ${c.lengan}`).join(", "),
+          colorDetail: p.colorBreakdown.map((c) => ({ warna: c.warna, lengan: c.lengan, roll: c.rollCount })),
           roll: p.rollCount - p.invoicedRolls,
           rollReceiving: 0,
           rollProduksi: 0,
@@ -83,6 +89,7 @@ function PoMaterialContent({ vendorId }: { vendorId: string }) {
         poId: i.poId,
         supplier: i.supplier,
         warna: receivedColorEntries.length > 0 ? receivedColorEntries.map((c) => `${c.warna} · ${c.lengan}`).join(", ") : "Menunggu diterima",
+        colorDetail: i.colorEntries.map((c) => ({ warna: c.warna, lengan: c.lengan, roll: c.rolls.length })),
         roll: i.qtyReady,
         rollReceiving,
         rollProduksi,
@@ -155,6 +162,26 @@ function PoMaterialContent({ vendorId }: { vendorId: string }) {
           { label: "Status", options: Array.from(new Set(rows.map((r) => r.status))), test: (r, v) => r.status === v },
         ]}
         emptyText="Belum ada PO material yang disetujui Finance untuk vendor Anda."
+        renderExpanded={(r) =>
+          r.colorDetail.length === 0 ? (
+            <div className="font-sans text-[11.5px] text-text-muted">Belum ada rincian warna untuk baris ini.</div>
+          ) : (
+            <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
+              <div className="grid grid-cols-3 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                <span>Warna</span>
+                <span>Lengan</span>
+                <span className="text-right">Roll</span>
+              </div>
+              {r.colorDetail.map((c, i) => (
+                <div key={i} className="grid grid-cols-3 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                  <span className="font-medium">{c.warna}</span>
+                  <span>{c.lengan}</span>
+                  <span className="text-right font-mono">{c.roll}</span>
+                </div>
+              ))}
+            </div>
+          )
+        }
       />
     </AppShell>
   );

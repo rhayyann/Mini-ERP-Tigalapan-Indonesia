@@ -13,9 +13,8 @@ import {
   formatDate,
   formatPcs,
   formatRupiah,
-  maklonPoBadge,
+  maklonPoBadgeWithApproval,
   maklonPoDeliveryProgress,
-  maklonPoDisplayStatus,
   maklonPoInvoiceLockedBy,
   maklonRateExplanation,
   materialGroupsByWarna,
@@ -199,7 +198,7 @@ export default function PoApprovalPage() {
       label: "Status",
       default: true,
       render: (p) => {
-        const badge = maklonPoBadge({ ...p, status: maklonPoDisplayStatus(p, vendorInvoices) });
+        const badge = maklonPoBadgeWithApproval(p, vendorInvoices);
         return <StatusPill tone={badge.tone}>{badge.label}</StatusPill>;
       },
     },
@@ -482,8 +481,8 @@ export default function PoApprovalPage() {
           { label: "No PO", options: Array.from(new Set(maklonPOs.map((p) => p.id))), test: (p, v) => p.id === v },
           {
             label: "Status",
-            options: Array.from(new Set(maklonPOs.map((p) => maklonPoBadge({ ...p, status: maklonPoDisplayStatus(p, vendorInvoices) }).label))),
-            test: (p, v) => maklonPoBadge({ ...p, status: maklonPoDisplayStatus(p, vendorInvoices) }).label === v,
+            options: Array.from(new Set(maklonPOs.map((p) => maklonPoBadgeWithApproval(p, vendorInvoices).label))),
+            test: (p, v) => maklonPoBadgeWithApproval(p, vendorInvoices).label === v,
           },
         ]}
         emptyText="Belum ada PO vendor produksi."

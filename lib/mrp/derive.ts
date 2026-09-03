@@ -730,12 +730,7 @@ export function maklonPoBadge(po: Pick<MaklonPO, "status" | "qty">) {
   // status yang tersimpan) begitu qty sudah 0, supaya baris cancelledLines/histori tetap utuh.
   if (po.qty === 0) return { label: "DIPINDAHKAN — QTY KOSONG", tone: "neutral" as const };
   const map: Record<MaklonPO["status"], { label: string; tone: "neutral" | "info" | "warning" | "success" | "danger" }> = {
-    // Label tampilan diganti "WAITING APPROVAL" atas permintaan user (status ASLI/value-nya tetap
-    // "FULL_WAITING_MATERIAL", cuma teks yang ditampilkan yang beda) -- CATATAN: status ini
-    // sebenarnya bukan murni "menunggu approval Finance" (field approved terpisah, lihat
-    // MaklonPO.approved), PO yang SUDAH di-approve pun bisa tetap di status ini sambil menunggu
-    // vendor mulai produksi. Dipertahankan apa adanya sesuai keputusan user, bukan logic baru.
-    FULL_WAITING_MATERIAL: { label: "WAITING APPROVAL", tone: "warning" },
+    FULL_WAITING_MATERIAL: { label: "WAITING MATERIAL", tone: "warning" },
     PARTIAL_WAITING_MATERIAL: { label: "PARTIAL WAITING MATERIAL", tone: "warning" },
     PRODUCTION: { label: "PRODUCTION", tone: "info" },
     PARTIAL_PRODUCTION: { label: "PARTIAL PRODUCTION", tone: "info" },
@@ -767,6 +762,21 @@ export function maklonPoDisplayStatus(po: Pick<MaklonPO, "mrpId" | "vendorProduk
   if (related.length === 0) return "DELIVERY";
   if (related.every((inv) => inv.status === "PAID")) return "FULLY_PAID";
   return "INVOICE"; // SUBMITTED/REVISION/APPROVED — sudah diajukan, masih dalam proses review/pembayaran Finance.
+}
+
+/** Badge status PO Maklon yang BENAR-BENAR bedain "menunggu approval Finance" dari "sudah
+ *  di-approve, tinggal menunggu material/produksi" — `maklonPoBadge`/`maklonPoDisplayStatus`
+ *  murni baca `status` (FULL_WAITING_MATERIAL dst), yang TIDAK berubah begitu di-approve (lihat
+ *  approveMaklonPoAction, cuma flip `approved`, status produksi dipertahankan apa adanya).
+ *  Sebelumnya label FULL_WAITING_MATERIAL sempat diganti jadi "WAITING APPROVAL" langsung (atas
+ *  permintaan awal), tapi itu jadi SELALU nyangkut di situ walau PO sudah di-approve dan
+ *  materialnya sudah di-set delivery segala macam — membingungkan (lihat feedback: "approval
+ *  darimana? padahal sudah diset delivery"). Sekarang: cuma tampilkan "WAITING APPROVAL" kalau
+ *  MEMANG `!po.approved`; begitu sudah di-approve, langsung ke status produksi asli
+ *  (WAITING MATERIAL dst) dari maklonPoBadge seperti biasa. */
+export function maklonPoBadgeWithApproval(po: Pick<MaklonPO, "mrpId" | "vendorProduksi" | "status" | "qty" | "approved">, vendorInvoices: VendorInvoice[]) {
+  if (!po.approved) return { label: "WAITING APPROVAL", tone: "warning" as const };
+  return maklonPoBadge({ ...po, status: maklonPoDisplayStatus(po, vendorInvoices) });
 }
 
 export function invoiceBadge(status: RawMaterialInvoice["status"]) {
