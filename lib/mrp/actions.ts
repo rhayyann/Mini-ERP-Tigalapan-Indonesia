@@ -31,6 +31,7 @@ import {
   reassignAduanRowsVendor,
   targetSizesForGroup,
   cumulativeSizeQtyForGroup,
+  weightVariance,
 } from "./derive";
 import { ENTITAS_LIST } from "./seed";
 import type { ParsedMrpImport } from "./parseImport";
@@ -653,28 +654,66 @@ export async function markRollArrivedAction(invoiceId: string, warna: string, le
 }
 
 /** Timbang 1 roll yang SUDAH ditandai diterima — dipanggil dari halaman Cutting (lihat
- *  pendingWeighRolls). Code roll/lot sudah diisi saat markRollArrivedAction, tidak diubah lagi di
- *  sini (kecuali sedang ditimbang ulang untuk roll yang sama, code-nya memang tidak berubah). */
+ *  pendingWeighRolls). Code roll biasanya sudah diisi saat markRollArrivedAction dan tidak
+ *  diubah lagi di sini, KECUALI roll ini sedang ditimbang ulang setelah retur (`codeRoll`
+ *  diisi) -- roll penggantinya bisa saja punya code roll fisik yang berbeda dari roll lama.
+ *
+ *  Roll yang masih punya klaim selisih berat AKTIF (di luar toleransi, belum diselesaikan) DIKUNCI
+ *  di sini juga (bukan cuma di UI) -- tidak boleh ditimbang ulang sampai Procurement atur retur &
+ *  vendor konfirmasi roll pengganti sudah diterima (`claim_retur_received_at` terisi), sesuai
+ *  alur di app/procurement/material-claims/page.tsx. Vendor secara fisik tidak boleh "memperbaiki"
+ *  angka roll yang salah kirim/rusak begitu saja -- harus lewat proses retur beneran. */
 export async function receiveRawMaterialRollAction(
   invoiceId: string,
   warna: string,
   lengan: Lengan,
   rollIndex: number,
   netKg: number,
-  claim?: { diffKg: number; pct: number }
+  claim?: { diffKg: number; pct: number },
+  codeRoll?: string
 ): Promise<void> {
   const vendorId = await requireVendorSession();
   const db = supabaseServer();
   const colorId = `${invoiceId}-${warna}-${lengan}`;
-  const { data: rollRow } = await db.from("raw_material_invoice_rolls").select("code_roll,code_lot").eq("invoice_color_id", colorId).eq("roll_index", rollIndex).single();
-  const { error } = await db.from("raw_material_invoice_rolls").update({ net_kg: netKg }).eq("invoice_color_id", colorId).eq("roll_index", rollIndex);
+  const { data: rollRow } = await db
+    .from("raw_material_invoice_rolls")
+    .select("code_roll,code_lot,gross_kg,net_kg,claim_resolved_at,claim_retur_received_at")
+    .eq("invoice_color_id", colorId)
+    .eq("roll_index", rollIndex)
+    .single();
+
+  if (rollRow && rollRow.net_kg != null && rollRow.gross_kg != null) {
+    const variance = weightVariance(Number(rollRow.gross_kg), Number(rollRow.net_kg));
+    const isActiveClaim = !variance.withinTolerance && !rollRow.claim_resolved_at;
+    if (isActiveClaim && !rollRow.claim_retur_received_at) {
+      throw new Error(
+        "Roll ini masih diklaim selisih berat -- menunggu Procurement atur retur & kirim roll pengganti (lihat Klaim Material). Konfirmasi 'diterima' dulu di sini setelah roll penggantinya sampai, baru bisa ditimbang ulang."
+      );
+    }
+  }
+
+  const update: Record<string, unknown> = { net_kg: netKg };
+  if (codeRoll && codeRoll.trim()) update.code_roll = codeRoll.trim();
+  if (!claim) {
+    // Ditimbang & hasilnya sekarang sesuai toleransi -- kalau roll ini tadinya diklaim, klaimnya
+    // resmi tuntas di sini. Bersihkan sisa catatan retur lama supaya tidak nyangkut/orphan kalau
+    // roll_index yang sama suatu saat kena klaim lagi (baris baru harus mulai dari "BELUM").
+    update.claim_retur_note = null;
+    update.claim_retur_requested_at = null;
+    update.claim_retur_delivered_note = null;
+    update.claim_retur_delivered_at = null;
+    update.claim_retur_received_at = null;
+    update.claim_resolved_note = null;
+    update.claim_resolved_at = null;
+  }
+  const { error } = await db.from("raw_material_invoice_rolls").update(update).eq("invoice_color_id", colorId).eq("roll_index", rollIndex);
   if (error) throw new Error(error.message);
 
   if (claim) {
     const { data: inv } = await db.from("raw_material_invoices").select("po_id").eq("id", invoiceId).single();
     await insertNotification(
       notif(
-        `Claim selisih berat — ${inv?.po_id ?? ""} ${warna} · ${lengan} roll ${rollIndex + 1}: selisih ${claim.diffKg >= 0 ? "+" : ""}${claim.diffKg.toFixed(2)} kg (${claim.pct.toFixed(1)}%) di luar toleransi. Kode roll: ${rollRow?.code_roll || "-"}, lot: ${rollRow?.code_lot || "-"}.`,
+        `Claim selisih berat — ${inv?.po_id ?? ""} ${warna} · ${lengan} roll ${rollIndex + 1}: selisih ${claim.diffKg >= 0 ? "+" : ""}${claim.diffKg.toFixed(2)} kg (${claim.pct.toFixed(1)}%) di luar toleransi. Kode roll: ${codeRoll?.trim() || rollRow?.code_roll || "-"}, lot: ${rollRow?.code_lot || "-"}.`,
         ["procurement"]
       )
     );

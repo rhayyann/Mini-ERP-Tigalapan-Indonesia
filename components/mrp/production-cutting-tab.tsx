@@ -11,12 +11,14 @@ import {
   formatDateTime,
   formatDecimal,
   formatDuration,
+  materialClaimStage,
   materialReceivedForMaklon,
   pendingWeighRolls,
   restingMinutes,
   targetSizesForBatch,
   weightVariance,
   YIELD_ALERT_THRESHOLD_PCT,
+  type MaterialClaimStage,
   type PendingWeighRoll,
 } from "@/lib/mrp/derive";
 import { RESTING_TARGET_MINUTES } from "@/lib/mrp/seed";
@@ -52,6 +54,8 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const startProductionBatch = useMrpStore((s) => s.startProductionBatch);
   const updateBatchToCutting = useMrpStore((s) => s.updateBatchToCutting);
   const receiveRawMaterialRoll = useMrpStore((s) => s.receiveRawMaterialRoll);
+  const materialClaimResolutions = useMrpStore((s) => s.materialClaimResolutions);
+  const materialClaimReturRequests = useMrpStore((s) => s.materialClaimReturRequests);
   const materialClaimReturDeliveries = useMrpStore((s) => s.materialClaimReturDeliveries);
   const materialClaimReturReceipts = useMrpStore((s) => s.materialClaimReturReceipts);
   const confirmMaterialClaimReturReceived = useMrpStore((s) => s.confirmMaterialClaimReturReceived);
@@ -79,7 +83,16 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   // masih di luar toleransi & perlu ditimbang ulang) baru bisa dipilih untuk Resting setelah
   // ditimbang & sesuai di sini (lihat availableCodeRollsForColor/availableRollsForAduanRow).
   const [weighDraft, setWeighDraft] = useState<Record<string, number>>({});
+  // Code roll pengganti -- cuma relevan/dipakai untuk roll yang lagi ditimbang ulang setelah
+  // retur (lihat rowClaim.unlockedForReweigh di bawah), karena roll fisik penggantinya bisa saja
+  // punya code roll berbeda dari roll lama yang diklaim.
+  const [codeRollDraft, setCodeRollDraft] = useState<Record<string, string>>({});
   const [pendingClaim, setPendingClaim] = useState<{ key: string; roll: PendingWeighRoll; netKg: number; diffKg: number; pct: number } | null>(null);
+  // Pesan error dari receiveRawMaterialRoll -- SEHARUSNYA jarang muncul karena tombol Simpan
+  // sudah disembunyikan/nonaktif untuk roll yang masih terkunci klaim, tapi server tetap menolak
+  // (lihat receiveRawMaterialRollAction) sebagai jaring pengaman kalau ada race condition/data
+  // basi di layar (mis. dua tab terbuka bersamaan).
+  const [weighError, setWeighError] = useState<string | null>(null);
 
   const activeStages: string[] = ["PARTIAL_WAITING_MATERIAL", "FULL_WAITING_MATERIAL", "PRODUCTION", "PARTIAL_PRODUCTION"];
   const readyMrpIds = maklonPOs
@@ -94,13 +107,24 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   function weighKey(r: PendingWeighRoll): string {
     return `${r.invoiceId}|${r.warna}|${r.lengan}|${r.rollIndex}`;
   }
-  function commitWeigh(r: PendingWeighRoll, netKg: number, claim?: { diffKg: number; pct: number }) {
-    receiveRawMaterialRoll(r.invoiceId, r.warna, r.lengan, r.rollIndex, netKg, claim);
-    setWeighDraft((prev) => {
-      const next = { ...prev };
-      delete next[weighKey(r)];
-      return next;
-    });
+  async function commitWeigh(r: PendingWeighRoll, netKg: number, claim?: { diffKg: number; pct: number }) {
+    const key = weighKey(r);
+    setWeighError(null);
+    try {
+      await receiveRawMaterialRoll(r.invoiceId, r.warna, r.lengan, r.rollIndex, netKg, claim, codeRollDraft[key]);
+      setWeighDraft((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      setCodeRollDraft((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    } catch (e) {
+      setWeighError(e instanceof Error ? e.message : "Gagal menyimpan hasil timbang.");
+    }
   }
   function saveWeigh(r: PendingWeighRoll) {
     const key = weighKey(r);
@@ -240,8 +264,11 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
             Timbang roll — {weighRows.length} roll perlu ditimbang atau dikonfirmasi ulang
           </div>
           <div className="border-b border-[#F0DFC2] bg-white/60 px-4 py-2 font-sans text-[11px] leading-[1.5] text-warning-fg">
-            Roll yang sudah disimpan TETAP muncul di sini (bisa diedit lagi) selama belum dipilih code roll-nya di Aduan Pola &amp; di-submit Resting — kalau salah timbang, tinggal koreksi angkanya lalu Simpan lagi.
+            Roll yang sudah disimpan TETAP muncul di sini (bisa diedit lagi) selama belum dipilih code roll-nya di Aduan Pola &amp; di-submit Resting — kalau salah timbang, tinggal koreksi angkanya lalu Simpan lagi. Roll yang selisih beratnya di luar toleransi TERKUNCI (tidak bisa ditimbang ulang) sampai proses retur ke Procurement selesai.
           </div>
+          {weighError && (
+            <div className="border-b border-[#F0DFC2] bg-danger-bg px-4 py-2 font-sans text-[11px] leading-[1.5] text-danger-fg">{weighError}</div>
+          )}
           <div
             className="grid min-w-[900px] gap-x-3 border-b border-[#F0DFC2] bg-white/40 px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
             style={{ gridTemplateColumns: "minmax(140px,1.1fr) minmax(70px,0.6fr) minmax(120px,0.9fr) minmax(110px,0.9fr) minmax(110px,0.9fr) minmax(120px,1fr) minmax(110px,0.8fr) minmax(110px,0.9fr)" }}
@@ -259,19 +286,49 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
             const key = weighKey(r);
             const netVal = weighDraft[key] ?? r.netKg ?? r.grossKg;
             const variance = weightVariance(r.grossKg, netVal);
+            // Status klaim SAAT INI dihitung dari r.netKg yang SUDAH TERSIMPAN (bukan dari draft
+            // input yang belum disimpan) -- ini yang menentukan terkunci/tidaknya roll ini,
+            // sinkron persis dengan pengecekan yang sama di receiveRawMaterialRollAction.
+            const savedVariance = r.netKg !== undefined ? weightVariance(r.grossKg, r.netKg) : null;
+            const stage: MaterialClaimStage = materialClaimStage(
+              key,
+              materialClaimResolutions,
+              materialClaimReturRequests,
+              materialClaimReturDeliveries,
+              materialClaimReturReceipts
+            );
+            const hasActiveClaim = !!savedVariance && !savedVariance.withinTolerance && stage !== "SELESAI";
+            const locked = hasActiveClaim && stage !== "RETUR_DITERIMA";
+            const unlockedForReweigh = hasActiveClaim && stage === "RETUR_DITERIMA";
             const delivery = materialClaimReturDeliveries[key];
-            const receipt = materialClaimReturReceipts[key];
-            const awaitingReceiveConfirm = !!delivery && !receipt;
+            const stageBanner: Record<Exclude<MaterialClaimStage, "SELESAI">, { tone: string; text: string }> = {
+              BELUM: {
+                tone: "bg-danger-bg text-danger-fg",
+                text: "Selisih berat di luar toleransi — sudah dikirim ke Procurement (lihat Klaim Material). Roll ini TERKUNCI, tidak bisa ditimbang ulang sampai Procurement atur retur & kirim roll pengganti.",
+              },
+              RETUR_DIMINTA: {
+                tone: "bg-info-bg text-info-fg",
+                text: "Retur sudah diminta Procurement ke supplier — menunggu roll pengganti dikirim. Masih terkunci.",
+              },
+              RETUR_DIKIRIM: {
+                tone: "bg-info-bg text-info-fg",
+                text: `Roll pengganti sudah dikirim Procurement${delivery?.note ? ` (${delivery.note})` : ""} — sudah diterima fisik?`,
+              },
+              RETUR_DITERIMA: {
+                tone: "bg-success-bg text-success-fg",
+                text: "Roll pengganti sudah dikonfirmasi diterima — silakan timbang & ganti code roll di bawah kalau perlu, lalu Simpan.",
+              },
+            };
             return (
               <div key={key} className="border-b border-[#F0DFC2] last:border-b-0">
-                {awaitingReceiveConfirm && (
-                  <div className="flex items-center justify-between gap-2 bg-info-bg px-4 py-2">
-                    <span className="font-sans text-[11px] text-info-fg">
-                      Roll pengganti untuk klaim retur roll ini sudah dikirim Procurement{delivery.note ? ` (${delivery.note})` : ""} — sudah diterima fisik?
-                    </span>
-                    <Button onClick={() => confirmMaterialClaimReturReceived(key)} variant="primary" size="xs">
-                      Tandai Diterima
-                    </Button>
+                {stage !== "SELESAI" && hasActiveClaim && (
+                  <div className={"flex items-center justify-between gap-2 px-4 py-2 " + stageBanner[stage].tone}>
+                    <span className="font-sans text-[11px]">{stageBanner[stage].text}</span>
+                    {stage === "RETUR_DIKIRIM" && (
+                      <Button onClick={() => confirmMaterialClaimReturReceived(key)} variant="primary" size="xs">
+                        Tandai Diterima
+                      </Button>
+                    )}
                   </div>
                 )}
                 <div
@@ -280,17 +337,30 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                 >
                   <span>
                     {r.warna} · {r.lengan}
-                    {r.netKg !== undefined && (
-                      <span className={"ml-1.5 font-mono text-[10px] " + (variance.withinTolerance ? "text-text-muted" : "text-danger-fg")}>
-                        {variance.withinTolerance ? "(sudah ditimbang — bisa diedit)" : "(timbang ulang)"}
-                      </span>
+                    {locked && <span className="ml-1.5 font-mono text-[10px] text-danger-fg">(terkunci — menunggu retur)</span>}
+                    {unlockedForReweigh && <span className="ml-1.5 font-mono text-[10px] text-success-fg">(roll pengganti — timbang ulang)</span>}
+                    {!hasActiveClaim && r.netKg !== undefined && (
+                      <span className="ml-1.5 font-mono text-[10px] text-text-muted">(sudah ditimbang — bisa diedit)</span>
                     )}
                   </span>
                   <span className="font-mono font-medium">Roll {r.rollIndex + 1}</span>
-                  <span className="font-mono text-[11px]">{r.codeRoll || "—"}</span>
+                  {unlockedForReweigh ? (
+                    <input
+                      value={codeRollDraft[key] ?? r.codeRoll ?? ""}
+                      onChange={(e) => setCodeRollDraft((prev) => ({ ...prev, [key]: e.target.value }))}
+                      placeholder="Code roll pengganti"
+                      className="rounded-md border border-[#DDE4EB] px-1.5 py-1 font-mono text-[11px]"
+                    />
+                  ) : (
+                    <span className="font-mono text-[11px]">{r.codeRoll || "—"}</span>
+                  )}
                   <span className="text-right font-mono">{formatDecimal(r.grossKg)}</span>
                   <span className="flex justify-end">
-                    <NumberInput value={netVal} decimals={2} onChange={(v) => setWeighDraft((prev) => ({ ...prev, [key]: v }))} className="input w-[100px] text-right" />
+                    {locked ? (
+                      <span className="w-[100px] text-right font-mono text-[#8A94A0]">{formatDecimal(netVal)}</span>
+                    ) : (
+                      <NumberInput value={netVal} decimals={2} onChange={(v) => setWeighDraft((prev) => ({ ...prev, [key]: v }))} className="input w-[100px] text-right" />
+                    )}
                   </span>
                   <span className={"text-right font-mono " + (variance.withinTolerance ? "text-success-fg" : "text-danger-fg")}>
                     {variance.diff >= 0 ? "+" : ""}
@@ -300,9 +370,13 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                     <StatusPill tone={variance.withinTolerance ? "success" : "danger"}>{variance.withinTolerance ? "SESUAI" : "DI LUAR TOLERANSI"}</StatusPill>
                   </span>
                   <span>
-                    <Button onClick={() => saveWeigh(r)} variant="primary" size="xs">
-                      Simpan
-                    </Button>
+                    {locked ? (
+                      <span className="font-sans text-[10.5px] font-semibold text-text-muted">🔒 Terkunci</span>
+                    ) : (
+                      <Button onClick={() => saveWeigh(r)} variant="primary" size="xs">
+                        Simpan
+                      </Button>
+                    )}
                   </span>
                 </div>
               </div>

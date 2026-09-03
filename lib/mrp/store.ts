@@ -178,7 +178,7 @@ type FlowActions = {
   setInvoicesPaid: (invoiceIds: string[], paid: boolean) => Promise<void>;
   setInvoicesDelivery: (invoiceIds: string[], deliveryDate: string) => Promise<void>;
   markRollArrived: (invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, codeRoll?: string, codeLot?: string) => Promise<void>;
-  receiveRawMaterialRoll: (invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, netKg: number, claim?: { diffKg: number; pct: number }) => Promise<void>;
+  receiveRawMaterialRoll: (invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, netKg: number, claim?: { diffKg: number; pct: number }, codeRoll?: string) => Promise<void>;
   startProductionBatch: (input: { mrpId: string; aduanRowId: string; qtyRoll: number; gramasi: number; restingAt: string; codeRoll?: string }) => Promise<void>;
   // "WASTE" SENGAJA tidak termasuk di sini — satu-satunya jalur bikin entri WASTE adalah
   // wasteRejectSize (lihat di bawah), bukan submission FG/REJECT manual biasa ini.
@@ -413,8 +413,8 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) =>
     await actions.markRollArrivedAction(invoiceId, warna, lengan, rollIndex, codeRoll, codeLot);
     await get().refresh();
   },
-  receiveRawMaterialRoll: async (invoiceId, warna, lengan, rollIndex, netKg, claim) => {
-    await actions.receiveRawMaterialRollAction(invoiceId, warna, lengan, rollIndex, netKg, claim);
+  receiveRawMaterialRoll: async (invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll) => {
+    await actions.receiveRawMaterialRollAction(invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll);
     await get().refresh();
   },
   startProductionBatch: async (input) => {

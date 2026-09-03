@@ -5,24 +5,8 @@ import { AppShell } from "@/components/shell/app-shell";
 import { StatusPill } from "@/components/ui/status-pill";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatDate, formatDecimal, materialClaimsList, type MaterialClaimRow } from "@/lib/mrp/derive";
+import { formatDate, formatDecimal, materialClaimsList, materialClaimStage, type MaterialClaimRow, type MaterialClaimStage } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
-
-type ClaimStage = "BELUM" | "RETUR_DIMINTA" | "RETUR_DIKIRIM" | "RETUR_DITERIMA" | "SELESAI";
-
-function stageOf(
-  key: string,
-  resolutions: Record<string, unknown>,
-  returRequests: Record<string, unknown>,
-  returDeliveries: Record<string, unknown>,
-  returReceipts: Record<string, unknown>
-): ClaimStage {
-  if (resolutions[key]) return "SELESAI";
-  if (returReceipts[key]) return "RETUR_DITERIMA";
-  if (returDeliveries[key]) return "RETUR_DIKIRIM";
-  if (returRequests[key]) return "RETUR_DIMINTA";
-  return "BELUM";
-}
 
 export default function MaterialClaimsPage() {
   const [mounted, setMounted] = useState(false);
@@ -44,8 +28,8 @@ export default function MaterialClaimsPage() {
   if (!mounted) return null;
 
   const rows = materialClaimsList(invoices);
-  function stage(key: string): ClaimStage {
-    return stageOf(key, materialClaimResolutions, materialClaimReturRequests, materialClaimReturDeliveries, materialClaimReturReceipts);
+  function stage(key: string): MaterialClaimStage {
+    return materialClaimStage(key, materialClaimResolutions, materialClaimReturRequests, materialClaimReturDeliveries, materialClaimReturReceipts);
   }
   const unresolvedCount = rows.filter((r) => stage(r.key) !== "SELESAI").length;
 
@@ -69,7 +53,7 @@ export default function MaterialClaimsPage() {
     setNoteDraft((prev) => ({ ...prev, [key]: "" }));
   }
 
-  const stageLabel: Record<ClaimStage, { label: string; tone: "warning" | "info" | "success" }> = {
+  const stageLabel: Record<MaterialClaimStage, { label: string; tone: "warning" | "info" | "success" }> = {
     BELUM: { label: "Belum ditindak", tone: "warning" },
     RETUR_DIMINTA: { label: "Retur diminta", tone: "info" },
     RETUR_DIKIRIM: { label: "Retur dikirim", tone: "info" },

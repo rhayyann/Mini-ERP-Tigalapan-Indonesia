@@ -839,6 +839,30 @@ export type MaterialClaimRow = {
   receivedAt: string;
 };
 
+/** Tahap alur retur klaim selisih berat — dipakai di halaman Procurement (Klaim Material) DAN
+ *  di tab Cutting vendor (buat mengunci/membuka aksi timbang ulang roll yang diklaim, lihat
+ *  production-cutting-tab.tsx). Satu sumber kebenaran supaya kedua sisi selalu sinkron:
+ *  BELUM (baru terkirim, belum ada tindakan) -> RETUR_DIMINTA (Procurement sudah minta retur ke
+ *  supplier) -> RETUR_DIKIRIM (Procurement tandai roll pengganti sudah dikirim) -> RETUR_DITERIMA
+ *  (vendor konfirmasi terima fisik -- BARU di titik ini vendor boleh timbang ulang) -> SELESAI
+ *  (ditutup manual tanpa retur, mis. diterima apa adanya) atau otomatis hilang dari
+ *  materialClaimsList begitu roll ditimbang ulang & hasilnya sesuai toleransi. */
+export type MaterialClaimStage = "BELUM" | "RETUR_DIMINTA" | "RETUR_DIKIRIM" | "RETUR_DITERIMA" | "SELESAI";
+
+export function materialClaimStage(
+  key: string,
+  resolutions: Record<string, unknown>,
+  returRequests: Record<string, unknown>,
+  returDeliveries: Record<string, unknown>,
+  returReceipts: Record<string, unknown>
+): MaterialClaimStage {
+  if (resolutions[key]) return "SELESAI";
+  if (returReceipts[key]) return "RETUR_DITERIMA";
+  if (returDeliveries[key]) return "RETUR_DIKIRIM";
+  if (returRequests[key]) return "RETUR_DIMINTA";
+  return "BELUM";
+}
+
 /** Daftar klaim selisih berat DI LUAR TOLERANSI — diturunkan langsung dari `invoices` (gross per
  *  roll ada di `colorEntries[].rolls[idx]`, net ada di `rollReceipts`), bukan dari field
  *  tersendiri — setiap roll yang berhasil disimpan dengan selisih di luar toleransi PASTI sudah
