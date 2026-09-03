@@ -115,6 +115,41 @@ export type RollArrival = { arrivedAt: string; codeRoll?: string; codeLot?: stri
 
 export type AddBuyReceipt = { receivedAt: string };
 
+/** Arsip/histori 1 siklus klaim selisih berat, dari roll ditimbang di luar toleransi sampai
+ *  selesai (auto lewat timbang ulang sesuai toleransi, atau ditutup manual) — lihat migration
+ *  0011_material_claim_history.sql. Beda dari status klaim AKTIF di
+ *  app/procurement/material-claims/page.tsx (yang diturunkan live dari kolom
+ *  raw_material_invoice_rolls) -- tabel ini catatan permanen buat pencatatan, `resolvedAt`
+ *  kosong berarti masih terbuka. */
+export type MaterialClaimHistory = {
+  id: string;
+  invoiceId: string;
+  poId?: string;
+  mrpId?: string;
+  supplier?: string;
+  vendorProduksi?: string;
+  warna: string;
+  lengan: Lengan;
+  rollIndex: number;
+  codeRoll?: string;
+  codeLot?: string;
+  grossKg: number;
+  claimedNetKg: number;
+  diffKg: number;
+  pct: number;
+  claimedAt: string;
+  returNote?: string;
+  returRequestedAt?: string;
+  returDeliveredNote?: string;
+  returDeliveredAt?: string;
+  returReceivedAt?: string;
+  resolvedAt?: string;
+  resolvedNote?: string;
+  resolutionKind?: "AUTO_REWEIGH" | "MANUAL";
+  resolvedNetKg?: number;
+  resolvedCodeRoll?: string;
+};
+
 export type RawMaterialInvoice = {
   id: string;
   poId: string;

@@ -70,12 +70,13 @@ function ItemsDetailPanel({ items }: { items: DeliveryKoliItem[] }) {
 function PengirimanContent({ vendorId }: { vendorId: string }) {
   const productionResults = useMrpStore((s) => s.productionResults);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
+  const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const createDeliveryKoli = useMrpStore((s) => s.createDeliveryKoli);
   const updateDeliveryKoli = useMrpStore((s) => s.updateDeliveryKoli);
   const setKoliWeight = useMrpStore((s) => s.setKoliWeight);
   const markKoliDelivered = useMrpStore((s) => s.markKoliDelivered);
 
-  const mrpIds = mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis);
+  const mrpIds = mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta);
 
   const [mrpId, setMrpId] = useState("");
   const [noKoli, setNoKoli] = useState("");
@@ -112,7 +113,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   }, [mrpId, editingKoliId, mrpIds.join(",")]);
 
   function availableFor(kind: ShippableKind) {
-    return mrpId ? availableFgToShip(mrpId, vendorId, productionResults, deliveryKolis, editingKoliId ?? undefined, kind) : [];
+    return mrpId ? availableFgToShip(mrpId, vendorId, productionResults, deliveryKolis, productionGroupMeta, editingKoliId ?? undefined, kind) : [];
   }
 
   const availableByKind: Record<ShippableKind, ReturnType<typeof availableFgToShip>> = {
@@ -217,7 +218,12 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                 </option>
               ))}
             </select>
-            {mrpIds.length === 0 && !editingKoliId && <div className="mt-1 font-sans text-[11px] text-text-muted">Belum ada finish good yang siap dipacking.</div>}
+            {mrpIds.length === 0 && !editingKoliId && (
+              <div className="mt-1 font-sans text-[11px] text-text-muted">
+                Belum ada finish good yang siap dipacking. Warna/lengan baru muncul di sini setelah ditandai &quot;Selesai Produksi&quot; di tab Final
+                Produksi (Produksi &gt; Final Produksi).
+              </div>
+            )}
           </div>
           <div>
             <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">No koli</div>

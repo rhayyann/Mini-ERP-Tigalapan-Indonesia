@@ -7,6 +7,9 @@ import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
 import { formatDate, formatDecimal, materialClaimsList, materialClaimStage, type MaterialClaimRow, type MaterialClaimStage } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
+import type { MaterialClaimHistory } from "@/lib/mrp/types";
+
+type ViewTab = "AKTIF" | "RIWAYAT";
 
 export default function MaterialClaimsPage() {
   const [mounted, setMounted] = useState(false);
@@ -17,6 +20,7 @@ export default function MaterialClaimsPage() {
   const materialClaimReturRequests = useMrpStore((s) => s.materialClaimReturRequests);
   const materialClaimReturDeliveries = useMrpStore((s) => s.materialClaimReturDeliveries);
   const materialClaimReturReceipts = useMrpStore((s) => s.materialClaimReturReceipts);
+  const materialClaimHistory = useMrpStore((s) => s.materialClaimHistory);
   const resolveMaterialClaim = useMrpStore((s) => s.resolveMaterialClaim);
   const unresolveMaterialClaim = useMrpStore((s) => s.unresolveMaterialClaim);
   const requestMaterialClaimRetur = useMrpStore((s) => s.requestMaterialClaimRetur);
@@ -24,8 +28,11 @@ export default function MaterialClaimsPage() {
   const markMaterialClaimReturDelivered = useMrpStore((s) => s.markMaterialClaimReturDelivered);
 
   const [noteDraft, setNoteDraft] = useState<Record<string, string>>({});
+  const [tab, setTab] = useState<ViewTab>("AKTIF");
 
   if (!mounted) return null;
+
+  const archivedHistory = materialClaimHistory.filter((h) => h.resolvedAt);
 
   const rows = materialClaimsList(invoices);
   function stage(key: string): MaterialClaimStage {
@@ -215,6 +222,58 @@ export default function MaterialClaimsPage() {
     },
   ];
 
+  const historyColumns: ColumnDef<MaterialClaimHistory>[] = [
+    { key: "invoice", label: "No Invoice", default: true, render: (h) => <span className="font-mono font-medium">{h.invoiceId}</span> },
+    {
+      key: "supplierVendor",
+      label: "Supplier → Vendor",
+      default: true,
+      render: (h) => `${h.supplier ?? "—"} → ${VENDOR_PRODUKSI[h.vendorProduksi ?? ""]?.name ?? h.vendorProduksi ?? "—"}`,
+    },
+    { key: "warna", label: "Warna / lengan", default: false, render: (h) => `${h.warna} · ${h.lengan}` },
+    { key: "roll", label: "Roll", default: true, render: (h) => `#${h.rollIndex + 1}${h.codeRoll ? " · " + h.codeRoll : ""}` },
+    {
+      key: "selisihAwal",
+      label: "Selisih (saat klaim)",
+      default: true,
+      align: "right",
+      render: (h) => (
+        <span className="font-mono">
+          {h.diffKg >= 0 ? "+" : ""}
+          {formatDecimal(h.diffKg)} kg ({h.pct.toFixed(1)}%)
+        </span>
+      ),
+    },
+    { key: "claimedAt", label: "Tanggal klaim", default: false, render: (h) => formatDate(h.claimedAt) },
+    {
+      key: "cara",
+      label: "Cara selesai",
+      default: true,
+      render: (h) => (
+        <StatusPill tone="success">{h.resolutionKind === "AUTO_REWEIGH" ? "Timbang ulang sesuai" : "Ditutup manual"}</StatusPill>
+      ),
+    },
+    { key: "resolvedAt", label: "Tanggal selesai", default: true, render: (h) => formatDate(h.resolvedAt) },
+    {
+      key: "detail",
+      label: "Detail",
+      default: true,
+      render: (h) => (
+        <div className="flex flex-col gap-0.5 font-sans text-[11px] text-text-muted">
+          {h.returRequestedAt && <span>Retur diminta {formatDate(h.returRequestedAt)}{h.returNote ? ` — ${h.returNote}` : ""}</span>}
+          {h.returDeliveredAt && <span>Dikirim {formatDate(h.returDeliveredAt)}{h.returDeliveredNote ? ` — ${h.returDeliveredNote}` : ""}</span>}
+          {h.returReceivedAt && <span>Diterima vendor {formatDate(h.returReceivedAt)}</span>}
+          {h.resolutionKind === "AUTO_REWEIGH" && h.resolvedNetKg !== undefined && (
+            <span>
+              Timbang ulang: {formatDecimal(h.resolvedNetKg)} kg{h.resolvedCodeRoll && h.resolvedCodeRoll !== h.codeRoll ? ` (code roll baru: ${h.resolvedCodeRoll})` : ""}
+            </span>
+          )}
+          {h.resolutionKind === "MANUAL" && h.resolvedNote && <span>Catatan: {h.resolvedNote}</span>}
+        </div>
+      ),
+    },
+  ];
+
   return (
     <AppShell
       role="procurement"
@@ -223,33 +282,89 @@ export default function MaterialClaimsPage() {
       title="Klaim material"
       subtitle={`${rows.length} klaim selisih berat di luar toleransi (±2%) — ${unresolvedCount} belum selesai`}
     >
-      <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-        Daftar ini otomatis berisi semua roll bahan yang diterima vendor produksi dengan selisih berat di luar toleransi (dikirim sebagai claim saat Cutting menimbang). Alur:
-        hubungi supplier untuk retur roll tsb → klik <b>Minta Retur</b> (vendor diberi tahu) → begitu supplier sudah kirim roll pengganti (mis. dikabari lewat WA), klik{" "}
-        <b>Tandai Sudah Dikirim</b> → vendor konfirmasi terima di halaman Produksi (Cutting) → begitu vendor timbang ulang dengan hasil sesuai toleransi, klaim ini{" "}
-        <b>otomatis tertutup sendiri</b> (tidak perlu ditandai manual). Kalau ternyata tidak jadi retur (mis. diterima apa adanya), pakai <b>Selesai</b> langsung — atau{" "}
-        <b>Batalkan</b> dulu di tahap manapun untuk balik ke awal.
+      <div className="flex gap-2 rounded-lg border border-border-subtle bg-surface-card p-1.5">
+        {(
+          [
+            { key: "AKTIF" as const, label: "Klaim Aktif", badge: unresolvedCount },
+            { key: "RIWAYAT" as const, label: "Riwayat / Arsip", badge: 0 },
+          ]
+        ).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={
+              "flex items-center gap-1.5 rounded-md px-3.5 py-[7px] font-sans text-[12.5px] font-semibold " +
+              (tab === t.key ? "bg-action-primary text-white" : "text-text-muted hover:bg-[#F7F9FB]")
+            }
+          >
+            {t.label}
+            {t.badge > 0 && <span className="flex-shrink-0 rounded-full bg-danger px-[5px] py-px font-mono text-[9px] font-semibold text-white">{t.badge}</span>}
+          </button>
+        ))}
       </div>
 
-      <DataTable
-        title="Klaim selisih berat"
-        columns={columns}
-        rows={rows}
-        keyOf={(r) => r.key}
-        firstColumnLabel="No. MRP"
-        firstColumnRender={(r) => <span className="font-mono">{r.mrpId}</span>}
-        filterDefs={[
-          { label: "No MRP", options: Array.from(new Set(rows.map((r) => r.mrpId))), test: (r, v) => r.mrpId === v },
-          { label: "Vendor produksi", options: Array.from(new Set(rows.map((r) => r.vendorProduksi))), test: (r, v) => r.vendorProduksi === v },
-          { label: "Supplier", options: Array.from(new Set(rows.map((r) => r.supplier))), test: (r, v) => r.supplier === v },
-          {
-            label: "Status",
-            options: ["Belum ditindak", "Retur diminta", "Retur dikirim", "Retur diterima vendor", "Sudah ditindak"],
-            test: (r, v) => stageLabel[stage(r.key)].label === v,
-          },
-        ]}
-        emptyText="Belum ada klaim selisih berat di luar toleransi."
-      />
+      {tab === "AKTIF" && (
+        <>
+          <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
+            Daftar ini otomatis berisi semua roll bahan yang diterima vendor produksi dengan selisih berat di luar toleransi (dikirim sebagai claim saat Cutting
+            menimbang). Alur: hubungi supplier untuk retur roll tsb → klik <b>Minta Retur</b> (vendor diberi tahu) → begitu supplier sudah kirim roll pengganti (mis.
+            dikabari lewat WA), klik <b>Tandai Sudah Dikirim</b> → vendor konfirmasi terima di halaman Produksi (Cutting) → begitu vendor timbang ulang dengan hasil
+            sesuai toleransi, klaim ini <b>otomatis tertutup sendiri</b> (tidak perlu ditandai manual, dan otomatis pindah ke tab Riwayat/Arsip). Kalau ternyata tidak
+            jadi retur (mis. diterima apa adanya), pakai <b>Selesai</b> langsung — atau <b>Batalkan</b> dulu di tahap manapun untuk balik ke awal.
+          </div>
+
+          <DataTable
+            title="Klaim selisih berat"
+            columns={columns}
+            rows={rows}
+            keyOf={(r) => r.key}
+            firstColumnLabel="No. MRP"
+            firstColumnRender={(r) => <span className="font-mono">{r.mrpId}</span>}
+            filterDefs={[
+              { label: "No MRP", options: Array.from(new Set(rows.map((r) => r.mrpId))), test: (r, v) => r.mrpId === v },
+              { label: "Vendor produksi", options: Array.from(new Set(rows.map((r) => r.vendorProduksi))), test: (r, v) => r.vendorProduksi === v },
+              { label: "Supplier", options: Array.from(new Set(rows.map((r) => r.supplier))), test: (r, v) => r.supplier === v },
+              {
+                label: "Status",
+                options: ["Belum ditindak", "Retur diminta", "Retur dikirim", "Retur diterima vendor", "Sudah ditindak"],
+                test: (r, v) => stageLabel[stage(r.key)].label === v,
+              },
+            ]}
+            emptyText="Belum ada klaim selisih berat di luar toleransi."
+          />
+        </>
+      )}
+
+      {tab === "RIWAYAT" && (
+        <>
+          <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
+            Arsip klaim selisih berat yang SUDAH SELESAI — baik lewat timbang ulang yang hasilnya sesuai toleransi, atau ditutup manual oleh Procurement. Murni
+            pencatatan (read-only), tidak memengaruhi status produksi.
+          </div>
+          <DataTable
+            title="Riwayat klaim selisih berat"
+            columns={historyColumns}
+            rows={archivedHistory}
+            keyOf={(h) => h.id}
+            firstColumnLabel="No. MRP"
+            firstColumnRender={(h) => <span className="font-mono">{h.mrpId ?? "—"}</span>}
+            filterDefs={[
+              { label: "No MRP", options: Array.from(new Set(archivedHistory.map((h) => h.mrpId ?? "—"))), test: (h, v) => (h.mrpId ?? "—") === v },
+              {
+                label: "Vendor produksi",
+                options: Array.from(new Set(archivedHistory.map((h) => h.vendorProduksi ?? "—"))),
+                test: (h, v) => (h.vendorProduksi ?? "—") === v,
+              },
+              {
+                label: "Cara selesai",
+                options: ["Timbang ulang sesuai", "Ditutup manual"],
+                test: (h, v) => (h.resolutionKind === "AUTO_REWEIGH" ? "Timbang ulang sesuai" : "Ditutup manual") === v,
+              },
+            ]}
+            emptyText="Belum ada klaim yang selesai/diarsipkan."
+          />
+        </>
+      )}
     </AppShell>
   );
 }

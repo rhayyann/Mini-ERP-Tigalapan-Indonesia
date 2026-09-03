@@ -9,6 +9,7 @@ import type {
   LenganGroup,
   MaklonInvoice,
   MaklonPO,
+  MaterialClaimHistory,
   MaterialPO,
   MaterialRow,
   Mrp,
@@ -119,6 +120,14 @@ export type FlowState = {
    *  ulang karena konfirmasi terima bisa duluan sebelum sempat ditimbang (lihat
    *  confirmMaterialClaimReturReceivedAction). */
   materialClaimReturReceipts: Record<string, { receivedAt: string }>;
+  /** Arsip/histori permanen tiap siklus klaim selisih berat, termasuk yang SUDAH SELESAI (auto
+   *  atau manual) -- lihat migration 0011_material_claim_history.sql & tab "Riwayat/Arsip" di
+   *  app/procurement/material-claims/page.tsx. Beda dari materialClaimResolutions/
+   *  materialClaimReturRequests/dst di atas (yang cuma menyimpan status TERAKHIR untuk klaim yang
+   *  MASIH AKTIF, langsung di kolom raw_material_invoice_rolls) -- begitu klaim tuntas & roll
+   *  ditimbang ulang, kolom-kolom itu di-null-kan lagi (supaya roll_index yang sama bisa mulai
+   *  bersih kalau kena klaim lagi), jadi tidak ada jejak historis di sana. */
+  materialClaimHistory: MaterialClaimHistory[];
   /** Keyed by ProductionBatch.id — resolusi alert yield <99% (lihat productionYieldAlertsList di
    *  derive.ts), ditindaklanjuti dari portal internal Produksi (bukan Procurement). */
   productionYieldResolutions: Record<string, ProductionYieldResolution>;
@@ -268,6 +277,7 @@ const emptyState: FlowState = {
   materialClaimReturRequests: {},
   materialClaimReturDeliveries: {},
   materialClaimReturReceipts: {},
+  materialClaimHistory: [],
   productionYieldResolutions: {},
   hargaMaklon: [],
   hargaKain: [],

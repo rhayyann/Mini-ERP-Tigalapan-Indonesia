@@ -94,6 +94,7 @@ export function AppShell({
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
   const productionResults = useMrpStore((s) => s.productionResults);
   const productionBatches = useMrpStore((s) => s.productionBatches);
+  const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const materialClaimResolutions = useMrpStore((s) => s.materialClaimResolutions);
   const productionYieldResolutions = useMrpStore((s) => s.productionYieldResolutions);
@@ -168,7 +169,7 @@ export function AppShell({
       // Produksi, dan Invoice & Payment).
       "/vendor-maklon/receiving": countVendorGoodReceiveEligible(vendorId, invoices),
       "/vendor-maklon/production": countVendorProduksiActionable(vendorId, productionBatches, productionResults, invoices),
-      "/vendor-maklon/pengiriman": countVendorPengirimanReady(vendorId, productionResults, deliveryKolis),
+      "/vendor-maklon/pengiriman": countVendorPengirimanReady(vendorId, productionResults, deliveryKolis, productionGroupMeta),
       "/vendor-maklon/invoice-payment": countVendorInvoicePaymentTotal(vendorId, mrpDetails, deliveryKolis, vendorInvoices, maklonInvoices),
     };
   }
