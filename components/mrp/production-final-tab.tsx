@@ -7,8 +7,10 @@ import {
   cumulativeSizeQtyForGroup,
   cutWarnaLenganGroups,
   cuttingSizesForGroup,
+  fgMurniAndReworkForGroup,
   productionGroupMetaFor,
   rejectGrossForGroup,
+  reworkBySizeForGroup,
   reworkedAwayBySize,
   reworkQtyForGroup,
   wasteQtyForGroup,
@@ -16,10 +18,11 @@ import {
 } from "@/lib/mrp/derive";
 
 /** Halaman rekap akhir (satu tempat) sebelum Pengiriman -- gabungan Finish Good + Reject +
- *  Rework/Waste per warna/lengan, dengan SATU tombol "Selesai Produksi" di sini saja. Dulu
- *  tombol ini ("Done Produksi") ada di tab Finish Good, tersembunyi di balik checkbox, dan
- *  ambigu dengan tombol "Simpan hasil produksi" di panel yang sama -- lihat feedback user
- *  ("perbaiki fungsionalitas layout dan ui ux... buat satu halaman final"). */
+ *  Rework/Waste per warna/lengan, dengan tombol "Selesai Produksi" TAHAP 2 (final) di sini --
+ *  butuh TAHAP 1 (tombol "Selesai Produksi" di tab Finish Good, yang menghitung reject) sudah
+ *  dilakukan duluan. Dua tahap terpisah supaya reject yang baru dihitung di Finish Good masih
+ *  sempat dirework/dibuang ke sisa sebelum benar-benar final di sini (lihat catatan lengkap di
+ *  lib/mrp/actions.ts: confirmFgDoneAction vs markProductionGroupDoneAction). */
 export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
   const productionBatches = useMrpStore((s) => s.productionBatches);
@@ -55,8 +58,9 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
         </select>
         {mrpIds.length === 0 && <div className="mt-2 font-sans text-xs text-text-muted">Belum ada MRP yang sudah dicutting.</div>}
         <div className="mt-2.5 rounded-md border border-[#CFE0EF] bg-info-bg px-3 py-2 font-sans text-[11px] leading-[1.5] text-info-fg">
-          Rekap Finish Good + Reject + Rework/Waste per warna/lengan. Klik <b>Selesai Produksi</b> begitu warna/lengan ini benar-benar tidak akan ada
-          penambahan lagi — sisa dari target hasil cutting yang belum jadi Finish Good otomatis tercatat sebagai reject.
+          Rekap Finish Good + Reject + Rework/Waste per warna/lengan. Halaman ini untuk konfirmasi TERAKHIR (tahap 2) — pastikan dulu &quot;Selesai
+          Produksi&quot; di tab <b>Finish Good</b> (tahap 1, hitung reject) dan rework/buang ke sisa (kalau ada) sudah tuntas, baru klik{" "}
+          <b>Selesai Produksi</b> di sini supaya hasilnya boleh masuk Pengiriman.
         </div>
       </div>
 
@@ -77,19 +81,23 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
             const rework = reworkQtyForGroup(groupKey, productionResults);
             const waste = wasteQtyForGroup(groupKey, productionResults);
             const meta = productionGroupMetaFor(groupKey, productionGroupMeta);
+            const isFgConfirmed = !!meta?.fgConfirmedAt;
             const isDone = !!meta?.doneAt;
             const expanded = expandedGroupKey === groupKey;
+            const fgSplit = fgMurniAndReworkForGroup(groupKey, productionResults);
             const sizes = Array.from(new Set([...Object.keys(target), ...Object.keys(fgRecorded)]));
             const grossPerSize = rejectGrossForGroup(groupKey, productionResults);
             const reworkPerSize = reworkedAwayBySize(groupKey, productionResults);
             const wastePerSize = wastedAwayBySize(groupKey, productionResults);
             const sisaPerSize = cumulativeSizeQtyForGroup(groupKey, "REJECT", productionResults);
+            const fgFromReworkPerSize = reworkBySizeForGroup(groupKey, productionResults);
             return (
               <div key={groupKey} className="border-b border-[#F1F4F7] last:border-b-0">
                 <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-[13px] font-sans text-xs text-[#31414F]">
                   <span className="flex min-w-[160px] items-center gap-1.5 font-medium">
                     {g.warna} · {g.lengan}
-                    {isDone && <StatusPill tone="success">Selesai</StatusPill>}
+                    {isFgConfirmed && <StatusPill tone="success">FG Selesai</StatusPill>}
+                    {isDone && <StatusPill tone="success">Final</StatusPill>}
                   </span>
                   <div className="flex min-w-[170px] flex-col gap-1">
                     <div className="flex items-baseline gap-1.5 font-mono text-[11px]">
@@ -101,6 +109,11 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                         {totalSelisih})
                       </span>
                     </div>
+                    {fgSplit.rework > 0 && (
+                      <span className="font-mono text-[10px] text-text-muted">
+                        {fgSplit.murni} murni + {fgSplit.rework} dari rework
+                      </span>
+                    )}
                     <div className="flex items-center gap-1.5">
                       <span className="h-1.5 w-full max-w-[130px] flex-1 overflow-hidden rounded-full bg-[#EEF0F3]">
                         <span className="block h-full rounded-full bg-success" style={{ width: `${progressPct}%` }} />
@@ -130,29 +143,32 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                     {isDone ? (
                       <button
                         onClick={() => undoProductionGroupDone(groupKey)}
-                        title="Buka kunci grup ini supaya bisa input Finish Good / Reject / Rework lagi"
+                        title="Buka kunci grup ini supaya Finish Good/Reject/Rework bisa dibuka lagi (mulai dari tab Finish Good)"
                         className="rounded-md border border-[#CBD5DF] bg-white px-3 py-[6px] font-sans text-[11px] font-semibold text-action-primary"
                       >
                         Buka kunci ↺
                       </button>
-                    ) : (
+                    ) : isFgConfirmed ? (
                       <button
                         onClick={() => markProductionGroupDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan)}
                         className="rounded-md bg-action-primary px-3 py-[6px] font-sans text-[11px] font-semibold text-white"
                       >
                         Selesai Produksi
                       </button>
+                    ) : (
+                      <span className="font-sans text-[10.5px] text-text-muted">Selesaikan dulu Finish Good (tab Finish Good)</span>
                     )}
                   </span>
                 </div>
                 {expanded && (
                   <div className="border-t border-[#CFE0EF] bg-info-bg p-4">
                     <div className="overflow-x-auto">
-                      <div className="min-w-[860px] overflow-hidden rounded-md border border-[#CFE0EF] bg-white">
-                        <div className="grid grid-cols-8 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                      <div className="min-w-[960px] overflow-hidden rounded-md border border-[#CFE0EF] bg-white">
+                        <div className="grid grid-cols-9 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                           <span>Size</span>
                           <span className="text-right">FG Target</span>
                           <span className="text-right">FG Terinput</span>
+                          <span className="text-right">FG dari Rework</span>
                           <span className="text-right">FG Selisih</span>
                           <span className="text-right">Reject</span>
                           <span className="text-right">Rework</span>
@@ -165,10 +181,11 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                           const f = fgRecorded[size] ?? 0;
                           const s = f - t;
                           return (
-                            <div key={size} className="grid grid-cols-8 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
+                            <div key={size} className="grid grid-cols-9 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
                               <span className="font-mono font-medium">{size}</span>
                               <span className="text-right font-mono">{t}</span>
                               <span className="text-right font-mono text-text-muted">{f}</span>
+                              <span className="text-right font-mono text-success-fg">{fgFromReworkPerSize[size] ?? 0}</span>
                               <span className={"text-right font-mono font-semibold " + (s < 0 ? "text-danger-fg" : "text-success-fg")}>
                                 {s >= 0 ? "+" : ""}
                                 {s}

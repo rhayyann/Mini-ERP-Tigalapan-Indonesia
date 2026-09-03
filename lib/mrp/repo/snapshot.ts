@@ -603,6 +603,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     vendorProduksi: g.vendor_produksi,
     warna: g.warna,
     lengan: g.lengan,
+    fgConfirmedAt: g.fg_confirmed_at ?? undefined,
     doneAt: g.done_at ?? undefined,
     remarkSisaReject: g.remark_sisa_reject ?? undefined,
   }));

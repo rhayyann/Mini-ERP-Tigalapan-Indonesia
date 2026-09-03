@@ -317,6 +317,14 @@ export type ProductionGroupMeta = {
   vendorProduksi: string;
   warna: string;
   lengan: Lengan;
+  /** Tahap 1: "Selesai Produksi" diklik di tab FINISH GOOD -- reject dihitung otomatis di titik
+   *  ini (cutting dikurangi Finish Good), tapi Rework/Buang ke Sisa TETAP boleh jalan sesudahnya
+   *  (dikunci oleh `doneAt`, bukan field ini). Beda dari `doneAt` (tahap 2, final produksi) --
+   *  lihat catatan lengkap di markProductionGroupDoneAction/confirmFgDoneAction. */
+  fgConfirmedAt?: string;
+  /** Tahap 2: "Selesai Produksi" diklik di tab FINAL PRODUKSI -- benar-benar mengunci grup ini
+   *  (Finish Good/Reject/Rework/Waste tidak bisa berubah lagi) & baru di titik ini hasilnya boleh
+   *  masuk Pengiriman. Butuh `fgConfirmedAt` sudah terisi duluan. */
   doneAt?: string;
   remarkSisaReject?: string;
 };
