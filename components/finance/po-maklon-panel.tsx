@@ -5,7 +5,7 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatPcs, formatRupiah, maklonPoBadge, maklonPoDisplayStatus } from "@/lib/mrp/derive";
+import { formatPcs, formatRupiah, maklonPoBadgeWithApproval } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { MaklonPO } from "@/lib/mrp/types";
 
@@ -35,7 +35,7 @@ export function PoMaklonPanel() {
       label: "Status",
       default: true,
       render: (p) => {
-        const badge = maklonPoBadge({ ...p, status: maklonPoDisplayStatus(p, vendorInvoices) });
+        const badge = maklonPoBadgeWithApproval(p, vendorInvoices);
         return <StatusPill tone={badge.tone}>{badge.label}</StatusPill>;
       },
     },
@@ -94,8 +94,8 @@ export function PoMaklonPanel() {
           { label: "No PO", options: Array.from(new Set(maklonPOs.map((p) => p.id))), test: (p, v) => p.id === v },
           {
             label: "Status",
-            options: Array.from(new Set(maklonPOs.map((p) => maklonPoBadge({ ...p, status: maklonPoDisplayStatus(p, vendorInvoices) }).label))),
-            test: (p, v) => maklonPoBadge({ ...p, status: maklonPoDisplayStatus(p, vendorInvoices) }).label === v,
+            options: Array.from(new Set(maklonPOs.map((p) => maklonPoBadgeWithApproval(p, vendorInvoices).label))),
+            test: (p, v) => maklonPoBadgeWithApproval(p, vendorInvoices).label === v,
           },
         ]}
         emptyText="Belum ada PO vendor produksi."
