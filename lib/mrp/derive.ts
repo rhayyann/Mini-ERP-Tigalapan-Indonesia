@@ -1843,10 +1843,15 @@ export type ProductionYieldRow = {
   yieldPct: number;
 };
 
+/** Total reject GRUP INI yang sudah dirework jadi baju -- dihitung dari sisi ASAL (deduksi
+ *  reject-nya, lewat reworkedAwayBySize), BUKAN dari sisi hasil FG-nya. Ini penting karena rework
+ *  boleh lintas lengan (reject PANJANG -> baju PENDEK, lihat reworkRejectSizeAction) sehingga FG
+ *  hasil rework itu tercatat dengan groupKey TUJUAN yang beda dari groupKey grup ini -- kalau
+ *  dihitung dari sisi FG (groupKey tujuan) maka rework lintas-lengan salah dianggap 0 padahal
+ *  reject-nya sudah berkurang. Dipakai juga sebagai pengaman `undoFgConfirmAction` (menolak buka
+ *  kunci kalau reject grup ini sudah dirework), jadi harus benar-benar mencerminkan sisi asal. */
 export function reworkQtyForGroup(groupKey: string, results: ProductionResult[]): number {
-  return results
-    .filter((r) => r.groupKey === groupKey && r.kind === "FG" && isReworkResult(r))
-    .reduce((sum, r) => sum + Object.values(r.sizeQty).reduce((a, b) => a + b, 0), 0);
+  return Object.values(reworkedAwayBySize(groupKey, results)).reduce((a, b) => a + b, 0);
 }
 
 /** Total reject yang dibuang jadi sisa/waste (majun, kain perca) — TIDAK bisa dirework jadi baju,
