@@ -28,6 +28,19 @@ function nowLocalDatetime() {
   return d.toISOString().slice(0, 16);
 }
 
+/** Konversi nilai naive dari <input type="datetime-local"> (mis. "2026-09-03T12:33", TANPA info
+ *  zona waktu) jadi ISO UTC yang benar sebelum dikirim ke server. `new Date(str)` menafsirkan
+ *  string tanpa zona sebagai jam LOKAL browser -- kalau string mentahnya (bukan hasil konversi
+ *  ini) langsung dikirim & disimpan ke kolom timestamptz, Postgres/Supabase menafsirkannya
+ *  sebagai UTC, jadi begitu ditampilkan lagi (dikonversi balik ke lokal) jamnya geser sebesar
+ *  offset zona waktu (mis. +8 jam kalau browser di GMT+8) -- itu penyebab CUTTING sempat
+ *  tampil "20.33" padahal yang diketik "12.33". Dipakai untuk restingAt/cuttingAt, satu-satunya
+ *  field di tab ini yang genuinely timestamptz (lihat migration 0010) & diisi lewat input jenis
+ *  ini -- field lain (today()/nowIso() di server) tidak lewat jalur browser-local ini. */
+function toUtcIso(localDatetimeValue: string): string {
+  return new Date(localDatetimeValue).toISOString();
+}
+
 type AduanGroup = { kode: string; lengan: Lengan; rows: (AduanPolaRow & { available: number })[]; totalQty: number; totalAvailable: number };
 type CuttingLine = { id: string; warna: string; codeRoll: string; gramasi: number };
 
@@ -184,7 +197,7 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
           remaining.push(line);
           continue;
         }
-        await startProductionBatch({ mrpId: selectedMrpId, aduanRowId: row.id, qtyRoll: 1, gramasi: line.gramasi, restingAt: effectiveRestingAt, codeRoll: line.codeRoll });
+        await startProductionBatch({ mrpId: selectedMrpId, aduanRowId: row.id, qtyRoll: 1, gramasi: line.gramasi, restingAt: toUtcIso(effectiveRestingAt), codeRoll: line.codeRoll });
         savedCount++;
       }
     } finally {
@@ -569,7 +582,7 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                       <div className="mt-2.5 flex items-center gap-2">
                         <Button
                           onClick={() => {
-                            updateBatchToCutting(b.id, draft, sizeDraft);
+                            updateBatchToCutting(b.id, toUtcIso(draft), sizeDraft);
                             setCuttingDraft((prev) => {
                               const next = { ...prev };
                               delete next[b.id];
