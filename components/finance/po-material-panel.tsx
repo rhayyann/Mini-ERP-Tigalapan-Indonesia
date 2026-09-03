@@ -44,6 +44,21 @@ export function PoMaterialPanel() {
   // Notifikasi sesaat saat user coba centang PO yang belum punya entitas — bukan cuma tooltip
   // hover (title attr) yang sering tidak kelihatan, tapi pesan yang muncul begitu diklik.
   const [entityHintPoId, setEntityHintPoId] = useState<string | null>(null);
+  // `colorBreakdown[].entitas` di database SELALU sudah terisi default (entitas pertama secara
+  // alfabet) sejak MRP diimport/PO dikirim ke Finance — kalau dropdown di bawah langsung
+  // menampilkan c.entitas apa adanya, Finance tidak pernah benar-benar "memilih", cuma menyetujui
+  // nilai default yang sudah kepasang duluan. Supaya Finance WAJIB klik pilih sendiri di layar
+  // ini (tanpa mengubah default di sistem lain yang mengandalkan entitas selalu terisi — Laporan
+  // HPP, split PO per entitas, dst), dropdown di bawah SENGAJA ditampilkan kosong sampai Finance
+  // benar-benar meng-klik salah satu opsinya di SINI — dilacak lewat set client-side ini, bukan
+  // field baru di database. Reload halaman = balik nampak kosong lagi (belum "disentuh" ulang),
+  // itu trade-off yang disengaja dari pendekatan "cuma di layar approval Finance, bukan di data").
+  const [touchedEntitas, setTouchedEntitas] = useState<Set<string>>(new Set());
+  function colorEntitasKey(poId: string, warna: string, lengan: string) {
+    return `${poId}|${warna}|${lengan}`;
+  }
+  // Filter "cuma tampilkan PO multi entitas" untuk daftar pending di bawah — lihat poIsMultiEntitas.
+  const [onlyMultiEntitas, setOnlyMultiEntitas] = useState(false);
 
   // Entitas sekarang disimpan PER WARNA (po.colorBreakdown[].entitas) — bukan cuma per PO — jadi
   // "sudah pilih entitas" dicek langsung dari data itu (bukan state lokal terpisah yang gampang
@@ -53,13 +68,16 @@ export function PoMaterialPanel() {
   // sekaligus", baru warna yang perlu beda di-override satu-satu lewat dropdown per-baris —
   // splitMaterialPoByEntitas otomatis memecah PO jadi beberapa PO approved terpisah per entitas
   // begitu approve, jadi tidak perlu approve manual per grup entitas.
+  // "Sudah punya entitas" sekarang berarti "sudah di-KLIK Finance di layar ini" (touchedEntitas),
+  // bukan cuma "field-nya kebetulan sudah terisi default" — lihat catatan di touchedEntitas.
   function poHasAllEntitas(po: MaterialPO) {
-    return po.colorBreakdown.every((c) => !!c.entitas);
+    return po.colorBreakdown.every((c) => !!c.entitas && touchedEntitas.has(colorEntitasKey(po.id, c.warna, c.lengan)));
   }
   function poBulkEntitasValue(po: MaterialPO) {
     // JANGAN filter dulu sebelum cek distinctness — kalau di-filter Boolean duluan, warna yang
     // BELUM dipilih entitasnya (undefined) jadi tidak ikut dihitung, jadi dropdown bulk bisa
     // salah nunjuk "sudah terisi 1 entitas" padahal masih ada warna lain yang kosong.
+    if (!po.colorBreakdown.every((c) => touchedEntitas.has(colorEntitasKey(po.id, c.warna, c.lengan)))) return "";
     const distinct = new Set(po.colorBreakdown.map((c) => c.entitas ?? ""));
     if (distinct.size !== 1) return "";
     const only = Array.from(distinct)[0];
@@ -82,9 +100,18 @@ export function PoMaterialPanel() {
 
   if (!mounted) return null;
 
+  // PO dianggap "multi entitas" kalau warna2-nya BENAR sudah dipecah ke >1 entitas berbeda (bukan
+  // cuma karena belum dipilih Finance) — cuma relevan untuk PO yang masih pending, karena
+  // splitMaterialPoByEntitas otomatis memecah PO jadi 1-entitas-per-PO begitu di-approve.
+  function poIsMultiEntitas(po: MaterialPO): boolean {
+    return new Set(po.colorBreakdown.map((c) => c.entitas).filter(Boolean)).size > 1;
+  }
+
   const detail = mrpDetails.find((d) => d.mrp.id === selectedMrpId);
-  const scopedPending = pending.filter((p) => p.mrpId === selectedMrpId);
-  const withoutEntity = scopedPending.filter((p) => !poHasAllEntitas(p)).length;
+  const scopedPendingAll = pending.filter((p) => p.mrpId === selectedMrpId);
+  const withoutEntity = scopedPendingAll.filter((p) => !poHasAllEntitas(p)).length;
+  const multiEntitasCount = scopedPendingAll.filter(poIsMultiEntitas).length;
+  const scopedPending = onlyMultiEntitas ? scopedPendingAll.filter(poIsMultiEntitas) : scopedPendingAll;
 
   const grouped = new Map<string, MaterialPO[]>();
   for (const po of scopedPending) {
@@ -116,13 +143,23 @@ export function PoMaterialPanel() {
   }
 
   function chooseEntityBulk(poId: string, entitas: string) {
-    if (entitas) setMaterialPoEntity(poId, entitas);
+    if (!entitas) return;
+    setMaterialPoEntity(poId, entitas);
+    const po = openPOs.find((p) => p.id === poId);
+    if (po) {
+      setTouchedEntitas((prev) => {
+        const next = new Set(prev);
+        for (const c of po.colorBreakdown) next.add(colorEntitasKey(poId, c.warna, c.lengan));
+        return next;
+      });
+    }
     if (entityHintPoId === poId) setEntityHintPoId(null);
   }
 
   function chooseEntityForColor(poId: string, warna: string, lengan: MaterialPO["lengan"], entitas: string) {
     if (!entitas) return;
     setMaterialPoColorEntity(poId, warna, lengan, entitas);
+    setTouchedEntitas((prev) => new Set(prev).add(colorEntitasKey(poId, warna, lengan)));
     if (entityHintPoId === poId) setEntityHintPoId(null);
   }
 
@@ -150,7 +187,7 @@ export function PoMaterialPanel() {
       label: "Status",
       default: true,
       render: (p) => {
-        const badge = materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices));
+        const badge = materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs));
         return <StatusPill tone={badge.tone}>{badge.label}</StatusPill>;
       },
     },
@@ -187,6 +224,18 @@ export function PoMaterialPanel() {
           </select>
         </div>
         {withoutEntity > 0 && <StatusPill tone="warning">{withoutEntity} PO belum pilih entitas</StatusPill>}
+        {multiEntitasCount > 0 && (
+          <button
+            onClick={() => setOnlyMultiEntitas((v) => !v)}
+            title="Filter cuma PO yang warna-nya sudah kepecah ke lebih dari 1 entitas"
+            className={
+              "rounded-md border px-2.5 py-[6px] font-sans text-[11px] font-semibold " +
+              (onlyMultiEntitas ? "border-transparent bg-rework-bg text-rework-fg" : "border-[#CBD5DF] bg-white text-action-primary")
+            }
+          >
+            {onlyMultiEntitas ? "✕ " : ""}Multi Entitas ({multiEntitasCount})
+          </button>
+        )}
         {selected.size > 0 && (
           <button onClick={approveSelected} className="ml-auto rounded-md bg-success px-3.5 py-[9px] font-sans text-xs font-semibold text-white">
             Approve {selected.size} terpilih
@@ -229,7 +278,10 @@ export function PoMaterialPanel() {
                         <div className="grid items-center gap-2 px-4 py-[11px]" style={{ gridTemplateColumns: "24px 110px 1fr 90px 120px 170px" }}>
                           <Checkbox checked={selected.has(po.id)} onChange={() => toggleWithEntityGuard(po)} />
                           <span className="font-mono font-medium text-xs text-[#31414F]">{po.id}</span>
-                          <span className="font-sans text-xs text-[#31414F]">{po.supplier}</span>
+                          <span className="flex items-center gap-1.5 font-sans text-xs text-[#31414F]">
+                            {po.supplier}
+                            {poIsMultiEntitas(po) && <StatusPill tone="rework">MULTI ENTITAS</StatusPill>}
+                          </span>
                           <span className="text-right font-mono text-xs">{po.rollCount} roll</span>
                           <span className="text-right font-mono text-xs">{formatRupiah(po.amount)}</span>
                           <select
@@ -272,9 +324,12 @@ export function PoMaterialPanel() {
                               <span className="text-right font-mono">{formatRupiah((po.amount / po.rollCount) * c.rollCount)}</span>
                               <span className="text-right font-mono">{formatRupiah(maklonFeeForColorLine(po, c, maklonPOs, mrpDetails))}</span>
                               <select
-                                value={c.entitas ?? ""}
+                                value={touchedEntitas.has(colorEntitasKey(po.id, c.warna, c.lengan)) ? c.entitas ?? "" : ""}
                                 onChange={(e) => chooseEntityForColor(po.id, c.warna, c.lengan, e.target.value)}
-                                className={"rounded-md border px-1.5 py-1 font-sans text-[10.5px] font-medium text-text-primary " + (c.entitas ? "border-accent-blue/60" : "border-warning")}
+                                className={
+                                  "rounded-md border px-1.5 py-1 font-sans text-[10.5px] font-medium text-text-primary " +
+                                  (touchedEntitas.has(colorEntitasKey(po.id, c.warna, c.lengan)) ? "border-accent-blue/60" : "border-warning")
+                                }
                               >
                                 <option value="">— pilih —</option>
                                 {entitasList.map((e) => (
@@ -324,9 +379,9 @@ export function PoMaterialPanel() {
           {
             label: "Status",
             options: Array.from(
-              new Set(approved.map((p) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices)).label))
+              new Set(approved.map((p) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs)).label))
             ),
-            test: (p, v) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices)).label === v,
+            test: (p, v) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs)).label === v,
           },
         ]}
         emptyText="Belum ada PO material disetujui."

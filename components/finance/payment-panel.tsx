@@ -34,15 +34,16 @@ export function PaymentPanel() {
     });
   }
 
-  // 6 kolom default (+ Kode Transaksi di firstColumn = 7 total) — No Invoice Supplier & Entitas
-  // tetap ada, cuma dipindah ke toggle "Kolom" (lebih ke arah detail rekonsiliasi/akuntansi
-  // daripada info inti buat memutuskan bayar/tidak).
+  // 6 kolom default (+ checkbox di firstColumn) — No Invoice Supplier & Entitas tetap ada, cuma
+  // dipindah ke toggle "Kolom" (lebih ke arah detail rekonsiliasi/akuntansi daripada info inti
+  // buat memutuskan bayar/tidak). Urutan: No MRP, No PO, Kode Transaksi, lalu sisanya.
   const columns: ColumnDef<RawMaterialInvoice>[] = [
     { key: "noMrp", label: "No MRP", default: true, render: (i) => <span className="font-mono">{i.mrpId}</span> },
     { key: "noPo", label: "No PO", default: true, render: (i) => <span className="font-mono font-medium">{i.poId}</span> },
+    { key: "kodeTransaksi", label: "Kode Transaksi", default: true, render: (i) => <span className="font-mono font-medium">{i.kodeTransaksi}</span> },
     { key: "supplier", label: "Supplier / Vendor", default: true, render: (i) => `${i.supplier} → ${VENDOR_PRODUKSI[i.destinationVendor]?.name ?? i.destinationVendor}` },
     { key: "noInvVendor", label: "No Invoice Supplier", default: false, render: (i) => i.noInvoiceVendor || "—" },
-    // default:false — dipindah ke toggle "Kolom" supaya "Bukti PV" (baru) bisa masuk default
+    // default:false — dipindah ke toggle "Kolom" supaya "Lampiran Invoice" bisa masuk default
     // tanpa melebihi batas 7 kolom; nilai & status tetap jadi info inti buat keputusan bayar.
     { key: "roll", label: "Roll", default: false, align: "right", render: (i) => i.qtyReady },
     { key: "nilai", label: "Nilai", default: true, align: "right", render: (i) => formatRupiah(i.totalBiaya) },
@@ -50,7 +51,7 @@ export function PaymentPanel() {
     { key: "status", label: "Status", default: true, render: (i) => <StatusPill tone={invoiceBadge(i.status).tone}>{invoiceBadge(i.status).label}</StatusPill> },
     {
       key: "bukti",
-      label: "Bukti PV",
+      label: "Lampiran Invoice",
       default: true,
       render: (i) =>
         i.buktiPvDataUrl ? (
@@ -104,12 +105,9 @@ export function PaymentPanel() {
         columns={columns}
         rows={invoices}
         keyOf={(i) => i.id}
-        firstColumnLabel="Kode Transaksi"
+        firstColumnLabel=""
         firstColumnRender={(i) => (
-          <span className="flex items-center gap-2.5">
-            <Checkbox checked={selected.has(i.id)} onChange={() => toggle(i.id)} disabled={i.status !== "INVOICED" && i.status !== "PAID"} />
-            <span className="font-mono font-medium">{i.kodeTransaksi}</span>
-          </span>
+          <Checkbox checked={selected.has(i.id)} onChange={() => toggle(i.id)} disabled={i.status !== "INVOICED" && i.status !== "PAID"} />
         )}
         filterDefs={[
           { label: "No MRP", options: Array.from(new Set(invoices.map((i) => i.mrpId))), test: (i, v) => i.mrpId === v },

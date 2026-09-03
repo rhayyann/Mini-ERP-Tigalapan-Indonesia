@@ -5,10 +5,10 @@ import * as XLSX from "xlsx";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { StatusPill } from "@/components/ui/status-pill";
-import { DownloadLampiranModal } from "@/components/mrp/download-lampiran-modal";
 import { NumberInput } from "@/components/mrp/number-input";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
+  autoOngkirForInvoice,
   formatPcs,
   formatRupiah,
   hppRowsForInvoice,
@@ -88,7 +88,6 @@ function exportInvoiceLampiranExcel(
 
 function downloadInvoiceLampiran(
   invoices: VendorInvoice[],
-  ongkirByInvoice: Record<string, number>,
   mrpDetails: MrpDetail[],
   staticMrps: Mrp[],
   productionBatches: ProductionBatch[],
@@ -99,9 +98,13 @@ function downloadInvoiceLampiran(
 ) {
   const wb = XLSX.utils.book_new();
   for (const inv of invoices) {
+    // Ongkir SELALU dihitung otomatis dari data delivery+ekspedisi terbaru (autoOngkirForInvoice,
+    // sama seperti Laporan HPP) — dulu ada modal yang minta user input manual sebelum download,
+    // tapi angkanya tidak pernah dipakai di Laporan HPP (yang sudah live-compute sendiri) jadi
+    // cuma bikin 2 sumber ongkir yang bisa beda-beda. Sekarang dihapus, download langsung jalan.
     const ws = exportInvoiceLampiranExcel(
       inv,
-      ongkirByInvoice[inv.id] ?? 0,
+      autoOngkirForInvoice(inv, deliveryKolis),
       mrpDetails,
       staticMrps,
       productionBatches,
@@ -127,7 +130,6 @@ export function InvoiceVendorReviewPanel() {
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const addVendorInvoiceAdjustment = useMrpStore((s) => s.addVendorInvoiceAdjustment);
   const setVendorInvoiceStatus = useMrpStore((s) => s.setVendorInvoiceStatus);
-  const setVendorInvoiceOngkir = useMrpStore((s) => s.setVendorInvoiceOngkir);
 
   const [expandedInvoiceId, setExpandedInvoiceId] = useState("");
   const [expandedMrpKey, setExpandedMrpKey] = useState("");
@@ -137,7 +139,6 @@ export function InvoiceVendorReviewPanel() {
   const [adjAmount, setAdjAmount] = useState(0);
   const [adjNote, setAdjNote] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [downloadOpen, setDownloadOpen] = useState(false);
 
   function toggleSelect(id: string) {
     setSelected((prev) => {
@@ -183,7 +184,11 @@ export function InvoiceVendorReviewPanel() {
         <div className="flex items-center gap-2 rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-[10px]">
           <span className="font-sans text-xs font-medium text-info-fg">{selected.size} dipilih</span>
           <button
-            onClick={() => setDownloadOpen(true)}
+            onClick={() => {
+              const invoicesToExport = vendorInvoices.filter((i) => selected.has(i.id));
+              downloadInvoiceLampiran(invoicesToExport, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis);
+              setSelected(new Set());
+            }}
             className="rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11.5px] font-semibold text-info-fg"
           >
             Download Lampiran Invoice ({selected.size})
@@ -456,30 +461,6 @@ export function InvoiceVendorReviewPanel() {
         </div>
       </div>
 
-      {downloadOpen && (
-        <DownloadLampiranModal
-          invoiceIds={Array.from(selected)}
-          initialOngkir={Object.fromEntries(vendorInvoices.filter((i) => selected.has(i.id)).map((i) => [i.id, i.ongkirTotal ?? 0]))}
-          onCancel={() => setDownloadOpen(false)}
-          onConfirm={(ongkirByInvoice) => {
-            const invoicesToExport = vendorInvoices.filter((i) => selected.has(i.id));
-            for (const [id, ongkir] of Object.entries(ongkirByInvoice)) setVendorInvoiceOngkir(id, ongkir);
-            downloadInvoiceLampiran(
-              invoicesToExport,
-              ongkirByInvoice,
-              mrpDetails,
-              staticMrps,
-              productionBatches,
-              productionResults,
-              productionGroupMeta,
-              rawInvoices,
-              deliveryKolis
-            );
-            setDownloadOpen(false);
-            setSelected(new Set());
-          }}
-        />
-      )}
     </>
   );
 }

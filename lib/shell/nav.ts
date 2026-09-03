@@ -52,7 +52,10 @@ export const NAV: Record<RoleKey, RoleNav> = {
   produksi: {
     role: "Produksi",
     entity: "Tigalapan Indonesia",
-    items: [{ label: "Monitoring Produksi", href: "/produksi/monitoring" }],
+    items: [
+      { label: "Monitoring Produksi", href: "/produksi/monitoring" },
+      { label: "Yield Alert", href: "/produksi/yield-alerts" },
+    ],
   },
   vendorMaklon: {
     role: "PT Maklon ABC",

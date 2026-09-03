@@ -154,9 +154,15 @@ export async function approvePpicMrpAction(mrpId: string): Promise<void> {
   await insertNotification(notif(`MRP ${mrpId} disetujui SCM — siap diproses Procurement`, ["ppic", "procurement"]));
 }
 
-export async function assignMaterialSupplierAction(mrpId: string, materialRowId: string, supplier: string): Promise<void> {
+/** Terima array materialRowIds (bukan satu id) -- 1 warna bisa punya beberapa baris (per lengan),
+ *  dan dulu dipanggil sekali per baris lewat `.forEach()` di UI (page.tsx), masing-masing dengan
+ *  refresh() snapshot penuhnya sendiri-sendiri -- selain lambat (N round-trip buat 1 klik), juga
+ *  race condition (beberapa refresh() saling susul-menyusul, urutan selesainya tidak terjamin).
+ *  Sekarang 1 UPDATE untuk semua baris sekaligus, 1 refresh() saja. */
+export async function assignMaterialSupplierAction(mrpId: string, materialRowIds: string[], supplier: string): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
-  const { error } = await supabaseServer().from("material_rows").update({ supplier }).eq("id", materialRowId).eq("mrp_id", mrpId);
+  if (materialRowIds.length === 0) return;
+  const { error } = await supabaseServer().from("material_rows").update({ supplier }).in("id", materialRowIds).eq("mrp_id", mrpId);
   if (error) throw new Error(error.message);
 }
 
@@ -491,7 +497,28 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
     }
 
     if (keptColorEntries.length === 0) {
-      await db.from("raw_material_invoice_rolls").delete().in("invoice_color_id", inv.colorEntries.map((c) => `${inv.id}-${c.warna}-${c.lengan}`));
+      // BUG lama: baris raw_material_invoice_rolls di-DELETE tanpa pernah di-insert ulang —
+      // invoice yang sama tetap dipakai (cuma destination_vendor-nya diganti), jadi gross_kg tiap
+      // roll (dari invoice supplier asli) semestinya TIDAK berubah sama sekali saat material
+      // dipindah antar vendor produksi. Akibatnya colorEntries[].rolls invoice ini jadi kosong
+      // selamanya di Good Receive vendor tujuan ("BEIGE 24S · PANJANG (0 roll)" walau qty_ready-nya
+      // tetap 4) — tidak ada apa-apa lagi yang bisa ditimbang/di-cutting untuk warna itu. Yang
+      // benar: RESET saja kolom-kolom hasil timbang vendor SEBELUMNYA (net_kg, code_roll/lot,
+      // status klaim) supaya vendor baru menimbang ulang dari awal, tapi roll_index & gross_kg
+      // (data invoice asli dari supplier) tetap dipertahankan.
+      await db
+        .from("raw_material_invoice_rolls")
+        .update({
+          net_kg: null,
+          received_at: null,
+          code_roll: null,
+          code_lot: null,
+          claim_resolved_note: null,
+          claim_resolved_at: null,
+          claim_retur_note: null,
+          claim_retur_requested_at: null,
+        })
+        .in("invoice_color_id", inv.colorEntries.map((c) => `${inv.id}-${c.warna}-${c.lengan}`));
       await db.from("raw_material_invoice_addbuys").update({ received_at: null }).eq("invoice_id", inv.id);
       await db
         .from("raw_material_invoices")
@@ -601,37 +628,53 @@ export async function setInvoicesDeliveryAction(invoiceIds: string[], deliveryDa
   }
 }
 
-export async function receiveRawMaterialRollAction(
-  invoiceId: string,
-  warna: string,
-  lengan: Lengan,
-  rollIndex: number,
-  netKg: number,
-  codeRoll?: string,
-  codeLot?: string,
-  claim?: { diffKg: number; pct: number }
-): Promise<void> {
+/** Tandai 1 roll FISIK DITERIMA di Good Receive — TIDAK menimbang (lihat
+ *  receiveRawMaterialRollAction untuk itu, sekarang dipanggil dari halaman Cutting). Ini yang
+ *  memindahkan status invoice DELIVERY → RECEIVING (dulu dipicu oleh penimbangan roll pertama). */
+export async function markRollArrivedAction(invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, codeRoll?: string, codeLot?: string): Promise<void> {
   const vendorId = await requireVendorSession();
   const db = supabaseServer();
   const colorId = `${invoiceId}-${warna}-${lengan}`;
   const { error } = await db
     .from("raw_material_invoice_rolls")
-    .update({ net_kg: netKg, received_at: today(), code_roll: codeRoll ?? null, code_lot: codeLot ?? null })
+    .update({ received_at: today(), code_roll: codeRoll ?? null, code_lot: codeLot ?? null })
     .eq("invoice_color_id", colorId)
     .eq("roll_index", rollIndex);
   if (error) throw new Error(error.message);
 
-  const { data: inv } = await db.from("raw_material_invoices").select("id,status,po_id,received_at").eq("id", invoiceId).single();
+  const { data: inv } = await db.from("raw_material_invoices").select("id,status,received_at").eq("id", invoiceId).single();
   if (inv) {
     await db
       .from("raw_material_invoices")
       .update({ status: inv.status === "DELIVERY" ? "RECEIVING" : inv.status, received_at: inv.received_at ?? today() })
       .eq("id", invoiceId);
   }
+  void vendorId;
+}
+
+/** Timbang 1 roll yang SUDAH ditandai diterima — dipanggil dari halaman Cutting (lihat
+ *  pendingWeighRolls). Code roll/lot sudah diisi saat markRollArrivedAction, tidak diubah lagi di
+ *  sini (kecuali sedang ditimbang ulang untuk roll yang sama, code-nya memang tidak berubah). */
+export async function receiveRawMaterialRollAction(
+  invoiceId: string,
+  warna: string,
+  lengan: Lengan,
+  rollIndex: number,
+  netKg: number,
+  claim?: { diffKg: number; pct: number }
+): Promise<void> {
+  const vendorId = await requireVendorSession();
+  const db = supabaseServer();
+  const colorId = `${invoiceId}-${warna}-${lengan}`;
+  const { data: rollRow } = await db.from("raw_material_invoice_rolls").select("code_roll,code_lot").eq("invoice_color_id", colorId).eq("roll_index", rollIndex).single();
+  const { error } = await db.from("raw_material_invoice_rolls").update({ net_kg: netKg }).eq("invoice_color_id", colorId).eq("roll_index", rollIndex);
+  if (error) throw new Error(error.message);
+
   if (claim) {
+    const { data: inv } = await db.from("raw_material_invoices").select("po_id").eq("id", invoiceId).single();
     await insertNotification(
       notif(
-        `Claim selisih berat — ${inv?.po_id ?? ""} ${warna} · ${lengan} roll ${rollIndex + 1}: selisih ${claim.diffKg >= 0 ? "+" : ""}${claim.diffKg.toFixed(2)} kg (${claim.pct.toFixed(1)}%) di luar toleransi. Kode roll: ${codeRoll || "-"}, lot: ${codeLot || "-"}.`,
+        `Claim selisih berat — ${inv?.po_id ?? ""} ${warna} · ${lengan} roll ${rollIndex + 1}: selisih ${claim.diffKg >= 0 ? "+" : ""}${claim.diffKg.toFixed(2)} kg (${claim.pct.toFixed(1)}%) di luar toleransi. Kode roll: ${rollRow?.code_roll || "-"}, lot: ${rollRow?.code_lot || "-"}.`,
         ["procurement"]
       )
     );
@@ -682,10 +725,34 @@ export async function approveVendorMaterialPosAction(mrpId: string, vendor: stri
   await checkPoApproved(mrpId);
 }
 
-export async function updateBatchToCuttingAction(batchId: string, cuttingAt: string): Promise<void> {
+export async function updateBatchToCuttingAction(batchId: string, cuttingAt: string, sizeQty: Record<string, number> = {}): Promise<void> {
   await requireVendorSession();
-  const { error } = await supabaseServer().from("production_batches").update({ cutting_at: cuttingAt }).eq("id", batchId);
+  const db = supabaseServer();
+  const { error } = await db.from("production_batches").update({ cutting_at: cuttingAt }).eq("id", batchId);
   if (error) throw new Error(error.message);
+  // Hasil aduan AKTUAL roll ini (lihat komentar ProductionBatch.sizeQty di types.ts) — tabel
+  // production_batch_sizes belum tentu ada (butuh migration 0006_production_batch_output.sql).
+  // Errornya SENGAJA tidak dilempar (cuma dicatat) supaya "Update ke Cutting" di atas (aksi
+  // utamanya, sudah berhasil) tidak ikut gagal hanya karena fitur tambahan ini belum ter-migrate
+  // di environment tertentu.
+  const rows = Object.entries(sizeQty).filter(([, qty]) => qty > 0);
+  if (rows.length > 0) {
+    const { error: sizeErr } = await db.from("production_batch_sizes").insert(rows.map(([size, qty]) => ({ production_batch_id: batchId, size, qty })));
+    if (sizeErr) console.error("updateBatchToCuttingAction: gagal simpan hasil aduan (migration 0006 sudah jalan?)", sizeErr.message);
+  }
+}
+
+/** Tandai alert yield <99% roll ini sudah ditindaklanjuti/di-approve dari portal internal
+ *  Produksi (audience "produksi" — BUKAN Procurement, beda dari material claim berat). */
+export async function resolveProductionYieldAction(batchId: string, note: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "produksi");
+  const { error } = await supabaseServer().from("production_yield_resolutions").upsert({ production_batch_id: batchId, note, resolved_at: today() });
+  if (error) throw new Error(error.message);
+}
+
+export async function unresolveProductionYieldAction(batchId: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "produksi");
+  await supabaseServer().from("production_yield_resolutions").delete().eq("production_batch_id", batchId);
 }
 
 export async function updateDeliveryKoliAction(koliId: string, patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }): Promise<void> {
@@ -993,6 +1060,12 @@ async function maybeAdvanceMaklonToDelivery(mrpId: string, vendorProduksi: strin
 
 export async function reworkRejectSizeAction(input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; fromSize: string; qty: number; toLengan: Lengan; toSize: string; usia: Usia }): Promise<void> {
   await requireVendorSession();
+  // Rework fisik cuma bisa memotong lengan PANJANG jadi PENDEK (sisa potongan lengan), tidak bisa
+  // sebaliknya (lengan PENDEK tidak bisa "dipanjangkan" lagi) — dulu tidak ada guard sama sekali,
+  // baik di UI (dropdown bebas pilih) maupun di sini, jadi rework PENDEK→PANJANG bisa kesimpan.
+  if (input.lengan === "PENDEK" && input.toLengan === "PANJANG") {
+    throw new Error("Rework PENDEK ke PANJANG tidak valid — lengan yang sudah dipotong pendek tidak bisa dipanjangkan lagi.");
+  }
   const db = supabaseServer();
   const sourceGroupKey = `${input.mrpId}|${input.warna}|${input.lengan}`;
   const outputGroupKey = `${input.mrpId}|${input.warna}|${input.toLengan}`;
@@ -1036,6 +1109,55 @@ export async function reworkRejectSizeAction(input: { mrpId: string; vendorProdu
   ]);
 
   await maybeAdvanceMaklonToDelivery(input.mrpId, input.vendorProduksi);
+}
+
+/** Buang reject ke sisa/waste (majun, kain perca) — TIDAK bisa dijadikan garmen lagi, beda dari
+ *  reworkRejectSizeAction. Mirror strukturnya (deduksi REJECT negatif + entri baru), tapi entri
+ *  barunya kind "WASTE" tanpa lengan/size tujuan. Butuh migration 0007_production_waste.sql
+ *  (nilai enum 'WASTE' pada production_kind_t) — kalau belum jalan, insert ini akan gagal dengan
+ *  error dari Postgres (bukan silent fail, supaya user tahu migration-nya perlu di-apply dulu). */
+export async function wasteRejectSizeAction(input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; fromSize: string; qty: number; note?: string }): Promise<void> {
+  await requireVendorSession();
+  const db = supabaseServer();
+  const groupKey = `${input.mrpId}|${input.warna}|${input.lengan}`;
+  const { data: meta } = await db.from("production_group_meta").select("group_key,done_at").eq("group_key", groupKey).maybeSingle();
+  if (meta?.done_at) return;
+
+  const { data: maklon } = await db.from("maklon_pos").select("id").eq("mrp_id", input.mrpId).eq("vendor_produksi", input.vendorProduksi).maybeSingle();
+  const rejectId = await nextReadableId("PR");
+  const wasteId = await nextReadableId("PR");
+  const recordedAt = nowIso();
+  const { error } = await db.from("production_results").insert([
+    {
+      id: rejectId,
+      group_key: groupKey,
+      mrp_id: input.mrpId,
+      vendor_produksi: input.vendorProduksi,
+      po_id: maklon?.id ?? "",
+      warna: input.warna,
+      lengan: input.lengan,
+      kind: "REJECT",
+      recorded_at: recordedAt,
+      note: `Waste ${input.qty} pcs size ${input.fromSize} — dibuang jadi sisa/majun (tidak bisa dirework)${input.note ? ": " + input.note : ""}`,
+    },
+    {
+      id: wasteId,
+      group_key: groupKey,
+      mrp_id: input.mrpId,
+      vendor_produksi: input.vendorProduksi,
+      po_id: maklon?.id ?? "",
+      warna: input.warna,
+      lengan: input.lengan,
+      kind: "WASTE",
+      recorded_at: recordedAt,
+      note: input.note || `Dari reject size ${input.fromSize}`,
+    },
+  ]);
+  if (error) throw new Error(error.message);
+  await db.from("production_result_sizes").insert([
+    { production_result_id: rejectId, size: input.fromSize, qty: -input.qty },
+    { production_result_id: wasteId, size: input.fromSize, qty: input.qty },
+  ]);
 }
 
 export async function markProductionGroupDoneAction(groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan): Promise<void> {

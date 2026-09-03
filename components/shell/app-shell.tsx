@@ -26,6 +26,7 @@ import {
   countMrpWithoutPO,
   countPaymentTotal,
   countPoApprovalTotal,
+  countProductionYieldUnresolved,
   countVendorGoodReceiveEligible,
   countVendorInvoicePaymentTotal,
   countVendorInvoicesAwaitingReview,
@@ -95,6 +96,7 @@ export function AppShell({
   const productionBatches = useMrpStore((s) => s.productionBatches);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const materialClaimResolutions = useMrpStore((s) => s.materialClaimResolutions);
+  const productionYieldResolutions = useMrpStore((s) => s.productionYieldResolutions);
 
   // Auto-import Master Data (Harga Maklon/Kain/Kain PKS/Entitas) begitu terdeteksi kosong — SAMA
   // pola dengan `autoImportIfEmpty` di components/mrp/import-sheet-button.tsx, tapi dipasang di
@@ -154,6 +156,10 @@ export function AppShell({
   } else if (role === "scm") {
     badgeOverrides = {
       "/scm/approval-mrp": countMrpAwaitingScmApproval(mrpDetails),
+    };
+  } else if (role === "produksi") {
+    badgeOverrides = {
+      "/produksi/yield-alerts": countProductionYieldUnresolved(productionBatches, mrpDetails, productionYieldResolutions),
     };
   } else if (role === "vendorMaklon" && vendorId) {
     badgeOverrides = {

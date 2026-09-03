@@ -108,6 +108,11 @@ export type AddBuyItem = { id: string; item: string; warna: string; beratKg: num
 
 export type RollReceipt = { netKg: number; receivedAt: string; codeRoll?: string; codeLot?: string };
 
+/** Roll yang sudah ditandai FISIK DITERIMA di Good Receive (arrivedAt) — belum tentu sudah
+ *  ditimbang (lihat RollReceipt). Ditimbang & dicek toleransi sekarang di halaman Cutting, bukan
+ *  di sini lagi — Good Receive tinggal konfirmasi roll sudah datang + tag code roll/lot-nya. */
+export type RollArrival = { arrivedAt: string; codeRoll?: string; codeLot?: string };
+
 export type AddBuyReceipt = { receivedAt: string };
 
 export type RawMaterialInvoice = {
@@ -138,6 +143,9 @@ export type RawMaterialInvoice = {
   productionStart?: string;
   productionEnd?: string;
   rollReceipts: Record<string, (RollReceipt | null)[]>;
+  /** Sejajar index dengan colorEntries[].rolls / rollReceipts — null berarti roll itu belum
+   *  ditandai diterima di Good Receive. Diisi oleh markRollArrivedAction. */
+  rollArrivals: Record<string, (RollArrival | null)[]>;
   addBuyReceipts: Record<string, AddBuyReceipt>;
 };
 
@@ -186,9 +194,21 @@ export type ProductionBatch = {
   cuttingAt?: string;
   createdAt: string;
   codeRoll?: string;
+  /** Hasil aduan AKTUAL (qty per size) dari roll ini, dicatat vendor saat "Update ke Cutting" —
+   *  kosong kalau belum diisi (batch lama sebelum fitur ini ada, atau memang belum diinput).
+   *  Dipakai untuk target/yield per roll (lihat productionYieldAlertsList di derive.ts), BUKAN
+   *  estimasi rasio seperti targetSizesForGroup. */
+  sizeQty?: Record<string, number>;
 };
 
-export type ProductionResultKind = "FG" | "REJECT";
+/** Catatan resolusi alert yield (<99%) per roll — dilempar ke portal internal Produksi, bukan ke
+ *  Procurement (beda dari material claim). Ada = alert ini sudah ditindaklanjuti/di-approve. */
+export type ProductionYieldResolution = { note: string; resolvedAt: string };
+
+/** "WASTE" = reject yang dibuang jadi sisa/majun/kain perca — TIDAK bisa dirework jadi baju lagi
+ *  (beda dari reject yang masih di-rework ke FG). Dicatat lewat wasteRejectSizeAction, mirror
+ *  reworkRejectSizeAction tapi tanpa lengan/size tujuan (hasilnya bukan garmen). */
+export type ProductionResultKind = "FG" | "REJECT" | "WASTE";
 export type Usia = "KIDS" | "DEWASA";
 
 export type ProductionResult = {

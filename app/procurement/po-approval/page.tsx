@@ -124,7 +124,7 @@ export default function PoApprovalPage() {
       label: "Status",
       default: true,
       render: (p) => {
-        const s = materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices);
+        const s = materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs);
         return <StatusPill tone={materialPoFullStatusBadge(s).tone}>{materialPoFullStatusBadge(s).label}</StatusPill>;
       },
     },
@@ -404,8 +404,9 @@ export default function PoApprovalPage() {
                     onChange={(e) => {
                       // Satu pilihan supplier berlaku untuk SEMUA lengan warna ini (pendek +
                       // panjang digabung jadi satu keputusan bahan) — bukan per lengan lagi.
-                      const supplier = e.target.value;
-                      g.rowIds.forEach((rowId) => assignMaterialSupplier(detail.mrp.id, rowId, supplier));
+                      // Dikirim sebagai SATU panggilan (bukan .forEach per rowId) supaya cuma 1
+                      // update + 1 refresh, bukan N yang saling susul-menyusul.
+                      assignMaterialSupplier(detail.mrp.id, g.rowIds, e.target.value);
                     }}
                     className="rounded-md border border-[#DDE4EB] px-2 py-[5px] font-sans text-[11.5px] font-medium text-text-primary"
                   >
@@ -443,11 +444,29 @@ export default function PoApprovalPage() {
           { label: "Entitas", options: Array.from(new Set(allMaterialPOs.map((p) => p.entity))), test: (p, v) => p.entity === v },
           {
             label: "Status",
-            options: Array.from(new Set(allMaterialPOs.map((p) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices)).label))),
-            test: (p, v) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices)).label === v,
+            options: Array.from(new Set(allMaterialPOs.map((p) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs)).label))),
+            test: (p, v) => materialPoFullStatusBadge(materialPoFullStatus(p, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs)).label === v,
           },
         ]}
         emptyText="Belum ada PO material yang dibuat."
+        renderExpanded={(p) => (
+          <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
+            <div className="grid grid-cols-4 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+              <span>Warna</span>
+              <span>Lengan</span>
+              <span className="text-right">Roll</span>
+              <span>Entitas</span>
+            </div>
+            {p.colorBreakdown.map((c, i) => (
+              <div key={i} className="grid grid-cols-4 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                <span className="font-medium">{c.warna}</span>
+                <span>{c.lengan}</span>
+                <span className="text-right font-mono">{c.rollCount}</span>
+                <span>{c.entitas ?? "—"}</span>
+              </div>
+            ))}
+          </div>
+        )}
       />
 
       <DataTable
@@ -468,6 +487,32 @@ export default function PoApprovalPage() {
           },
         ]}
         emptyText="Belum ada PO vendor produksi."
+        renderExpanded={(p) => {
+          const rows = mrpDetailFor(p.mrpId, mrpDetails)?.aduanRows.filter((a) => a.vendor === p.vendorProduksi) ?? [];
+          if (rows.length === 0) {
+            return <div className="font-sans text-[11.5px] text-text-muted">Belum ada rincian aduan pola untuk PO ini.</div>;
+          }
+          return (
+            <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
+              <div className="grid grid-cols-4 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                <span>Warna</span>
+                <span>Lengan</span>
+                <span className="text-right">Qty (pcs)</span>
+                <span>Size</span>
+              </div>
+              {rows.map((a) => (
+                <div key={a.id} className="grid grid-cols-4 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                  <span className="font-medium">{a.warna}</span>
+                  <span>{a.lengan}</span>
+                  <span className="text-right font-mono">{formatPcs(a.qty)}</span>
+                  <span className="font-mono text-[11px] text-text-muted">
+                    {a.sizes.length > 0 ? a.sizes.map((s) => `${s.size} ${s.qty}`).join(", ") : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          );
+        }}
       />
 
       {detail && drillVendor && (

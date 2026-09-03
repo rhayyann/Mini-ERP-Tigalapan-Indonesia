@@ -8,7 +8,7 @@ import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { TransferMaterialModal, type TransferCandidate } from "@/components/mrp/transfer-material-modal";
 import { SetDeliveryModal } from "@/components/mrp/set-delivery-modal";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatDate, formatRupiah, materialPoFullStatus, materialPoFullStatusBadge, mrpDetailFor, type MaterialPoFullStatus } from "@/lib/mrp/derive";
+import { formatDate, formatRupiah, materialPoFullStatus, materialPoFullStatusBadge, mrpDetailFor, rollArrivalProgress, type MaterialPoFullStatus } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { RawMaterialInvoice } from "@/lib/mrp/types";
 
@@ -39,6 +39,7 @@ export default function MaterialTrackingPage() {
 
   const invoices = useMrpStore((s) => s.invoices);
   const materialPOs = useMrpStore((s) => s.materialPOs);
+  const maklonPOs = useMrpStore((s) => s.maklonPOs);
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
   const productionBatches = useMrpStore((s) => s.productionBatches);
   const productionResults = useMrpStore((s) => s.productionResults);
@@ -81,7 +82,7 @@ export default function MaterialTrackingPage() {
       tglDelivery: i.deliveredAt,
       tglReceiving: i.receivedAt,
       tglProduksi: i.productionStart,
-      status: po ? materialPoFullStatus(po, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices) : "INVOICE",
+      status: po ? materialPoFullStatus(po, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs) : "INVOICE",
       invoice: i,
     };
   });
@@ -105,6 +106,17 @@ export default function MaterialTrackingPage() {
     { key: "noPo", label: "No PO", default: true, render: (r) => <span className="font-mono font-medium">{r.poId}</span> },
     { key: "supplierVendor", label: "Supplier → Vendor", default: true, render: (r) => r.supplierVendor },
     { key: "roll", label: "Roll", default: true, align: "right", render: (r) => r.roll },
+    {
+      key: "rollDiterima",
+      label: "Roll Diterima",
+      default: false,
+      align: "right",
+      render: (r) => {
+        if (!r.invoice) return "—";
+        const p = rollArrivalProgress(r.invoice);
+        return p.total > 0 ? `${p.arrived}/${p.total}` : "—";
+      },
+    },
     { key: "nilai", label: "Nilai", default: true, align: "right", render: (r) => (r.nilai != null ? formatRupiah(r.nilai) : "—") },
     { key: "warna", label: "Warna", default: true, render: (r) => r.warna },
     { key: "entitas", label: "Entitas", default: false, render: (r) => r.entitas },

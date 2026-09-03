@@ -4,14 +4,12 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/shell/app-shell";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
-import { NumberInput } from "@/components/mrp/number-input";
 import { VendorAuthGuard } from "@/components/mrp/vendor-auth-guard";
 import { useMrpStore } from "@/lib/mrp/store";
-import { addDays, formatDate, formatDecimal, formatPcs, invoiceBadge, materialClaimsList, materialReceivedForMaklon, weightVariance } from "@/lib/mrp/derive";
+import { addDays, formatDate, formatDecimal, formatPcs, invoiceBadge, materialReceivedForMaklon, rollArrivalProgress } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
 type DraftCode = { codeRoll: string; codeLot: string };
-type PendingClaim = { idx: number; grossKg: number; netKg: number; codeRoll: string; codeLot: string; diffKg: number; pct: number };
 
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -49,35 +47,31 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
   const invoices = useMrpStore((s) => s.invoices);
   const maklonPOs = useMrpStore((s) => s.maklonPOs);
   const advanceMaklonProduction = useMrpStore((s) => s.advanceMaklonProduction);
-  const receiveRawMaterialRoll = useMrpStore((s) => s.receiveRawMaterialRoll);
+  const markRollArrived = useMrpStore((s) => s.markRollArrived);
   const receiveRawMaterialAddBuy = useMrpStore((s) => s.receiveRawMaterialAddBuy);
-  const materialClaimReturRequests = useMrpStore((s) => s.materialClaimReturRequests);
 
   const [selectedMrpId, setSelectedMrpId] = useState("");
+  // Filter status PO material — default "Semua" (perilaku lama). Sengaja dipisah dari status
+  // asli invoice ("DELIVERY"/"RECEIVING") supaya list yang sudah RECEIVING (biasanya jauh lebih
+  // banyak) tidak menenggelamkan yang masih DELIVERY dan justru butuh dipantau/ditindaklanjuti.
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "DELIVERY" | "RECEIVING">("ALL");
   const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
   const [selectedColorKey, setSelectedColorKey] = useState("");
-  const [draftNet, setDraftNet] = useState<Record<number, number>>({});
   const [draftCode, setDraftCode] = useState<Record<number, DraftCode>>({});
-  const [pendingClaim, setPendingClaim] = useState<PendingClaim | null>(null);
-  // Roll yang sedang ditimbang ULANG (bukan input pertama kali) — dipicu manual lewat tombol
-  // "Timbang Ulang" pada roll yang Procurement sudah tandai "Retur diminta". Direset tiap ganti
-  // warna/invoice supaya tidak nyangkut ke kombinasi lain.
-  const [reweighingIdx, setReweighingIdx] = useState<Set<number>>(new Set());
-  // Klaim aktif SAAT INI (dihitung ulang dari data live) — dipakai buat cek apakah roll yang
-  // "retur diminta" itu masih benar-benar di luar toleransi (kalau sudah pernah ditimbang ulang &
-  // sesuai, otomatis tidak dianggap klaim lagi, badge "Retur diminta" pun ikut hilang sendiri).
-  const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
 
   const eligible = invoices.filter((i) => i.destinationVendor === vendorId && (i.status === "DELIVERY" || i.status === "RECEIVING"));
   // MRP tetap tampil di dropdown selama masih ada invoice DELIVERY atau RECEIVING (termasuk yang
-  // sudah mulai diterima tapi belum semua roll-nya diinput) — sebelumnya cuma DELIVERY, jadi MRP
-  // hilang begitu roll pertama diinput meski masih ada roll lain yang belum diinput.
+  // sudah mulai diterima tapi belum semua roll-nya ditandai) — sebelumnya cuma DELIVERY, jadi MRP
+  // hilang begitu roll pertama ditandai meski masih ada roll lain yang belum ditandai.
   const mrpIds = Array.from(new Set(eligible.map((i) => i.mrpId)));
-  const mrpInvoices = eligible.filter((i) => i.mrpId === selectedMrpId);
+  const mrpInvoicesAll = eligible.filter((i) => i.mrpId === selectedMrpId);
+  const mrpInvoices = statusFilter === "ALL" ? mrpInvoicesAll : mrpInvoicesAll.filter((i) => i.status === statusFilter);
+  const deliveryCount = mrpInvoicesAll.filter((i) => i.status === "DELIVERY").length;
+  const receivingCount = mrpInvoicesAll.filter((i) => i.status === "RECEIVING").length;
   const selectedInvoice = eligible.find((i) => i.id === selectedInvoiceId) ?? null;
   // PO maklon untuk MRP ini yang masih menunggu bahan TAPI bahannya sudah mulai diterima —
   // aksi "Mulai Produksi" sengaja ditaruh di sini (bukan di PO Produksi Saya) supaya begitu
-  // vendor selesai timbang roll, langsung bisa lanjut produksi tanpa pindah halaman.
+  // vendor selesai tandai roll diterima, langsung bisa lanjut produksi tanpa pindah halaman.
   const readyMaklonPOs = maklonPOs.filter(
     (p) =>
       p.mrpId === selectedMrpId &&
@@ -89,7 +83,9 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
   const selectedColor = colorOptions.find((c) => c.warna + "|" + c.lengan === selectedColorKey) ?? null;
 
   // Auto-generate Code Roll & Code Lot per roll (unik dalam batch ini) begitu warna dipilih —
-  // demi kebutuhan simulasi supaya tidak perlu input manual. Tetap bisa diedit sebelum "Simpan".
+  // demi kebutuhan simulasi supaya tidak perlu input manual. Tetap bisa diedit sebelum "Tandai
+  // diterima". Ditandai berdasarkan rollArrivals (bukan rollReceipts lagi) — roll sudah dianggap
+  // "selesai di sini" begitu ditandai diterima, tidak perlu menunggu ditimbang (itu di Cutting).
   useEffect(() => {
     if (!selectedColor || !selectedInvoice) return;
     setDraftCode((prev) => {
@@ -98,8 +94,8 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
       const next = { ...prev };
       let changed = false;
       selectedColor.rolls.forEach((_, idx) => {
-        const receipt = selectedInvoice.rollReceipts[selectedColorKey]?.[idx];
-        if (receipt || next[idx]) return;
+        const arrival = selectedInvoice.rollArrivals[selectedColorKey]?.[idx];
+        if (arrival || next[idx]) return;
         const codeRoll = generateCodeRoll(usedRoll);
         const codeLot = generateCodeLot(usedLot);
         usedRoll.add(codeRoll);
@@ -116,7 +112,6 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
     setSelectedMrpId(mrpId);
     setSelectedInvoiceId("");
     setSelectedColorKey("");
-    setDraftNet({});
     setDraftCode({});
   }
 
@@ -125,44 +120,18 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
     const inv = eligible.find((i) => i.id === id);
     const first = inv?.colorEntries[0];
     setSelectedColorKey(first ? first.warna + "|" + first.lengan : "");
-    setDraftNet({});
     setDraftCode({});
-    setReweighingIdx(new Set());
   }
 
   function pickColor(key: string) {
     setSelectedColorKey(key);
-    setDraftNet({});
     setDraftCode({});
-    setReweighingIdx(new Set());
   }
 
-  function startReweigh(idx: number, netKg: number, codeRoll: string, codeLot: string) {
-    setReweighingIdx((prev) => new Set(prev).add(idx));
-    setDraftNet((prev) => ({ ...prev, [idx]: netKg }));
-    setDraftCode((prev) => ({ ...prev, [idx]: { codeRoll, codeLot } }));
-  }
-
-  function commitRoll(idx: number, netKg: number, codeRoll: string, codeLot: string, claim?: { diffKg: number; pct: number }) {
+  function markArrived(idx: number) {
     if (!selectedInvoice || !selectedColor) return;
-    receiveRawMaterialRoll(selectedInvoice.id, selectedColor.warna, selectedColor.lengan, idx, netKg, codeRoll || undefined, codeLot || undefined, claim);
-    setReweighingIdx((prev) => {
-      const next = new Set(prev);
-      next.delete(idx);
-      return next;
-    });
-  }
-
-  function saveRoll(idx: number, grossKg: number) {
-    if (!selectedInvoice || !selectedColor) return;
-    const netKg = draftNet[idx] ?? grossKg;
     const code = draftCode[idx] ?? { codeRoll: "", codeLot: "" };
-    const variance = weightVariance(grossKg, netKg);
-    if (!variance.withinTolerance) {
-      setPendingClaim({ idx, grossKg, netKg, codeRoll: code.codeRoll, codeLot: code.codeLot, diffKg: variance.diff, pct: variance.pct });
-      return;
-    }
-    commitRoll(idx, netKg, code.codeRoll, code.codeLot);
+    markRollArrived(selectedInvoice.id, selectedColor.warna, selectedColor.lengan, idx, code.codeRoll || undefined, code.codeLot || undefined);
   }
 
   return (
@@ -172,7 +141,7 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
       activeHref="/vendor-maklon/receiving"
       breadcrumb={["Dashboard", "Good Receive"]}
       title="Good Receive — Terima Material"
-      subtitle="Timbang berat bersih per roll, lalu bandingkan dengan berat kotor dari invoice procurement"
+      subtitle="Tandai roll yang fisiknya sudah datang — timbang berat bersih & bandingkan dengan berat kotor dilakukan di halaman Cutting"
       roleOverride={VENDOR_PRODUKSI[vendorId]?.name ?? vendorId}
       entityOverride="Vendor Produksi"
     >
@@ -195,37 +164,69 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
 
       {selectedMrpId && (
         <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
-          <div className="border-b border-border-subtle px-4 py-3 font-sans text-[13px] font-semibold text-text-primary">PO material — {selectedMrpId}</div>
-          <div className="grid grid-cols-8 gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-4 py-3">
+            <span className="font-sans text-[13px] font-semibold text-text-primary">PO material — {selectedMrpId}</span>
+            <div className="flex gap-1.5">
+              {(
+                [
+                  { key: "ALL" as const, label: `Semua (${mrpInvoicesAll.length})` },
+                  { key: "DELIVERY" as const, label: `Delivery (${deliveryCount})` },
+                  { key: "RECEIVING" as const, label: `Receiving (${receivingCount})` },
+                ]
+              ).map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => setStatusFilter(opt.key)}
+                  className={
+                    "rounded-md border px-2.5 py-[6px] font-sans text-[11px] font-semibold " +
+                    (statusFilter === opt.key ? "border-action-primary bg-action-primary text-white" : "border-[#CBD5DF] bg-white text-action-primary")
+                  }
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="grid grid-cols-9 gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
             <span>No PO</span>
             <span>Supplier</span>
             <span>Warna</span>
             <span>Status</span>
+            <span className="text-right">Roll diterima</span>
             <span>Tanggal Kirim</span>
             <span>Tanggal Terima</span>
             <span>Target Selesai Produksi</span>
             <span />
           </div>
-          {mrpInvoices.map((i) => (
-            <div key={i.id} className="grid grid-cols-8 items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0">
-              <span className="font-mono font-medium">{i.poId}</span>
-              <span>{i.supplier}</span>
-              <span>{i.colorEntries.map((c) => c.warna).join(", ")}</span>
-              <span>
-                <StatusPill tone={invoiceBadge(i.status).tone}>{invoiceBadge(i.status).label}</StatusPill>
-              </span>
-              <span className="font-mono text-[11px] text-text-muted">{formatDate(i.deliveredAt)}</span>
-              <span className="font-mono text-[11px] text-text-muted">{formatDate(i.receivedAt)}</span>
-              <span className="font-mono text-[11px] text-text-muted">
-                {i.receivedAt ? formatDate(addDays(i.receivedAt, VENDOR_PRODUKSI[vendorId]?.productionLeadDays ?? 7)) : "—"}
-              </span>
-              <span className="text-right">
-                <Button onClick={() => pickInvoice(i.id)} variant={selectedInvoiceId === i.id ? "muted" : "primary"} size="xs">
-                  {selectedInvoiceId === i.id ? "Terpilih" : "Pilih →"}
-                </Button>
-              </span>
-            </div>
-          ))}
+          {mrpInvoices.length === 0 && (
+            <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">Tidak ada PO dengan status ini.</div>
+          )}
+          {mrpInvoices.map((i) => {
+            const progress = rollArrivalProgress(i);
+            return (
+              <div key={i.id} className="grid grid-cols-9 items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0">
+                <span className="font-mono font-medium">{i.poId}</span>
+                <span>{i.supplier}</span>
+                <span>{i.colorEntries.map((c) => c.warna).join(", ")}</span>
+                <span>
+                  <StatusPill tone={invoiceBadge(i.status).tone}>{invoiceBadge(i.status).label}</StatusPill>
+                </span>
+                <span className={"text-right font-mono " + (progress.arrived < progress.total ? "text-warning-fg" : "text-success-fg")}>
+                  {progress.arrived}/{progress.total} roll
+                </span>
+                <span className="font-mono text-[11px] text-text-muted">{formatDate(i.deliveredAt)}</span>
+                <span className="font-mono text-[11px] text-text-muted">{formatDate(i.receivedAt)}</span>
+                <span className="font-mono text-[11px] text-text-muted">
+                  {i.receivedAt ? formatDate(addDays(i.receivedAt, VENDOR_PRODUKSI[vendorId]?.productionLeadDays ?? 7)) : "—"}
+                </span>
+                <span className="text-right">
+                  <Button onClick={() => pickInvoice(i.id)} variant={selectedInvoiceId === i.id ? "muted" : "primary"} size="xs">
+                    {selectedInvoiceId === i.id ? "Terpilih" : "Pilih →"}
+                  </Button>
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -259,123 +260,87 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
             </div>
             <div className="mt-3 font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">Pilih warna</div>
             <div className="mt-1.5 flex flex-wrap gap-2">
-              {colorOptions.map((c) => (
-                <button
-                  key={c.warna + c.lengan}
-                  onClick={() => pickColor(c.warna + "|" + c.lengan)}
-                  className={
-                    "rounded-md border px-2.5 py-[6px] font-sans text-[11.5px] font-semibold " +
-                    (selectedColorKey === c.warna + "|" + c.lengan ? "border-action-primary bg-action-primary text-white" : "border-[#CBD5DF] bg-white text-action-primary")
-                  }
-                >
-                  {c.warna} · {c.lengan} ({c.rolls.length} roll)
-                </button>
-              ))}
+              {colorOptions.map((c) => {
+                const key = c.warna + "|" + c.lengan;
+                const arrivedCount = c.rolls.filter((_, idx) => selectedInvoice.rollArrivals[key]?.[idx]).length;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => pickColor(key)}
+                    disabled={c.rolls.length === 0}
+                    className={
+                      "rounded-md border px-2.5 py-[6px] font-sans text-[11.5px] font-semibold disabled:cursor-not-allowed disabled:opacity-40 " +
+                      (selectedColorKey === key ? "border-action-primary bg-action-primary text-white" : "border-[#CBD5DF] bg-white text-action-primary")
+                    }
+                  >
+                    {c.warna} · {c.lengan} ({arrivedCount}/{c.rolls.length} diterima)
+                  </button>
+                );
+              })}
             </div>
+            {colorOptions.some((c) => c.rolls.length === 0) && (
+              <div className="mt-2 font-sans text-[11px] text-text-muted">
+                Warna dengan 0 roll belum ada data roll dari Procurement untuk invoice ini — tidak bisa ditandai diterima di sini.
+              </div>
+            )}
           </div>
 
           {selectedColor && (
             <div className="w-full overflow-x-auto rounded-lg border border-border-subtle bg-surface-card">
               <div className="border-b border-border-subtle px-4 py-3 font-sans text-[13px] font-semibold text-text-primary">
-                Berat per roll — {selectedColor.warna} · {selectedColor.lengan}
+                Tandai roll diterima — {selectedColor.warna} · {selectedColor.lengan}
               </div>
               <div
-                className="grid min-w-[900px] gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
-                style={{ gridTemplateColumns:
-                    "minmax(70px,0.6fr) minmax(130px,1.2fr) minmax(90px,0.7fr) minmax(110px,0.9fr) minmax(110px,0.9fr) minmax(120px,1fr) minmax(110px,0.8fr) minmax(150px,1fr)",
-                }}
+                className="grid min-w-[760px] gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
+                style={{ gridTemplateColumns: "minmax(70px,0.6fr) minmax(150px,1.3fr) minmax(100px,0.8fr) minmax(110px,0.9fr) minmax(150px,1.2fr)" }}
               >
                 <span>Roll</span>
                 <span>Code Roll</span>
                 <span>Code Lot</span>
                 <span className="text-right">Berat kotor (kg)</span>
-                <span className="text-right">Berat bersih (kg)</span>
-                <span className="text-right">Selisih</span>
-                <span>Toleransi</span>
-                <span>Tanggal terima</span>
+                <span>Status</span>
               </div>
               {selectedColor.rolls.map((grossKg, idx) => {
-                const receipt = selectedInvoice.rollReceipts[selectedColorKey]?.[idx] ?? null;
-                const isReweighing = reweighingIdx.has(idx);
-                const editing = !receipt || isReweighing;
-                const netVal = editing ? draftNet[idx] : receipt.netKg;
-                const variance = netVal !== undefined ? weightVariance(grossKg, netVal) : null;
-                const code = draftCode[idx] ?? { codeRoll: receipt?.codeRoll ?? "", codeLot: receipt?.codeLot ?? "" };
-                const claimKey = `${selectedInvoice.id}|${selectedColor.warna}|${selectedColor.lengan}|${idx}`;
-                const pendingRetur = !!materialClaimReturRequests[claimKey] && activeClaimKeys.has(claimKey);
+                const arrival = selectedInvoice.rollArrivals[selectedColorKey]?.[idx] ?? null;
+                const code = draftCode[idx] ?? { codeRoll: arrival?.codeRoll ?? "", codeLot: arrival?.codeLot ?? "" };
                 return (
                   <div
                     key={idx}
-                    className="grid min-w-[900px] items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0"
-                    style={{ gridTemplateColumns:
-                    "minmax(70px,0.6fr) minmax(130px,1.2fr) minmax(90px,0.7fr) minmax(110px,0.9fr) minmax(110px,0.9fr) minmax(120px,1fr) minmax(110px,0.8fr) minmax(150px,1fr)",
-                }}
+                    className="grid min-w-[760px] items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0"
+                    style={{ gridTemplateColumns: "minmax(70px,0.6fr) minmax(150px,1.3fr) minmax(100px,0.8fr) minmax(110px,0.9fr) minmax(150px,1.2fr)" }}
                   >
                     <span className="font-mono font-medium">Roll {idx + 1}</span>
-                    {editing ? (
+                    {arrival ? (
+                      <span className="font-mono text-[11px]">{arrival.codeRoll || "—"}</span>
+                    ) : (
                       <input
                         value={code.codeRoll}
                         onChange={(e) => setDraftCode((prev) => ({ ...prev, [idx]: { ...code, codeRoll: e.target.value } }))}
                         className="input text-[11px]"
                         placeholder="Code roll"
                       />
-                    ) : (
-                      <span className="font-mono text-[11px]">{receipt.codeRoll || "—"}</span>
                     )}
-                    {editing ? (
+                    {arrival ? (
+                      <span className="font-mono text-[11px]">{arrival.codeLot || "—"}</span>
+                    ) : (
                       <input
                         value={code.codeLot}
                         onChange={(e) => setDraftCode((prev) => ({ ...prev, [idx]: { ...code, codeLot: e.target.value } }))}
                         className="input text-[11px]"
                         placeholder="Code lot"
                       />
-                    ) : (
-                      <span className="font-mono text-[11px]">{receipt.codeLot || "—"}</span>
                     )}
                     <span className="text-right font-mono">{formatDecimal(grossKg)}</span>
-                    {editing ? (
-                      <span className="flex justify-end">
-                        <NumberInput
-                          value={draftNet[idx] ?? receipt?.netKg ?? grossKg}
-                          decimals={2}
-                          onChange={(v) => setDraftNet((prev) => ({ ...prev, [idx]: v }))}
-                          className="input w-[100px] text-right"
-                        />
-                      </span>
-                    ) : (
-                      <span className="text-right font-mono">{formatDecimal(receipt.netKg)}</span>
-                    )}
-                    <span className={"text-right font-mono " + (variance ? (variance.withinTolerance ? "text-success-fg" : "text-danger-fg") : "text-text-muted")}>
-                      {variance ? `${variance.diff >= 0 ? "+" : ""}${formatDecimal(variance.diff)} kg (${variance.pct.toFixed(1)}%)` : "—"}
-                    </span>
-                    <span>
-                      {variance ? (
-                        <StatusPill tone={variance.withinTolerance ? "success" : "danger"}>{variance.withinTolerance ? "SESUAI" : "DI LUAR TOLERANSI"}</StatusPill>
-                      ) : (
-                        "—"
-                      )}
-                    </span>
                     <span className="flex items-center gap-2.5">
-                      {editing ? (
-                        <Button onClick={() => saveRoll(idx, grossKg)} variant="primary" size="xs">
-                          Simpan
-                        </Button>
-                      ) : pendingRetur ? (
+                      {arrival ? (
                         <>
-                          <StatusPill tone="info">Retur diminta</StatusPill>
-                          <Button
-                            onClick={() => startReweigh(idx, receipt.netKg, receipt.codeRoll ?? "", receipt.codeLot ?? "")}
-                            variant="accent"
-                            size="xs"
-                          >
-                            Timbang Ulang
-                          </Button>
-                        </>
-                      ) : (
-                        <>
-                          <span className="font-mono text-[11px] text-text-muted">{formatDate(receipt.receivedAt)}</span>
+                          <span className="font-mono text-[11px] text-text-muted">{formatDate(arrival.arrivedAt)}</span>
                           <StatusPill tone="success">Diterima</StatusPill>
                         </>
+                      ) : (
+                        <Button onClick={() => markArrived(idx)} variant="primary" size="xs">
+                          Tandai diterima →
+                        </Button>
                       )}
                     </span>
                   </div>
@@ -417,45 +382,6 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
             </div>
           )}
         </>
-      )}
-
-      {pendingClaim && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B131B]/45">
-          <div className="w-full max-w-[440px] rounded-lg bg-white shadow-[0_8px_24px_rgba(11,19,27,.2)]">
-            <div className="border-b border-danger-bg bg-danger-bg px-5 py-3.5">
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-danger" />
-                <span className="font-sans text-[13px] font-semibold text-danger-fg">Selisih berat di luar toleransi</span>
-              </div>
-            </div>
-            <div className="px-5 py-4">
-              <div className="font-sans text-xs text-[#31414F]">
-                Roll {pendingClaim.idx + 1} — selisih {pendingClaim.diffKg >= 0 ? "+" : ""}
-                {formatDecimal(pendingClaim.diffKg)} kg ({pendingClaim.pct.toFixed(1)}%), melebihi toleransi ±2%.
-              </div>
-              <div className="mt-2 font-sans text-xs text-text-muted">
-                Kirim claim ke Procurement supaya selisih ini dicatat dan bisa ditindaklanjuti?
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-3.5">
-              <button
-                onClick={() => setPendingClaim(null)}
-                className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-[7px] font-sans text-xs font-semibold text-action-primary"
-              >
-                Batal
-              </button>
-              <button
-                onClick={() => {
-                  commitRoll(pendingClaim.idx, pendingClaim.netKg, pendingClaim.codeRoll, pendingClaim.codeLot, { diffKg: pendingClaim.diffKg, pct: pendingClaim.pct });
-                  setPendingClaim(null);
-                }}
-                className="rounded-md bg-danger px-3.5 py-[7px] font-sans text-xs font-semibold text-white"
-              >
-                Ya, Kirim Claim
-              </button>
-            </div>
-          </div>
-        </div>
       )}
     </AppShell>
   );
