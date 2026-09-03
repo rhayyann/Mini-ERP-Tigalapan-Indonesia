@@ -1,6 +1,7 @@
 import {
   cumulativeSizeQtyForGroup,
   cutWarnaLenganGroups,
+  cuttingSizesForGroup,
   invoiceableMrpIdsFullQty,
   invoiceFullyArrived,
   maklonPoInvoiceLockedBy,
@@ -9,7 +10,6 @@ import {
   mrpIdsWithUnpackedFg,
   pendingWeighRollsCount,
   productionYieldAlertsList,
-  targetSizesForGroup,
 } from "@/lib/mrp/derive";
 import type { MrpDetail } from "@/lib/mrp/store";
 import type { DeliveryKoli, MaklonInvoice, MaklonPO, MaterialPO, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionYieldResolution, RawMaterialInvoice, VendorInvoice } from "@/lib/mrp/types";
@@ -135,7 +135,11 @@ function productionGroupGaps(
   for (const mrpId of mrpIds) {
     for (const g of cutWarnaLenganGroups(mrpId, vendorId, productionBatches)) {
       const groupKey = mrpId + "|" + g.warna + "|" + g.lengan;
-      const target = targetSizesForGroup(mrpId, g.warna, g.lengan, mrpDetails, productionBatches);
+      // Target dari hasil CUTTING AKTUAL (bukan rencana MRP) -- konsisten dengan
+      // production-result-panel.tsx & markProductionGroupDoneAction, supaya badge ini tidak
+      // ikut menghitung selisih rencana-vs-cutting sebagai "kekurangan Finish Good" yang
+      // sebetulnya bukan (lihat catatan di cuttingSizesForGroup, lib/mrp/derive.ts).
+      const target = cuttingSizesForGroup(mrpId, g.warna, g.lengan, mrpDetails, productionBatches);
       const totalTarget = Object.values(target).reduce((a, b) => a + b, 0);
       const totalFg = Object.values(cumulativeSizeQtyForGroup(groupKey, "FG", productionResults)).reduce((a, b) => a + b, 0);
       const done = !!productionGroupMeta.find((m) => m.groupKey === groupKey)?.doneAt;
@@ -185,6 +189,21 @@ export function countProductionYieldUnresolved(
 /** MRP dengan sisa reject yang belum di-rework — badge tab Rework. */
 export function countRemainingRework(vendorId: string, productionBatches: ProductionBatch[], productionResults: ProductionResult[]): number {
   return mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults).length;
+}
+
+/** Warna/lengan yang Finish Good-nya SUDAH menutup (atau lewat) target hasil cutting tapi belum
+ *  ditandai "Selesai Produksi" — badge tab Final Produksi, sinyal "siap ditutup, tinggal Anda
+ *  konfirmasi", beda dari badge tab Finish Good (yang justru nyala selagi MASIH kurang). */
+export function countProductionFinalReady(
+  vendorId: string,
+  productionBatches: ProductionBatch[],
+  productionResults: ProductionResult[],
+  productionGroupMeta: ProductionGroupMeta[],
+  mrpDetails: MrpDetail[]
+): number {
+  return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails).filter(
+    (g) => !g.done && g.totalTarget > 0 && g.totalFg >= g.totalTarget
+  ).length;
 }
 
 /** Invoice raw material yang masih ada roll/add-buy belum ditandai diterima di halaman Good

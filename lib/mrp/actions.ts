@@ -29,7 +29,7 @@ import {
   splitMaterialPoByEntitas,
   advanceMaklonToDeliveryIfFullyDone,
   reassignAduanRowsVendor,
-  targetSizesForGroup,
+  cuttingSizesForGroup,
   cumulativeSizeQtyForGroup,
   weightVariance,
 } from "./derive";
@@ -1163,8 +1163,16 @@ export async function reworkRejectSizeAction(input: { mrpId: string; vendorProdu
   const db = supabaseServer();
   const sourceGroupKey = `${input.mrpId}|${input.warna}|${input.lengan}`;
   const outputGroupKey = `${input.mrpId}|${input.warna}|${input.toLengan}`;
+  // Dulu diam-diam `return` di sini kalau grup sumber/tujuan sudah "Selesai Produksi" -- dari sisi
+  // UI itu tampak seperti tombol "Simpan Rework" tidak melakukan apa-apa sama sekali (dialog
+  // ditutup, tapi tidak ada yang tersimpan, tanpa pesan error apa pun). Sekarang dilempar sebagai
+  // error supaya UI (production-rework-tab.tsx) bisa menampilkannya ke user.
   const { data: metas } = await db.from("production_group_meta").select("group_key,done_at").in("group_key", [sourceGroupKey, outputGroupKey]);
-  if ((metas ?? []).some((g) => g.done_at)) return;
+  if ((metas ?? []).some((g) => g.done_at)) {
+    throw new Error(
+      `Grup ${input.warna} · ${sourceGroupKey === outputGroupKey ? input.lengan : `${input.lengan} atau ${input.toLengan}`} sudah ditandai "Selesai Produksi" -- buka kunci dulu di tab Final Produksi sebelum bisa rework.`
+    );
+  }
 
   const { data: maklon } = await db.from("maklon_pos").select("id").eq("mrp_id", input.mrpId).eq("vendor_produksi", input.vendorProduksi).maybeSingle();
   const rejectId = await nextReadableId("PR");
@@ -1215,7 +1223,9 @@ export async function wasteRejectSizeAction(input: { mrpId: string; vendorProduk
   const db = supabaseServer();
   const groupKey = `${input.mrpId}|${input.warna}|${input.lengan}`;
   const { data: meta } = await db.from("production_group_meta").select("group_key,done_at").eq("group_key", groupKey).maybeSingle();
-  if (meta?.done_at) return;
+  if (meta?.done_at) {
+    throw new Error(`Grup ${input.warna} · ${input.lengan} sudah ditandai "Selesai Produksi" -- buka kunci dulu di tab Final Produksi sebelum bisa buang ke sisa/waste.`);
+  }
 
   const { data: maklon } = await db.from("maklon_pos").select("id").eq("mrp_id", input.mrpId).eq("vendor_produksi", input.vendorProduksi).maybeSingle();
   const rejectId = await nextReadableId("PR");
@@ -1259,7 +1269,14 @@ export async function markProductionGroupDoneAction(groupKey: string, mrpId: str
   const db = supabaseServer();
   const snapshot = await getFlowSnapshot();
 
-  const target = targetSizesForGroup(mrpId, warna, lengan, snapshot.mrpDetails, snapshot.productionBatches);
+  // Target reject = hasil CUTTING AKTUAL (bukan rencana MRP) dikurangi Finish Good yang sudah
+  // diinput -- konsisten dengan cara production-result-panel.tsx menghitung "Progres" &
+  // "Reject Produksi" (lihat cuttingSizesForGroup). Dulu pakai targetSizesForGroup (estimasi
+  // rasio rencana MRP), jadi kalau hasil cutting sedikit meleset dari rencana (mis. yield <100%),
+  // selisih itu ikut ke-hitung reject padahal roll-nya memang cuma segitu yang jadi -- bukan
+  // reject beneran (lihat feedback: "kenapa yang target cutting kurang dari target awal jadi
+  // reject? harusnya dari hasil cutting - finish good").
+  const target = cuttingSizesForGroup(mrpId, warna, lengan, snapshot.mrpDetails, snapshot.productionBatches);
   const fgRecorded = cumulativeSizeQtyForGroup(groupKey, "FG", snapshot.productionResults);
   const rejectSizeQty: Record<string, number> = {};
   for (const [size, t] of Object.entries(target)) {

@@ -6,11 +6,12 @@ import { VendorAuthGuard } from "@/components/mrp/vendor-auth-guard";
 import { ProductionCuttingTab } from "@/components/mrp/production-cutting-tab";
 import { ProductionResultPanel } from "@/components/mrp/production-result-panel";
 import { ProductionReworkTab } from "@/components/mrp/production-rework-tab";
+import { ProductionFinalTab } from "@/components/mrp/production-final-tab";
 import { useMrpStore } from "@/lib/mrp/store";
-import { countCuttingAwaitingUpdate, countFgShortfallGroups, countRejectActionableGroups, countRemainingRework } from "@/lib/shell/badges";
+import { countCuttingAwaitingUpdate, countFgShortfallGroups, countProductionFinalReady, countRejectActionableGroups, countRemainingRework } from "@/lib/shell/badges";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
-type Tab = "CUTTING" | "FG" | "REJECT" | "REWORK";
+type Tab = "CUTTING" | "FG" | "REJECT" | "REWORK" | "FINAL";
 
 function ProductionContent({ vendorId }: { vendorId: string }) {
   const [tab, setTab] = useState<Tab>("CUTTING");
@@ -27,12 +28,14 @@ function ProductionContent({ vendorId }: { vendorId: string }) {
   // ada input FG sama sekali, belum ada dasar bilang ada reject (lihat catatan di badges.ts).
   const rejectBadge = countRejectActionableGroups(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails);
   const reworkBadge = countRemainingRework(vendorId, productionBatches, productionResults);
+  const finalBadge = countProductionFinalReady(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails);
 
   const TABS: { key: Tab; label: string; badge: number }[] = [
     { key: "CUTTING", label: "Cutting", badge: cuttingBadge },
     { key: "FG", label: "Finish Good", badge: fgBadge },
     { key: "REJECT", label: "Reject", badge: rejectBadge },
     { key: "REWORK", label: "Rework", badge: reworkBadge },
+    { key: "FINAL", label: "Final Produksi", badge: finalBadge },
   ];
 
   return (
@@ -68,6 +71,7 @@ function ProductionContent({ vendorId }: { vendorId: string }) {
       {tab === "FG" && <ProductionResultPanel vendorId={vendorId} kind="FG" title="Finish Good" />}
       {tab === "REJECT" && <ProductionResultPanel vendorId={vendorId} kind="REJECT" title="Reject" />}
       {tab === "REWORK" && <ProductionReworkTab vendorId={vendorId} />}
+      {tab === "FINAL" && <ProductionFinalTab vendorId={vendorId} />}
     </AppShell>
   );
 }
