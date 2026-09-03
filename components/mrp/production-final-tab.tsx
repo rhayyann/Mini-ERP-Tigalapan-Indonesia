@@ -5,7 +5,6 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
   cumulativeSizeQtyForGroup,
-  cutWarnaLenganGroups,
   cuttingSizesForGroup,
   fgMurniAndReworkForGroup,
   productionGroupMetaFor,
@@ -13,6 +12,7 @@ import {
   reworkBySizeForGroup,
   reworkedAwayBySize,
   reworkQtyForGroup,
+  warnaLenganGroupsWithFg,
   wasteQtyForGroup,
   wastedAwayBySize,
 } from "@/lib/mrp/derive";
@@ -35,7 +35,10 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
   const [expandedGroupKey, setExpandedGroupKey] = useState("");
 
   const mrpIds = Array.from(new Set(productionBatches.filter((b) => b.vendorProduksi === vendorId && b.cuttingAt).map((b) => b.mrpId)));
-  const groups = selectedMrpId ? cutWarnaLenganGroups(selectedMrpId, vendorId, productionBatches) : [];
+  // warnaLenganGroupsWithFg (bukan cutWarnaLenganGroups) -- ikutkan grup TUJUAN rework lintas
+  // lengan yang tidak pernah dicutting sendiri (lihat catatan di lib/mrp/derive.ts), supaya
+  // grup itu tetap bisa di-"Selesai Produksi"-kan & masuk Pengiriman.
+  const groups = selectedMrpId ? warnaLenganGroupsWithFg(selectedMrpId, vendorId, productionBatches, productionResults) : [];
 
   return (
     <>

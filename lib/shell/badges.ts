@@ -1,6 +1,5 @@
 import {
   cumulativeSizeQtyForGroup,
-  cutWarnaLenganGroups,
   cuttingSizesForGroup,
   invoiceableMrpIdsFullQty,
   invoiceFullyArrived,
@@ -10,6 +9,7 @@ import {
   mrpIdsWithUnpackedFg,
   pendingWeighRollsCount,
   productionYieldAlertsList,
+  warnaLenganGroupsWithFg,
 } from "@/lib/mrp/derive";
 import type { MrpDetail } from "@/lib/mrp/store";
 import type { DeliveryKoli, MaklonInvoice, MaklonPO, MaterialPO, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionYieldResolution, RawMaterialInvoice, VendorInvoice } from "@/lib/mrp/types";
@@ -133,7 +133,7 @@ function productionGroupGaps(
   const mrpIds = Array.from(new Set(productionBatches.filter((b) => b.vendorProduksi === vendorId && b.cuttingAt).map((b) => b.mrpId)));
   const out: GroupGap[] = [];
   for (const mrpId of mrpIds) {
-    for (const g of cutWarnaLenganGroups(mrpId, vendorId, productionBatches)) {
+    for (const g of warnaLenganGroupsWithFg(mrpId, vendorId, productionBatches, productionResults)) {
       const groupKey = mrpId + "|" + g.warna + "|" + g.lengan;
       // Target dari hasil CUTTING AKTUAL (bukan rencana MRP) -- konsisten dengan
       // production-result-panel.tsx & confirmFgDoneAction, supaya badge ini tidak ikut
