@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { StatusPill } from "@/components/ui/status-pill";
-import { Checkbox } from "@/components/ui/checkbox";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
 import { formatPcs, formatRupiah, maklonFeeForColorLine, materialPoFullStatus, materialPoFullStatusBadge } from "@/lib/mrp/derive";
@@ -35,15 +34,11 @@ export function PoMaterialPanel() {
   // yang TIDAK SINKRON dengan ENTITAS_LIST di lib/mrp/seed.ts (daftar entitas berbeda!) — sekarang
   // keduanya pakai entitasList di store sebagai satu-satunya sumber (lihat Master Data > Finance).
   const entitasList = useMrpStore((s) => s.entitasList);
-  const approveMaterialPo = useMrpStore((s) => s.approveMaterialPo);
   const setMaterialPoEntity = useMrpStore((s) => s.setMaterialPoEntity);
   const setMaterialPoColorEntity = useMrpStore((s) => s.setMaterialPoColorEntity);
+  const approveVendorMaterialPos = useMrpStore((s) => s.approveVendorMaterialPos);
 
   const [selectedMrpId, setSelectedMrpId] = useState<string>("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  // Notifikasi sesaat saat user coba centang PO yang belum punya entitas — bukan cuma tooltip
-  // hover (title attr) yang sering tidak kelihatan, tapi pesan yang muncul begitu diklik.
-  const [entityHintPoId, setEntityHintPoId] = useState<string | null>(null);
   // `colorBreakdown[].entitas` di database SELALU sudah terisi default (entitas pertama secara
   // alfabet) sejak MRP diimport/PO dikirim ke Finance — kalau dropdown di bawah langsung
   // menampilkan c.entitas apa adanya, Finance tidak pernah benar-benar "memilih", cuma menyetujui
@@ -120,28 +115,6 @@ export function PoMaterialPanel() {
     grouped.set(po.vendorProduksi, arr);
   }
 
-  function toggle(id: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  function toggleVendorGroup(pos: MaterialPO[]) {
-    const selectablePos = pos.filter((p) => poHasAllEntitas(p));
-    const allChecked = selectablePos.length > 0 && selectablePos.every((p) => selected.has(p.id));
-    setSelected((prev) => {
-      const next = new Set(prev);
-      for (const p of selectablePos) {
-        if (allChecked) next.delete(p.id);
-        else next.add(p.id);
-      }
-      return next;
-    });
-  }
-
   function chooseEntityBulk(poId: string, entitas: string) {
     if (!entitas) return;
     setMaterialPoEntity(poId, entitas);
@@ -153,28 +126,18 @@ export function PoMaterialPanel() {
         return next;
       });
     }
-    if (entityHintPoId === poId) setEntityHintPoId(null);
   }
 
   function chooseEntityForColor(poId: string, warna: string, lengan: MaterialPO["lengan"], entitas: string) {
     if (!entitas) return;
     setMaterialPoColorEntity(poId, warna, lengan, entitas);
     setTouchedEntitas((prev) => new Set(prev).add(colorEntitasKey(poId, warna, lengan)));
-    if (entityHintPoId === poId) setEntityHintPoId(null);
   }
 
-  function toggleWithEntityGuard(po: MaterialPO) {
-    if (!poHasAllEntitas(po)) {
-      setEntityHintPoId(po.id);
-      return;
-    }
-    setEntityHintPoId(null);
-    toggle(po.id);
-  }
-
-  function approveSelected() {
-    selected.forEach((id) => approveMaterialPo(id));
-    setSelected(new Set());
+  // Item 10.3: "Approve semua PO MRP ini" -- loop approveVendorMaterialPos per vendor dari MRP
+  // terpilih (BUKAN approveAllMaterialPos(), yang approve SEMUA MRP di seluruh app).
+  function approveAllForMrp() {
+    for (const vendor of grouped.keys()) approveVendorMaterialPos(selectedMrpId, vendor);
   }
 
   const approvedColumns: ColumnDef<MaterialPO>[] = [
@@ -211,7 +174,6 @@ export function PoMaterialPanel() {
             value={selectedMrpId}
             onChange={(e) => {
               setSelectedMrpId(e.target.value);
-              setSelected(new Set());
             }}
             className="mt-1 rounded-md border border-[#DDE4EB] px-[11px] py-[9px] font-sans text-[12.5px] font-medium text-text-primary"
           >
@@ -236,12 +198,23 @@ export function PoMaterialPanel() {
             {onlyMultiEntitas ? "✕ " : ""}Multi Entitas ({multiEntitasCount})
           </button>
         )}
-        {selected.size > 0 && (
-          <button onClick={approveSelected} className="ml-auto rounded-md bg-success px-3.5 py-[9px] font-sans text-xs font-semibold text-white">
-            Approve {selected.size} terpilih
+        {scopedPending.length > 0 && (
+          <button
+            onClick={approveAllForMrp}
+            disabled={withoutEntity > 0}
+            title={withoutEntity > 0 ? `${withoutEntity} PO di MRP ini belum pilih entitas -- lengkapi dulu` : undefined}
+            className="ml-auto rounded-md bg-success px-3.5 py-[9px] font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Approve semua PO MRP ini ({scopedPending.length})
           </button>
         )}
       </div>
+
+      {withoutEntity > 0 && (
+        <div className="rounded-lg border border-[#F0DFC2] bg-warning-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-warning-fg">
+          PO belum bisa di-approve, entitas belum lengkap: {scopedPendingAll.filter((p) => !poHasAllEntitas(p)).map((p) => p.id).join(", ")}
+        </div>
+      )}
 
       {!detail && (
         <div className="rounded-lg border border-border-subtle bg-surface-card px-5 py-8 text-center font-sans text-xs text-text-muted">
@@ -252,8 +225,7 @@ export function PoMaterialPanel() {
       {detail && (
         <div className="overflow-hidden rounded-lg border border-border-subtle bg-[#EEF1F5]">
           {Array.from(grouped.entries()).map(([vendor, pos]) => {
-            const selectablePos = pos.filter((p) => poHasAllEntitas(p));
-            const allChecked = selectablePos.length > 0 && selectablePos.every((p) => selected.has(p.id));
+            const vendorWithoutEntity = pos.filter((p) => !poHasAllEntitas(p));
             const vendorMaterialTotal = pos.reduce((a, p) => a + p.amount, 0);
             const vendorMaklonTotal = pos.reduce((a, p) => a + p.colorBreakdown.reduce((s, c) => s + maklonFeeForColorLine(p, c, maklonPOs, mrpDetails), 0), 0);
             const vendorRollTotal = pos.reduce((a, p) => a + p.rollCount, 0);
@@ -261,8 +233,15 @@ export function PoMaterialPanel() {
             return (
               <div key={vendor} className="border-b border-border-subtle last:border-b-0">
                 <div className="flex items-center gap-2.5 bg-[#DEE4EC] px-5 py-[11px] font-sans text-[11px] font-semibold text-text-primary">
-                  <Checkbox checked={allChecked} onChange={() => toggleVendorGroup(pos)} title="Centang/hapus centang seluruh material vendor ini (yang sudah punya entitas)" />
                   <span>→ {VENDOR_PRODUKSI[vendor]?.name ?? vendor}</span>
+                  <button
+                    onClick={() => approveVendorMaterialPos(selectedMrpId, vendor)}
+                    disabled={vendorWithoutEntity.length > 0}
+                    title={vendorWithoutEntity.length > 0 ? `${vendorWithoutEntity.length} PO vendor ini belum pilih entitas -- lengkapi dulu` : undefined}
+                    className="ml-auto rounded-md bg-success px-2.5 py-[6px] font-sans text-[11px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Approve semua PO vendor ini ({pos.length})
+                  </button>
                 </div>
 
                 <div className="flex flex-col gap-2.5 px-3.5 py-3">
@@ -275,8 +254,7 @@ export function PoMaterialPanel() {
                       // vendor-group — supaya jelas terlihat sebagai unit terpisah, tidak
                       // menyatu dengan PO di atas/bawahnya seperti sebelumnya.
                       <div key={po.id} className="overflow-hidden rounded-md border border-[#D8DEE6] bg-white shadow-[0_1px_3px_rgba(11,19,27,.06)]">
-                        <div className="grid items-center gap-2 px-4 py-[11px]" style={{ gridTemplateColumns: "24px 110px 1fr 90px 120px 170px" }}>
-                          <Checkbox checked={selected.has(po.id)} onChange={() => toggleWithEntityGuard(po)} />
+                        <div className="grid items-center gap-2 px-4 py-[11px]" style={{ gridTemplateColumns: "110px 1fr 90px 120px 170px" }}>
                           <span className="font-mono font-medium text-xs text-[#31414F]">{po.id}</span>
                           <span className="flex items-center gap-1.5 font-sans text-xs text-[#31414F]">
                             {po.supplier}
@@ -293,7 +271,7 @@ export function PoMaterialPanel() {
                               (hasEntity ? "border-accent-blue" : "border-accent-blue/50")
                             }
                           >
-                            <option value="">{po.colorBreakdown.some((c) => c.entitas) ? "— beda per warna —" : "— pilih entitas (semua warna) —"}</option>
+                            <option value="">{po.colorBreakdown.some((c) => c.entitas) ? "— multi entitas —" : "— pilih entitas (semua warna) —"}</option>
                             {entitasList.map((e) => (
                               <option key={e.id} value={e.nama}>
                                 {e.nama}
@@ -301,12 +279,6 @@ export function PoMaterialPanel() {
                             ))}
                           </select>
                         </div>
-                        {entityHintPoId === po.id && (
-                          <div className="mx-4 mb-2 flex items-center gap-1.5 rounded-md border border-[#F0DFC2] bg-warning-bg px-2.5 py-[6px] font-sans text-[11px] font-medium text-warning-fg">
-                            ⚠ Semua warna di PO ini harus punya entitas dulu sebelum centang PO ini — isi lewat dropdown di atas (semua warna sekaligus) atau
-                            per baris warna di bawah.
-                          </div>
-                        )}
                         <div className="mx-4 mb-3 overflow-hidden rounded-md border border-[#F1F4F7]">
                           <div className="grid grid-cols-5 gap-2 bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                             <span>Warna / lengan</span>

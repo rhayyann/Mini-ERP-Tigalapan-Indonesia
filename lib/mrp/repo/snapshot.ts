@@ -443,6 +443,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
         from: c.from_vendor ?? undefined,
         time: c.time,
       })),
+      closedAt: p.closed_at ?? undefined,
+      closeReason: p.close_reason ?? undefined,
     };
   });
 
@@ -471,7 +473,14 @@ export async function getFlowSnapshot(): Promise<FlowState> {
       rollReceipts[colorKey] = rolls.map((r) =>
         r.net_kg == null
           ? null
-          : { netKg: Number(r.net_kg), receivedAt: r.received_at ?? "", codeRoll: r.code_roll ?? undefined, codeLot: r.code_lot ?? undefined }
+          : {
+              netKg: Number(r.net_kg),
+              receivedAt: r.received_at ?? "",
+              codeRoll: r.code_roll ?? undefined,
+              codeLot: r.code_lot ?? undefined,
+              claimPhotoAt: r.claim_photo_at ?? undefined,
+              weighConfirmedAt: r.weigh_confirmed_at ?? undefined,
+            }
       );
       rollArrivals[colorKey] = rolls.map((r) =>
         r.received_at == null ? null : { arrivedAt: r.received_at, codeRoll: r.code_roll ?? undefined, codeLot: r.code_lot ?? undefined }
@@ -684,6 +693,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     resolutionKind: h.resolution_kind ?? undefined,
     resolvedNetKg: h.resolved_net_kg == null ? undefined : Number(h.resolved_net_kg),
     resolvedCodeRoll: h.resolved_code_roll ?? undefined,
+    claimPhotoAt: h.claim_photo_at ?? undefined,
   }));
 
   // ---- Notifikasi ----

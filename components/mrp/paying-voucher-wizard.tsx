@@ -322,9 +322,11 @@ export function PayingVoucherWizard({
                 <NumberInput
                   value={w}
                   decimals={2}
+                  commaOnly
                   onChange={(v) => setDraftRolls((prev) => prev!.map((x, idx) => (idx === i ? v : x)))}
                   className="input mt-0.5"
                 />
+                <div className="mt-0.5 font-sans text-[9px] text-text-muted">pakai koma untuk desimal (mis. 25,5)</div>
               </div>
             ))}
           </div>
@@ -364,7 +366,8 @@ export function PayingVoucherWizard({
             </div>
             <div>
               <div className="font-sans text-[10px] text-text-muted">Berat (kg)</div>
-              <NumberInput value={b.beratKg} decimals={2} onChange={(v) => updateAddBuyBerat(b.id, v)} className="input mt-0.5" />
+              <NumberInput value={b.beratKg} decimals={2} commaOnly onChange={(v) => updateAddBuyBerat(b.id, v)} className="input mt-0.5" />
+              <div className="mt-0.5 font-sans text-[9px] text-text-muted">pakai koma untuk desimal (mis. 25,5)</div>
             </div>
             <div>
               <div className="font-sans text-[10px] text-text-muted">Harga/kg</div>

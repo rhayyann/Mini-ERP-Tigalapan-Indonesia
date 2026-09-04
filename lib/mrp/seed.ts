@@ -39,6 +39,12 @@ export const SUPPLIERS = ["Supplier Rajut Jaya", "Supplier ABC", "Supplier Cemer
 // sekali tidak ada di Master Data > Harga Kain (lihat lib/mrp/masterData.ts).
 export const MATERIAL_RATE_PER_ROLL = 460000;
 
+// Item 8a (feedback batch 2026-09-04): estimasi kg per roll dipakai di 2 tempat berbeda
+// (materialAmountForPo di derive.ts, exportMaterialPoPdf di exportPoPdf.ts) — dulu hard-coded
+// `25` terpisah di masing-masing (rawan drift kalau salah satu diubah tanpa yang lain, dan angka
+// ini LANGSUNG memengaruhi uang/PO). Satu konstanta di sini, NILAINYA SENGAJA TIDAK DIUBAH.
+export const ROLL_KG_ESTIMATE = 25;
+
 export const ENTITAS_LIST = ["Tigalapan Indonesia", "PT Tigalapan Dua", "PT Tigalapan Tiga"];
 
 export const RESTING_TARGET_MINUTES = 180;

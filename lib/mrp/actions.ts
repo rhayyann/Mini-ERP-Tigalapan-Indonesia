@@ -32,10 +32,13 @@ import {
   advanceMaklonToDeliveryIfFullyDone,
   reassignAduanRowsVendor,
   cuttingSizesForGroup,
+  actualCutSizesForGroup,
   reworkQtyForGroup,
   wasteQtyForGroup,
   cumulativeSizeQtyForGroup,
   weightVariance,
+  movableRollCountForInvoice,
+  warnaLenganGroupsWithFg,
 } from "./derive";
 import { ENTITAS_LIST } from "./seed";
 import type { ParsedMrpImport } from "./parseImport";
@@ -562,30 +565,65 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
     if (!inv) continue;
     const fromVendor = inv.destinationVendor;
     if (fromVendor === toVendor) continue;
-    // Begitu PO material ini sudah masuk tahap produksi (cutting) ke atas, materialnya sudah
-    // bukan roll utuh lagi -- tidak masuk akal dipindahkan ke vendor lain. UI (Material
-    // Tracking) sudah menyaring ini dari daftar yang bisa dipilih, dicek lagi di sini sebagai
-    // jaring pengaman kalau ada yang lolos.
+    // Item 1 (feedback batch 2026-09-04): transfer sekarang dibolehkan sampai tahap PRODUCTION
+    // (dulu diblokir dari PRODUCTION ke atas) -- batas baru cuma begitu material sudah masuk
+    // FINISH_GOOD (barang jadi, bukan roll lagi) ke atas. UI (Material Tracking) sudah menyaring
+    // ini dari daftar yang bisa dipilih, dicek lagi di sini sebagai jaring pengaman kalau ada yang
+    // lolos.
     const po = snapshot.materialPOs.find((p) => p.id === inv.poId);
     if (po) {
       const status = materialPoFullStatus(po, snapshot.invoices, snapshot.productionBatches, snapshot.productionResults, snapshot.mrpDetails, snapshot.deliveryKolis, snapshot.vendorInvoices, snapshot.maklonPOs);
-      if (["PRODUCTION", "FINISH_GOOD", "DELIVERED_FROM_VENDOR", "SELESAI"].includes(status)) continue;
+      if (["FINISH_GOOD", "DELIVERED_FROM_VENDOR", "SELESAI"].includes(status)) continue;
     }
-    const moveQty = Math.max(0, Math.min(qty, inv.qtyReady));
+    // Item 1.4: karena transfer sekarang dibolehkan SAMPAI tahap PRODUCTION, roll yang code_roll-
+    // nya SUDAH dipakai suatu ProductionBatch (sudah benar-benar dipotong) tidak boleh ikut
+    // pindah -- clamp moveQty ke movableRollCountForInvoice (exclusion logic sama seperti
+    // availableCodeRollsForColor), skip invoice ini sama sekali kalau movable-nya 0.
+    const movableCount = movableRollCountForInvoice(inv, snapshot.productionBatches);
+    const moveQty = Math.max(0, Math.min(qty, inv.qtyReady, movableCount));
     if (moveQty <= 0) continue;
 
     let remaining = moveQty;
     const movedColorEntries: ColorEntry[] = [];
     const keptColorEntries: ColorEntry[] = [];
+    // Item 1.4: roll_index ASLI (di DB) yang benar-benar ikut pindah per warna|lengan -- BUKAN
+    // lagi selalu 0..N-1 seperti dulu (dulu moved SELALU N roll pertama), karena sekarang roll
+    // yang movableIdx-nya bisa "berlubang" (mis. index 0 dipakai batch, yang movable 1 & 2).
+    // Dipakai di bawah untuk DELETE by-index yang benar (bukan asumsi range kontigu).
+    const movedIdxByColor = new Map<string, number[]>();
     for (const c of inv.colorEntries) {
       if (remaining <= 0) {
         keptColorEntries.push(c);
         continue;
       }
-      const takeCount = Math.min(remaining, c.rolls.length);
-      const movedRolls = c.rolls.slice(0, takeCount);
-      const keptRolls = c.rolls.slice(takeCount);
-      if (movedRolls.length > 0) movedColorEntries.push({ ...c, rolls: movedRolls });
+      const key = c.warna + "|" + c.lengan;
+      const receipts = inv.rollReceipts[key] ?? [];
+      const usedCodeRolls = new Set(
+        snapshot.productionBatches
+          .filter((b) => b.mrpId === inv.mrpId && b.vendorProduksi === fromVendor && b.warna === c.warna && b.lengan === c.lengan && b.codeRoll)
+          .map((b) => b.codeRoll!)
+      );
+      // Pilih index roll yang MOVABLE saja (code_roll belum dipakai batch manapun) -- bukan lagi
+      // sekadar "N roll pertama" seperti dulu, supaya roll yang sudah dipotong tidak pernah ikut
+      // kepilih walau ada roll movable di belakangnya.
+      const movableIdx: number[] = [];
+      for (let idx = 0; idx < c.rolls.length; idx++) {
+        const cr = receipts[idx]?.codeRoll;
+        if (cr && usedCodeRolls.has(cr)) continue;
+        movableIdx.push(idx);
+      }
+      const takeCount = Math.min(remaining, movableIdx.length);
+      const takeIdx = new Set(movableIdx.slice(0, takeCount));
+      const movedRolls: number[] = [];
+      const keptRolls: number[] = [];
+      for (let idx = 0; idx < c.rolls.length; idx++) {
+        if (takeIdx.has(idx)) movedRolls.push(c.rolls[idx]);
+        else keptRolls.push(c.rolls[idx]);
+      }
+      if (movedRolls.length > 0) {
+        movedColorEntries.push({ ...c, rolls: movedRolls });
+        movedIdxByColor.set(key, Array.from(takeIdx).sort((a, b) => a - b));
+      }
       if (keptRolls.length > 0) keptColorEntries.push({ ...c, rolls: keptRolls });
       remaining -= takeCount;
     }
@@ -635,6 +673,10 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
       // benar: RESET saja kolom-kolom hasil timbang vendor SEBELUMNYA (net_kg, code_roll/lot,
       // status klaim) supaya vendor baru menimbang ulang dari awal, tapi roll_index & gross_kg
       // (data invoice asli dari supplier) tetap dipertahankan.
+      // Item 1.5: cabang ini (SELURUH roll invoice ikut pindah) cuma bisa kejadian kalau
+      // movableCount di atas mencakup semua roll invoice ini -- artinya TIDAK ADA roll di invoice
+      // ini yang sudah dipakai batch (kalau ada, moveQty di-clamp jadi lebih kecil dari qtyReady,
+      // sehingga keptColorEntries pasti tidak kosong). Jadi RESET total di sini tetap benar/aman.
       await db
         .from("raw_material_invoice_rolls")
         .update({
@@ -646,6 +688,8 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
           claim_resolved_at: null,
           claim_retur_note: null,
           claim_retur_requested_at: null,
+          weigh_confirmed_at: null,
+          claim_photo_at: null,
         })
         .in("invoice_color_id", inv.colorEntries.map((c) => `${inv.id}-${c.warna}-${c.lengan}`));
       await db.from("raw_material_invoice_addbuys").update({ received_at: null }).eq("invoice_id", inv.id);
@@ -658,11 +702,11 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
       await db.from("raw_material_invoices").update({ qty_ready: keptCount }).eq("id", inv.id);
       for (const c of movedColorEntries) {
         const colorId = `${inv.id}-${c.warna}-${c.lengan}`;
-        const movedCount = c.rolls.length;
-        await db.from("raw_material_invoice_rolls").delete().eq("invoice_color_id", colorId).in(
-          "roll_index",
-          Array.from({ length: movedCount }, (_, i) => i)
-        );
+        // Item 1.4: pakai roll_index ASLI yang benar-benar dipindah (movedIdxByColor), BUKAN
+        // asumsi "N roll pertama" -- roll yang sudah dipakai batch bisa membuat movable index
+        // berlubang (mis. 1,2 dipindah, 0 tetap karena sudah dipotong).
+        const movedIdx = movedIdxByColor.get(c.warna + "|" + c.lengan) ?? [];
+        await db.from("raw_material_invoice_rolls").delete().eq("invoice_color_id", colorId).in("roll_index", movedIdx);
         // Sisa roll yang TIDAK ikut pindah kehilangan kontinuitas roll_index (dulu mis. 2,3,4,5
         // setelah 0,1 dihapus) -- geser ulang ke 0..N-1 supaya tetap kompatibel dengan cara
         // receiveRawMaterialRollAction mengacu roll_index sebagai posisi array di UI.
@@ -798,7 +842,8 @@ export async function receiveRawMaterialRollAction(
   rollIndex: number,
   netKg: number,
   claim?: { diffKg: number; pct: number },
-  codeRoll?: string
+  codeRoll?: string,
+  photo?: { dataUrl: string; fileName?: string }
 ): Promise<void> {
   const vendorId = await requireVendorSession();
   const db = supabaseServer();
@@ -811,8 +856,10 @@ export async function receiveRawMaterialRollAction(
     .single();
 
   if (rollRow && rollRow.net_kg != null && rollRow.gross_kg != null) {
+    // Item 4.4: SEKARANG cuma roll yang lebih RINGAN dari toleransi ("claimable") yang mengunci --
+    // lebih berat dari invoice bukan klaim, tidak pernah bikin roll terkunci.
     const variance = weightVariance(Number(rollRow.gross_kg), Number(rollRow.net_kg));
-    const isActiveClaim = !variance.withinTolerance && !rollRow.claim_resolved_at;
+    const isActiveClaim = variance.claimable && !rollRow.claim_resolved_at;
     if (isActiveClaim && !rollRow.claim_retur_received_at) {
       throw new Error(
         "Roll ini masih diklaim selisih berat -- menunggu Procurement atur retur & kirim roll pengganti (lihat Klaim Material). Konfirmasi 'diterima' dulu di sini setelah roll penggantinya sampai, baru bisa ditimbang ulang."
@@ -820,12 +867,18 @@ export async function receiveRawMaterialRollAction(
     }
   }
 
-  const update: Record<string, unknown> = { net_kg: netKg };
+  // Item 13: setiap kali roll ini ditimbang (baik pertama kali, edit di "Sudah ditimbang - belum
+  // dikonfirmasi", ATAU claim baru dari roll yang tadinya SUDAH dikonfirmasi -- item 13.6) status
+  // konfirmasinya SELALU kembali kosong -- cuma confirmRollWeighAction yang boleh mengisinya lagi.
+  const update: Record<string, unknown> = { net_kg: netKg, weigh_confirmed_at: null };
   if (codeRoll && codeRoll.trim()) update.code_roll = codeRoll.trim();
+  const claimKey = `${invoiceId}|${warna}|${lengan}|${rollIndex}`;
   if (!claim) {
-    // Ditimbang & hasilnya sekarang sesuai toleransi -- kalau roll ini tadinya diklaim, klaimnya
-    // resmi tuntas di sini. Bersihkan sisa catatan retur lama supaya tidak nyangkut/orphan kalau
-    // roll_index yang sama suatu saat kena klaim lagi (baris baru harus mulai dari "BELUM").
+    // Ditimbang & hasilnya sekarang sesuai toleransi (atau lebih BERAT dari invoice, item 4 --
+    // disimpan normal, bukan klaim) -- kalau roll ini tadinya diklaim, klaimnya resmi tuntas di
+    // sini. Bersihkan sisa catatan retur lama supaya tidak nyangkut/orphan kalau roll_index yang
+    // sama suatu saat kena klaim lagi (baris baru harus mulai dari "BELUM"). Foto bukti (item 2/3)
+    // TETAP ADA di material_claim_photos (arsip klaim lama), cuma flag di roll ini yang dibersihkan.
     update.claim_retur_note = null;
     update.claim_retur_requested_at = null;
     update.claim_retur_delivered_note = null;
@@ -833,6 +886,37 @@ export async function receiveRawMaterialRollAction(
     update.claim_retur_received_at = null;
     update.claim_resolved_note = null;
     update.claim_resolved_at = null;
+    update.claim_photo_at = null;
+  } else if (photo) {
+    // Validasi server-side -- kompresi/ukuran/tipe gambar di client (production-cutting-tab.tsx)
+    // cuma konvensi UI, siapa pun yang manggil Server Action ini langsung (skip UI) bisa kirim
+    // string apa saja. Tanpa cek ini, string non-gambar (mis. data:text/html,...) bisa tersimpan
+    // lalu dibuka via window.open() oleh staf Procurement di halaman Klaim Material -- risiko
+    // konten disuntik yang terbuka sebagai halaman hidup, bukan sekadar foto.
+    if (!photo.dataUrl.startsWith("data:image/")) {
+      throw new Error("Foto bukti tidak valid -- harus berupa gambar.");
+    }
+    const base64Part = photo.dataUrl.slice(photo.dataUrl.indexOf(",") + 1);
+    const approxBytes = Math.floor((base64Part.length * 3) / 4);
+    if (approxBytes > 700 * 1024) {
+      throw new Error("Foto bukti terlalu besar -- ambil ulang dengan resolusi lebih kecil.");
+    }
+    // Item 3.3: urutan WAJIB -- upsert material_claim_photos DULU, baru tandai claim_photo_at di
+    // raw_material_invoice_rolls (lewat `update` yang ditulis setelah ini). Gagal di sini HARUS
+    // menggagalkan seluruh aksi (beda dari insert material_claim_history di bawah yang opsional)
+    // supaya vendor tahu foto buktinya tidak tersimpan, bukan diam-diam hilang.
+    const { error: photoErr } = await db.from("material_claim_photos").upsert({
+      claim_key: claimKey,
+      invoice_id: invoiceId,
+      warna,
+      lengan,
+      roll_index: rollIndex,
+      data_url: photo.dataUrl,
+      file_name: photo.fileName ?? null,
+      uploaded_at: nowIso(),
+    });
+    if (photoErr) throw new Error(`Gagal menyimpan foto bukti: ${photoErr.message}`);
+    update.claim_photo_at = nowIso();
   }
   const { error } = await db.from("raw_material_invoice_rolls").update(update).eq("invoice_color_id", colorId).eq("roll_index", rollIndex);
   if (error) throw new Error(error.message);
@@ -865,6 +949,7 @@ export async function receiveRawMaterialRollAction(
         claimed_net_kg: netKg,
         diff_kg: claim.diffKg,
         pct: claim.pct,
+        claim_photo_at: photo ? update.claim_photo_at : null,
       });
     } catch {
       // tabel arsip belum ada (migration 0011 belum di-apply) -- diamkan, bukan fitur inti.
@@ -886,6 +971,75 @@ export async function receiveRawMaterialRollAction(
     }
   }
   void vendorId;
+}
+
+/** Item 13.2: tutup tahap "timbang" -- roll yang sudah ditimbang (net_kg terisi) & TIDAK claimable
+ *  (item 4, lebih ringan dari toleransi) baru bisa masuk pool Resting setelah dikonfirmasi di sini
+ *  (lihat gate weigh_confirmed_at di availableCodeRollsForColor/receivedRollCountWithCodeForColor,
+ *  derive.ts). Dipanggil per GRUP (satu klik "Konfirmasi (n)" untuk semua roll warna·lengan yang
+ *  sama, item 14.1) -- roll yang gagal syarat (belum ditimbang, atau masih claimable) di-skip &
+ *  dilaporkan balik supaya UI bisa bilang apa yang ke-skip, bukan diam-diam gagal semua. */
+export async function confirmRollWeighAction(
+  items: { invoiceId: string; warna: string; lengan: Lengan; rollIndex: number }[]
+): Promise<{ confirmed: number; skipped: { invoiceId: string; warna: string; lengan: Lengan; rollIndex: number }[] }> {
+  const vendorId = await requireVendorSession();
+  const db = supabaseServer();
+  const skipped: { invoiceId: string; warna: string; lengan: Lengan; rollIndex: number }[] = [];
+  let confirmed = 0;
+  // Kepemilikan: pastikan tiap invoiceId yang diminta memang milik vendor sesi ini -- tanpa ini,
+  // vendor A yang tahu/tebak ID invoice vendor B bisa ikut men-"Konfirmasi" roll timbang B (bukan
+  // datanya sendiri). Di-cache per invoiceId supaya tidak query berulang kalau items berisi
+  // banyak roll dari invoice yang sama (kasus umum: konfirmasi 1 grup warna sekaligus).
+  const ownedInvoiceIds = new Map<string, boolean>();
+  for (const item of items) {
+    if (!ownedInvoiceIds.has(item.invoiceId)) {
+      const { data: invRow } = await db.from("raw_material_invoices").select("destination_vendor").eq("id", item.invoiceId).maybeSingle();
+      ownedInvoiceIds.set(item.invoiceId, invRow?.destination_vendor === vendorId);
+    }
+    if (!ownedInvoiceIds.get(item.invoiceId)) {
+      skipped.push(item);
+      continue;
+    }
+    const colorId = `${item.invoiceId}-${item.warna}-${item.lengan}`;
+    const { data: rollRow } = await db
+      .from("raw_material_invoice_rolls")
+      .select("gross_kg,net_kg")
+      .eq("invoice_color_id", colorId)
+      .eq("roll_index", item.rollIndex)
+      .maybeSingle();
+    if (!rollRow || rollRow.net_kg == null) {
+      skipped.push(item);
+      continue;
+    }
+    const variance = weightVariance(Number(rollRow.gross_kg ?? 0), Number(rollRow.net_kg));
+    if (variance.claimable) {
+      skipped.push(item);
+      continue;
+    }
+    const { error } = await db
+      .from("raw_material_invoice_rolls")
+      .update({ weigh_confirmed_at: nowIso() })
+      .eq("invoice_color_id", colorId)
+      .eq("roll_index", item.rollIndex);
+    if (error) {
+      skipped.push(item);
+      continue;
+    }
+    confirmed++;
+  }
+  return { confirmed, skipped };
+}
+
+/** Item 2.4: ambil BYTE foto bukti berat bersih 1 klaim on-demand -- `material_claim_photos`
+ *  sengaja DIKELUARKAN dari get_flow_snapshot_raw() (migration 0014) supaya payloadnya tidak ikut
+ *  re-download di setiap refresh snapshot. Dipanggil LANGSUNG dari halaman Klaim Material
+ *  (bukan lewat store/snapshot) cuma saat user klik "Lihat / Download". */
+export async function getMaterialClaimPhotoAction(claimKey: string): Promise<{ dataUrl: string; fileName?: string } | null> {
+  await requireInternalRole(await requireSession(), "procurement");
+  const db = supabaseServer();
+  const { data } = await db.from("material_claim_photos").select("data_url,file_name").eq("claim_key", claimKey).maybeSingle();
+  if (!data) return null;
+  return { dataUrl: data.data_url, fileName: data.file_name ?? undefined };
 }
 
 export async function setMaterialPoEntityAction(poId: string, entitas: string): Promise<void> {
@@ -938,18 +1092,46 @@ export async function approveVendorMaterialPosAction(mrpId: string, vendor: stri
 export async function updateBatchToCuttingAction(batchId: string, cuttingAt: string, sizeQty: Record<string, number> = {}): Promise<{ cuttingAt: string; sizeQty?: Record<string, number> }> {
   await requireVendorSession();
   const db = supabaseServer();
+
+  // Item 18.3: batch ini boleh diedit/"diperbaiki" berulang kali (Input Hasil Cutting SEKARANG
+  // bukan sekali-jalan) SELAMA grup warna/lengannya belum benar-benar final (production_group_meta
+  // .done_at, TAHAP 2). Kalau grupnya sudah fg_confirmed_at (TAHAP 1) tapi belum done_at, edit ini
+  // tetap boleh jalan TAPI reject otomatis grup itu harus dihitung ULANG (recomputeAutoRejectForGroup)
+  // supaya angka reject di tab Reject/Final Produksi tidak basi.
+  const { data: batchRow } = await db.from("production_batches").select("mrp_id,vendor_produksi,warna,lengan").eq("id", batchId).single();
+  let groupKey: string | null = null;
+  if (batchRow) {
+    groupKey = `${batchRow.mrp_id}|${batchRow.warna}|${batchRow.lengan}`;
+    const { data: meta } = await db.from("production_group_meta").select("fg_confirmed_at,done_at").eq("group_key", groupKey).maybeSingle();
+    if (meta?.done_at) {
+      throw new Error(`Grup ${batchRow.warna} · ${batchRow.lengan} sudah "Selesai Produksi" (Final Produksi) -- hasil cutting tidak bisa diedit lagi.`);
+    }
+  }
+
   const { error } = await db.from("production_batches").update({ cutting_at: cuttingAt }).eq("id", batchId);
   if (error) throw new Error(error.message);
   // Hasil aduan AKTUAL roll ini (lihat komentar ProductionBatch.sizeQty di types.ts) — tabel
   // production_batch_sizes belum tentu ada (butuh migration 0006_production_batch_output.sql).
-  // Errornya SENGAJA tidak dilempar (cuma dicatat) supaya "Update ke Cutting" di atas (aksi
+  // Errornya SENGAJA tidak dilempar (cuma dicatat) supaya "Input Hasil Cutting" di atas (aksi
   // utamanya, sudah berhasil) tidak ikut gagal hanya karena fitur tambahan ini belum ter-migrate
   // di environment tertentu.
+  // Item 18.3: HAPUS dulu baris lama batch ini sebelum insert -- dulu insert-only, jadi panggilan
+  // KEDUA ("Perbaiki Hasil Cutting") menumpuk baris duplikat alih-alih menggantikannya.
+  const { error: delErr } = await db.from("production_batch_sizes").delete().eq("production_batch_id", batchId);
+  if (delErr) console.error("updateBatchToCuttingAction: gagal hapus hasil aduan lama", delErr.message);
   const rows = Object.entries(sizeQty).filter(([, qty]) => qty > 0);
   if (rows.length > 0) {
     const { error: sizeErr } = await db.from("production_batch_sizes").insert(rows.map(([size, qty]) => ({ production_batch_id: batchId, size, qty })));
     if (sizeErr) console.error("updateBatchToCuttingAction: gagal simpan hasil aduan (migration 0006 sudah jalan?)", sizeErr.message);
   }
+
+  if (batchRow && groupKey) {
+    const { data: metaAfter } = await db.from("production_group_meta").select("fg_confirmed_at,done_at").eq("group_key", groupKey).maybeSingle();
+    if (metaAfter?.fg_confirmed_at && !metaAfter.done_at) {
+      await recomputeAutoRejectForGroup(db, groupKey, batchRow.mrp_id, batchRow.vendor_produksi, batchRow.warna, batchRow.lengan as Lengan);
+    }
+  }
+
   return { cuttingAt, sizeQty: rows.length > 0 ? Object.fromEntries(rows) : undefined };
 }
 
@@ -1661,87 +1843,38 @@ export async function reworkRejectSizeAction(input: { mrpId: string; vendorProdu
   await maybeAdvanceMaklonToDelivery(input.mrpId, input.vendorProduksi);
 }
 
-/** Buang reject ke sisa/waste (majun, kain perca) — TIDAK bisa dijadikan garmen lagi, beda dari
- *  reworkRejectSizeAction. Mirror strukturnya (deduksi REJECT negatif + entri baru), tapi entri
- *  barunya kind "WASTE" tanpa lengan/size tujuan. Butuh migration 0007_production_waste.sql
- *  (nilai enum 'WASTE' pada production_kind_t) — kalau belum jalan, insert ini akan gagal dengan
- *  error dari Postgres (bukan silent fail, supaya user tahu migration-nya perlu di-apply dulu). */
-export async function wasteRejectSizeAction(input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; fromSize: string; qty: number; note?: string }): Promise<void> {
-  await requireVendorSession();
-  const db = supabaseServer();
-  const groupKey = `${input.mrpId}|${input.warna}|${input.lengan}`;
-  const { data: meta } = await db.from("production_group_meta").select("group_key,done_at").eq("group_key", groupKey).maybeSingle();
-  if (meta?.done_at) {
-    throw new Error(`Grup ${input.warna} · ${input.lengan} sudah ditandai "Selesai Produksi" -- buka kunci dulu di tab Final Produksi sebelum bisa buang ke sisa/waste.`);
-  }
+// Item 19 (feedback batch 2026-09-04): "Buang ke Sisa" dihapus dari UI & flow -- wasteRejectSizeAction
+// (dulu di sini) sudah tidak dipakai lagi & dihapus. wasteQtyForGroup (derive.ts) TETAP dipertahankan
+// (masih dipakai sebagai guard di undoFgConfirmAction di bawah) dan baris WASTE lama (kalau ada)
+// tetap valid secara historis -- tidak ada migration yang menghapus enum 'WASTE'/data lama.
 
-  const { data: maklon } = await db.from("maklon_pos").select("id").eq("mrp_id", input.mrpId).eq("vendor_produksi", input.vendorProduksi).maybeSingle();
-  const rejectId = await nextReadableId("PR");
-  const wasteId = await nextReadableId("PR");
-  const recordedAt = nowIso();
-  const { error } = await db.from("production_results").insert([
-    {
-      id: rejectId,
-      group_key: groupKey,
-      mrp_id: input.mrpId,
-      vendor_produksi: input.vendorProduksi,
-      po_id: maklon?.id ?? "",
-      warna: input.warna,
-      lengan: input.lengan,
-      kind: "REJECT",
-      recorded_at: recordedAt,
-      note: `Waste ${input.qty} pcs size ${input.fromSize} — dibuang jadi sisa/majun (tidak bisa dirework)${input.note ? ": " + input.note : ""}`,
-    },
-    {
-      id: wasteId,
-      group_key: groupKey,
-      mrp_id: input.mrpId,
-      vendor_produksi: input.vendorProduksi,
-      po_id: maklon?.id ?? "",
-      warna: input.warna,
-      lengan: input.lengan,
-      kind: "WASTE",
-      recorded_at: recordedAt,
-      note: input.note || `Dari reject size ${input.fromSize}`,
-    },
-  ]);
-  if (error) throw new Error(error.message);
-  await db.from("production_result_sizes").insert([
-    { production_result_id: rejectId, size: input.fromSize, qty: -input.qty },
-    { production_result_id: wasteId, size: input.fromSize, qty: input.qty },
-  ]);
-}
-
-/** TAHAP 1 dari 2 -- diklik dari tab FINISH GOOD begitu input Finish Good untuk 1 warna/lengan
- *  memang sudah final (tidak akan nambah lagi). Menghitung reject otomatis (cutting AKTUAL
- *  dikurangi Finish Good yang sudah diinput) dan menyimpannya ke production_results, TAPI
- *  SENGAJA belum mengunci Rework/Buang ke Sisa -- itu baru dikunci di TAHAP 2
- *  (markProductionGroupDoneAction, tab Final Produksi), supaya reject yang baru dihitung di sini
- *  masih sempat dirework jadi baju (ukuran/lengan lain) sebelum benar-benar final. Lihat
- *  migration 0013_production_group_fg_confirmed.sql untuk kolom fg_confirmed_at. */
-export async function confirmFgDoneAction(groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan): Promise<void> {
-  await requireVendorSession();
-  const db = supabaseServer();
-  const scope = await fetchProductionScopeForMrp(db, mrpId, vendorProduksi);
-
-  // Target reject = hasil CUTTING AKTUAL (bukan rencana MRP) dikurangi Finish Good yang sudah
-  // diinput -- konsisten dengan cara production-result-panel.tsx menghitung "Progres" &
-  // "Reject Produksi" (lihat cuttingSizesForGroup). Dulu pakai targetSizesForGroup (estimasi
-  // rasio rencana MRP), jadi kalau hasil cutting sedikit meleset dari rencana (mis. yield <100%),
-  // selisih itu ikut ke-hitung reject padahal roll-nya memang cuma segitu yang jadi -- bukan
-  // reject beneran (lihat feedback: "kenapa yang target cutting kurang dari target awal jadi
-  // reject? harusnya dari hasil cutting - finish good").
-  const target = cuttingSizesForGroup(mrpId, warna, lengan, [scope.mrpDetail], scope.batches);
-  const fgRecorded = cumulativeSizeQtyForGroup(groupKey, "FG", scope.results);
+/** Item 18.4: hitung ulang reject OTOMATIS (kind='REJECT' dan note null -- beda dari reject hasil
+ *  rework manual) 1 grup warna/lengan dari SELISIH hasil cutting AKTUAL (cuttingSizesForGroup, ==
+ *  actualCutSizesForGroup sejak item 18.1 -- fallback ke target rencana MRP sudah dihapus) dikurangi
+ *  Finish Good yang sudah tercatat. Dipakai bareng oleh confirmFgDoneAction (TAHAP 1),
+ *  updateBatchToCuttingAction (kalau hasil cutting diedit SETELAH tahap 1, lihat item 18.3), dan
+ *  closeProductionPoAction (item 21, Close PO per PO Produksi). SELALU hapus dulu baris auto-reject
+ *  lama grup ini sebelum insert yang baru, supaya tidak menumpuk (mis. Selesai -> Buka kunci ->
+ *  Selesai lagi, atau edit hasil cutting berkali-kali). `scope` boleh dioper dari pemanggil yang
+ *  sudah fetch duluan (mis. confirmFgDoneAction) supaya tidak query 2x. */
+async function recomputeAutoRejectForGroup(
+  db: SupabaseClient,
+  groupKey: string,
+  mrpId: string,
+  vendorProduksi: string,
+  warna: string,
+  lengan: Lengan,
+  scope?: { mrpDetail: MrpDetail; batches: ProductionBatch[]; results: ProductionResult[] }
+): Promise<void> {
+  const s = scope ?? (await fetchProductionScopeForMrp(db, mrpId, vendorProduksi));
+  const target = cuttingSizesForGroup(mrpId, warna, lengan, [s.mrpDetail], s.batches);
+  const fgRecorded = cumulativeSizeQtyForGroup(groupKey, "FG", s.results);
   const rejectSizeQty: Record<string, number> = {};
   for (const [size, t] of Object.entries(target)) {
     const shortfall = t - (fgRecorded[size] ?? 0);
     if (shortfall > 0) rejectSizeQty[size] = shortfall;
   }
 
-  // Buang entri auto-reject LAMA punya grup ini (note null = auto-generated, bukan hasil rework
-  // manual) sebelum nambah yang baru -- wajib supaya reject tidak menumpuk saat
-  // Selesai -> Buka kunci -> Selesai lagi.
   const { data: oldAutoRejects } = await db.from("production_results").select("id").eq("group_key", groupKey).eq("kind", "REJECT").is("note", null);
   if (oldAutoRejects && oldAutoRejects.length > 0) {
     await db.from("production_results").delete().in("id", oldAutoRejects.map((r) => r.id));
@@ -1753,6 +1886,36 @@ export async function confirmFgDoneAction(groupKey: string, mrpId: string, vendo
     await db.from("production_results").insert({ id, group_key: groupKey, mrp_id: mrpId, vendor_produksi: vendorProduksi, po_id: maklonRow?.id ?? "", warna, lengan, kind: "REJECT", recorded_at: nowIso() });
     await db.from("production_result_sizes").insert(Object.entries(rejectSizeQty).map(([size, qty]) => ({ production_result_id: id, size, qty })));
   }
+}
+
+/** TAHAP 1 dari 2 -- diklik dari tab FINISH GOOD begitu input Finish Good untuk 1 warna/lengan
+ *  memang sudah final (tidak akan nambah lagi). Menghitung reject otomatis (cutting AKTUAL
+ *  dikurangi Finish Good yang sudah diinput, lewat recomputeAutoRejectForGroup) dan menyimpannya
+ *  ke production_results, TAPI SENGAJA belum mengunci Rework/Buang ke Sisa -- itu baru dikunci di
+ *  TAHAP 2 (markProductionGroupDoneAction, tab Final Produksi), supaya reject yang baru dihitung di
+ *  sini masih sempat dirework jadi baju (ukuran/lengan lain) sebelum benar-benar final. Lihat
+ *  migration 0013_production_group_fg_confirmed.sql untuk kolom fg_confirmed_at.
+ *
+ *  Item 18.2: baseline reject SEKARANG SELALU hasil cutting AKTUAL (actualCutSizesForGroup, lewat
+ *  cuttingSizesForGroup yang sejak item 18.1 tidak fallback ke target rencana MRP lagi). Kalau
+ *  grup ini punya batch yang SUDAH dicutting tapi belum SATU PUN diisi hasil cuttingnya (baseline
+ *  kosong padahal ada batch tercutting), TOLAK -- dulu ini diam-diam jatuh balik ke target rencana
+ *  MRP, itu ROOT CAUSE reject dobel-hitung (target 10, cutting aktual 8, FG 6 -> reject tampil 4,
+ *  seharusnya 2). Grup TANPA batch cutting sama sekali (murni grup TUJUAN rework lintas lengan,
+ *  lihat warnaLenganGroupsWithFg) baseline-nya memang kosong -- itu SAH, reject 0, tetap boleh
+ *  confirm. */
+export async function confirmFgDoneAction(groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan): Promise<void> {
+  await requireVendorSession();
+  const db = supabaseServer();
+  const scope = await fetchProductionScopeForMrp(db, mrpId, vendorProduksi);
+
+  const hasCutBatches = scope.batches.some((b) => b.mrpId === mrpId && b.warna === warna && b.lengan === lengan && b.cuttingAt);
+  const baseline = actualCutSizesForGroup(mrpId, warna, lengan, scope.batches);
+  if (hasCutBatches && Object.keys(baseline).length === 0) {
+    throw new Error('Isi "Input Hasil Cutting" untuk semua roll grup ini dulu — reject dihitung dari hasil cutting aktual, bukan dari target PO/MRP.');
+  }
+
+  await recomputeAutoRejectForGroup(db, groupKey, mrpId, vendorProduksi, warna, lengan, scope);
 
   const { data: existing } = await db.from("production_group_meta").select("group_key").eq("group_key", groupKey).maybeSingle();
   if (existing) await db.from("production_group_meta").update({ fg_confirmed_at: today() }).eq("group_key", groupKey);
@@ -1796,10 +1959,12 @@ export async function undoFgConfirmAction(groupKey: string): Promise<void> {
 
 /** TAHAP 2 dari 2 -- diklik dari tab FINAL PRODUKSI, SETELAH rework/buang ke sisa (kalau ada)
  *  juga sudah selesai. Ini yang benar-benar mengunci grup (Finish Good/Reject/Rework/Waste tidak
- *  bisa berubah lagi -- lihat guard di reworkRejectSizeAction/wasteRejectSizeAction) dan baru di
- *  titik ini hasilnya boleh masuk Pengiriman (lihat gate di availableFgToShip). Butuh
+ *  bisa berubah lagi -- lihat guard di reworkRejectSizeAction/wasteRejectSizeAction). Butuh
  *  fg_confirmed_at (TAHAP 1) sudah terisi duluan -- reject tidak dihitung ulang di sini lagi,
- *  itu sudah tugas confirmFgDoneAction. */
+ *  itu sudah tugas confirmFgDoneAction. PENTING (item 22, direvisi dari desain awal sesi ini):
+ *  `done_at` di sini BUKAN LAGI gate Pengiriman -- FG sudah shippable begitu fg_confirmed_at
+ *  (TAHAP 1) terisi (lihat gate di availableFgToShip di lib/mrp/derive.ts). `done_at` sekarang
+ *  murni kunci final + basis status tepat-waktu/telat (productionStatusFromDates). */
 export async function markProductionGroupDoneAction(groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan): Promise<void> {
   // warna/lengan dipertahankan di signature (dipanggil dgn argumen yang sama seperti
   // confirmFgDoneAction dari UI) walau tidak dipakai lagi di sini -- reject sudah dihitung di
@@ -1814,6 +1979,55 @@ export async function markProductionGroupDoneAction(groupKey: string, mrpId: str
   }
   await db.from("production_group_meta").update({ done_at: today() }).eq("group_key", groupKey);
   await maybeAdvanceMaklonToDelivery(mrpId, vendorProduksi);
+}
+
+/** Item 21 (feedback batch 2026-09-04): "Close PO" untuk siklus produksi PARSIAL -- menutup SATU
+ *  PO Produksi (mrpId+vendorProduksi) sekaligus, SEMUA warna/lengan-nya bersamaan (bukan satu per
+ *  satu, sesuai keputusan OQ6a). Reference pattern: closePoWithReasonAction (Procurement, PO
+ *  Material) -- reason wajib, audit row `maklon_po_cancelled_lines`, notifikasi.
+ *
+ *  Langkah: (a) reason wajib; (b) tiap grup warna/lengan PO ini yang BELUM `done_at` -- kalau
+ *  belum `fg_confirmed_at` juga, hitung reject dulu (recomputeAutoRejectForGroup, item 18.4) baru
+ *  isi fg_confirmed_at, lalu set done_at (mengunci grup itu, sama seperti TAHAP 2 biasa); (c) set
+ *  closed_at/close_reason di maklon_pos; (d) audit row; (e) notifikasi procurement+finance+vendor.
+ *
+ *  Item 22 (REVISI dari draft awal): closed_at di sini JUGA memblokir Pengiriman -- termasuk FG
+ *  yang SUDAH fgConfirmed sebelum ditutup tapi belum sempat masuk koli (lihat gate di
+ *  availableFgToShip, derive.ts). Koli yang sudah dibuat/terkirim SEBELUM PO ditutup tidak
+ *  terpengaruh (itu sudah masa lalu). */
+export async function closeProductionPoAction(maklonPoId: string, reason: string): Promise<void> {
+  const vendorId = await requireVendorSession();
+  if (!reason || !reason.trim()) throw new Error("Alasan penutupan PO wajib diisi.");
+  const db = supabaseServer();
+  const { data: po } = await db.from("maklon_pos").select("id,mrp_id,vendor_produksi,closed_at").eq("id", maklonPoId).maybeSingle();
+  if (!po) throw new Error("PO Produksi tidak ditemukan.");
+  if (po.vendor_produksi !== vendorId) throw new Error("PO ini bukan milik vendor Anda.");
+  if (po.closed_at) return;
+
+  const scope = await fetchProductionScopeForMrp(db, po.mrp_id, po.vendor_produksi);
+  const groups = warnaLenganGroupsWithFg(po.mrp_id, po.vendor_produksi, scope.batches, scope.results);
+  for (const g of groups) {
+    const groupKey = `${po.mrp_id}|${g.warna}|${g.lengan}`;
+    const { data: meta } = await db.from("production_group_meta").select("group_key,fg_confirmed_at,done_at").eq("group_key", groupKey).maybeSingle();
+    if (meta?.done_at) continue;
+    if (!meta?.fg_confirmed_at) {
+      await recomputeAutoRejectForGroup(db, groupKey, po.mrp_id, po.vendor_produksi, g.warna, g.lengan, scope);
+    }
+    if (meta) {
+      await db.from("production_group_meta").update({ fg_confirmed_at: meta.fg_confirmed_at ?? today(), done_at: today() }).eq("group_key", groupKey);
+    } else {
+      await db
+        .from("production_group_meta")
+        .insert({ group_key: groupKey, mrp_id: po.mrp_id, vendor_produksi: po.vendor_produksi, warna: g.warna, lengan: g.lengan, fg_confirmed_at: today(), done_at: today() });
+    }
+  }
+
+  await db.from("maklon_pos").update({ closed_at: today(), close_reason: reason.trim() }).eq("id", maklonPoId);
+  await db.from("maklon_po_cancelled_lines").insert({ maklon_po_id: maklonPoId, note: `Close PO: ${reason.trim()}`, rolls: 0, from_vendor: "Vendor Produksi", time: nowClock() });
+  await insertNotification(
+    notif(`PO Produksi ${maklonPoId} (${po.mrp_id}) ditutup oleh vendor — alasan: ${reason.trim()}. Sisa Finish Good yang belum masuk koli tidak bisa dikirim lagi.`, ["procurement", "finance"])
+  );
+  await insertNotification(notif(`PO Produksi ${maklonPoId} (${po.mrp_id}) sudah Anda tutup (Close PO) — alasan: ${reason.trim()}.`, ["vendorMaklon"], po.vendor_produksi));
 }
 
 // =========================================================================

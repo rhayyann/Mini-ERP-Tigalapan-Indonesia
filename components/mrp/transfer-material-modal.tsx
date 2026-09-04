@@ -64,7 +64,7 @@ export function TransferMaterialModal({
           <div className="grid grid-cols-4 gap-2 border-b border-[#F1F4F7] pb-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
             <span>No PO</span>
             <span>Warna</span>
-            <span className="text-right">Roll tersedia</span>
+            <span className="text-right">Roll belum dipotong</span>
             <span className="text-right">Qty dipindahkan</span>
           </div>
           {items.map((it) => (

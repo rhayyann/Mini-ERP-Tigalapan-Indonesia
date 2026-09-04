@@ -6,6 +6,7 @@ import { PayingVoucherWizard } from "@/components/mrp/paying-voucher-wizard";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/ui/status-pill";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
+import { FilterBar } from "@/components/mrp/filter-bar";
 import { useMrpStore } from "@/lib/mrp/store";
 import { formatDate, formatRupiah, invoiceBadge, materialSupplierNamesForWarna } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
@@ -26,6 +27,11 @@ export function PayingVoucherMaterialPanel() {
   const [selectedPoId, setSelectedPoId] = useState<string | null>(null);
   const [afterSubmitPoId, setAfterSubmitPoId] = useState<string | null>(null);
   const [closingPoId, setClosingPoId] = useState<string | null>(null);
+  // Item 6: filter No. PO / No. MRP untuk "PO material belum memiliki invoice" -- dulu satu-
+  // satunya list di halaman ini tanpa filter apa pun (beda dari "Riwayat Paying Voucher" di bawah
+  // yang sudah punya FilterBar lewat DataTable).
+  const [poFilter, setPoFilter] = useState("");
+  const [mrpFilter, setMrpFilter] = useState("");
 
   const pvHistoryColumns: ColumnDef<RawMaterialInvoice>[] = [
     { key: "noInvoice", label: "No Invoice", default: true, render: (i) => <span className="font-mono font-medium">{i.id}</span> },
@@ -51,6 +57,7 @@ export function PayingVoucherMaterialPanel() {
   ];
 
   const openPOs = materialPOs.filter((po) => po.status !== "CANCELLED" && po.approved && po.invoicedRolls < po.rollCount);
+  const filteredOpenPOs = openPOs.filter((po) => (!poFilter || po.id === poFilter) && (!mrpFilter || po.mrpId === mrpFilter));
   const selectedPo = openPOs.find((p) => p.id === selectedPoId) ?? null;
   const afterSubmitPo = afterSubmitPoId ? materialPOs.find((p) => p.id === afterSubmitPoId) : null;
   const closingPo = closingPoId ? materialPOs.find((p) => p.id === closingPoId) : null;
@@ -59,7 +66,25 @@ export function PayingVoucherMaterialPanel() {
   return (
     <>
       <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
-        <div className="border-b border-border-subtle px-5 py-3 font-sans text-[13px] font-semibold text-text-primary">PO material belum memiliki invoice</div>
+        <div className="border-b border-border-subtle px-5 py-3 font-sans text-[13px] font-semibold text-text-primary">
+          PO material belum memiliki invoice ({filteredOpenPOs.length})
+        </div>
+        <FilterBar
+          filters={[
+            {
+              label: "No. PO",
+              value: poFilter,
+              options: Array.from(new Set(openPOs.map((po) => po.id))),
+              onChange: setPoFilter,
+            },
+            {
+              label: "No. MRP",
+              value: mrpFilter,
+              options: Array.from(new Set(openPOs.map((po) => po.mrpId))),
+              onChange: setMrpFilter,
+            },
+          ]}
+        />
         <div className="grid border-b border-border-subtle bg-[#F7F9FB] px-5 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted" style={{ gridTemplateColumns: "100px 110px 1fr 90px 90px 130px 70px" }}>
           <span>No. MRP</span>
           <span>No. PO</span>
@@ -69,8 +94,8 @@ export function PayingVoucherMaterialPanel() {
           <span />
           <span />
         </div>
-        {openPOs.length === 0 && <div className="px-5 py-6 text-center font-sans text-xs text-text-muted">Tidak ada PO material yang perlu diinvoice.</div>}
-        {openPOs.map((po) => {
+        {filteredOpenPOs.length === 0 && <div className="px-5 py-6 text-center font-sans text-xs text-text-muted">Tidak ada PO material yang perlu diinvoice.</div>}
+        {filteredOpenPOs.map((po) => {
           const remaining = po.rollCount - po.invoicedRolls;
           return (
             <div key={po.id} className="grid items-center border-b border-[#F1F4F7] px-5 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0" style={{ gridTemplateColumns: "100px 110px 1fr 90px 90px 130px 70px" }}>

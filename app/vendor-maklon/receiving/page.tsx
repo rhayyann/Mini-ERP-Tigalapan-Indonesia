@@ -6,7 +6,7 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
 import { VendorAuthGuard } from "@/components/mrp/vendor-auth-guard";
 import { useMrpStore } from "@/lib/mrp/store";
-import { addDays, formatDate, formatDecimal, formatPcs, invoiceBadge, materialReceivedForMaklon, rollArrivalProgress } from "@/lib/mrp/derive";
+import { addDays, formatDate, formatDecimal, formatPcs, invoiceBadge, materialReceivedForMaklon, rollArrivalProgress, rollArrivalStatus, rollArrivalStatusBadge } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
 type DraftCode = { codeRoll: string; codeLot: string };
@@ -54,7 +54,7 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
   // Filter status PO material — default "Semua" (perilaku lama). Sengaja dipisah dari status
   // asli invoice ("DELIVERY"/"RECEIVING") supaya list yang sudah RECEIVING (biasanya jauh lebih
   // banyak) tidak menenggelamkan yang masih DELIVERY dan justru butuh dipantau/ditindaklanjuti.
-  const [statusFilter, setStatusFilter] = useState<"ALL" | "DELIVERY" | "RECEIVING">("ALL");
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "DELIVERY" | "RECEIVING" | "PARSIAL">("ALL");
   const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
   const [selectedColorKey, setSelectedColorKey] = useState("");
   const [draftCode, setDraftCode] = useState<Record<number, DraftCode>>({});
@@ -65,9 +65,15 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
   // hilang begitu roll pertama ditandai meski masih ada roll lain yang belum ditandai.
   const mrpIds = Array.from(new Set(eligible.map((i) => i.mrpId)));
   const mrpInvoicesAll = eligible.filter((i) => i.mrpId === selectedMrpId);
-  const mrpInvoices = statusFilter === "ALL" ? mrpInvoicesAll : mrpInvoicesAll.filter((i) => i.status === statusFilter);
+  const mrpInvoices =
+    statusFilter === "ALL"
+      ? mrpInvoicesAll
+      : statusFilter === "PARSIAL"
+        ? mrpInvoicesAll.filter((i) => rollArrivalStatus(i) === "PARSIAL")
+        : mrpInvoicesAll.filter((i) => i.status === statusFilter);
   const deliveryCount = mrpInvoicesAll.filter((i) => i.status === "DELIVERY").length;
   const receivingCount = mrpInvoicesAll.filter((i) => i.status === "RECEIVING").length;
+  const parsialCount = mrpInvoicesAll.filter((i) => rollArrivalStatus(i) === "PARSIAL").length;
   const selectedInvoice = eligible.find((i) => i.id === selectedInvoiceId) ?? null;
   // PO maklon untuk MRP ini yang masih menunggu bahan TAPI bahannya sudah mulai diterima —
   // aksi "Mulai Produksi" sengaja ditaruh di sini (bukan di PO Produksi Saya) supaya begitu
@@ -172,6 +178,7 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                   { key: "ALL" as const, label: `Semua (${mrpInvoicesAll.length})` },
                   { key: "DELIVERY" as const, label: `Delivery (${deliveryCount})` },
                   { key: "RECEIVING" as const, label: `Receiving (${receivingCount})` },
+                  { key: "PARSIAL" as const, label: `Parsial (${parsialCount})` },
                 ]
               ).map((opt) => (
                 <button
@@ -208,8 +215,9 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                 <span className="font-mono font-medium">{i.poId}</span>
                 <span>{i.supplier}</span>
                 <span>{i.colorEntries.map((c) => c.warna).join(", ")}</span>
-                <span>
+                <span className="flex items-center gap-1.5">
                   <StatusPill tone={invoiceBadge(i.status).tone}>{invoiceBadge(i.status).label}</StatusPill>
+                  <StatusPill tone={rollArrivalStatusBadge(rollArrivalStatus(i)).tone}>{rollArrivalStatusBadge(rollArrivalStatus(i)).label}</StatusPill>
                 </span>
                 <span className={"text-right font-mono " + (progress.arrived < progress.total ? "text-warning-fg" : "text-success-fg")}>
                   {progress.arrived}/{progress.total} roll

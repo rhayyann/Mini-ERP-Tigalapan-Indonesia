@@ -14,21 +14,26 @@ import type { DeliveryKoliItem, ShippableKind, Usia } from "@/lib/mrp/types";
 
 const USIA_LABEL: Record<Usia, string> = { KIDS: "Kids", DEWASA: "Dewasa" };
 
+// Item 20 (feedback batch 2026-09-04): Reject bukan lagi barang yang bisa DITAMBAHKAN ke koli baru
+// -- dihapus dari opsi ini supaya tidak ada baris Reject baru yang bisa dibuat. `kindLabel` di
+// bawah TETAP tahu label "Reject" supaya koli LAMA yang sudah terlanjur berisi baris Reject (dari
+// sebelum perubahan ini) masih bisa dirender wajar (lihat `DeliveryItemKind`).
 const PRODUCT_KIND_OPTIONS: { value: ShippableKind; label: string }[] = [
   { value: "FG", label: "Finish Good" },
-  { value: "REJECT", label: "Reject" },
   { value: "REWORK", label: "Rework" },
 ];
 
-function kindLabel(kind: ShippableKind): string {
-  return PRODUCT_KIND_OPTIONS.find((opt) => opt.value === kind)?.label ?? kind;
+const LEGACY_KIND_LABELS: Record<string, string> = { REJECT: "Reject" };
+
+function kindLabel(kind: DeliveryKoliItem["kind"]): string {
+  return PRODUCT_KIND_OPTIONS.find((opt) => opt.value === kind)?.label ?? LEGACY_KIND_LABELS[kind] ?? kind;
 }
 
 /** Kunci unik 1 baris "Isi koli" — kombinasi jenis produk + warna + lengan + size + usia. Dulu
  *  tiap baris draft ("+ Tambah item") bisa menunjuk kombinasi APA SAJA lewat dropdown, jadi butuh
  *  logic rumit buat saling mengecualikan qty antar baris. Sekarang 1 kombinasi = 1 baris tetap
  *  (langsung dari hasil produksi yang tersedia), jadi kuncinya juga jadi index draft qty-nya. */
-function rowKey(kind: ShippableKind, r: Pick<AvailableFgRow, "warna" | "lengan" | "size" | "usia">): string {
+function rowKey(kind: DeliveryKoliItem["kind"], r: Pick<AvailableFgRow, "warna" | "lengan" | "size" | "usia">): string {
   return [kind, r.warna, r.lengan, r.size, r.usia ?? ""].join("|");
 }
 
@@ -71,12 +76,13 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   const productionResults = useMrpStore((s) => s.productionResults);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
+  const maklonPOs = useMrpStore((s) => s.maklonPOs);
   const createDeliveryKoli = useMrpStore((s) => s.createDeliveryKoli);
   const updateDeliveryKoli = useMrpStore((s) => s.updateDeliveryKoli);
   const setKoliWeight = useMrpStore((s) => s.setKoliWeight);
   const markKoliDelivered = useMrpStore((s) => s.markKoliDelivered);
 
-  const mrpIds = mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta);
+  const mrpIds = mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs);
 
   const [mrpId, setMrpId] = useState("");
   const [noKoli, setNoKoli] = useState("");
@@ -97,7 +103,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
     });
   }
 
-  // MRP yang lagi dipilih di form ini bisa "habis" (semua FG/Reject/Rework sudah masuk koli)
+  // MRP yang lagi dipilih di form ini bisa "habis" (semua FG/Rework sudah masuk koli)
   // begitu koli TERAKHIR untuk MRP itu disimpan — begitu itu terjadi, MRP-nya hilang dari
   // `mrpIds` (lihat mrpIdsWithUnpackedFg), tapi state `mrpId` di form ini TIDAK ikut ter-reset
   // sendiri. Akibatnya dropdown <select> tampil kosong (value-nya tidak cocok ke option manapun,
@@ -113,12 +119,11 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   }, [mrpId, editingKoliId, mrpIds.join(",")]);
 
   function availableFor(kind: ShippableKind) {
-    return mrpId ? availableFgToShip(mrpId, vendorId, productionResults, deliveryKolis, productionGroupMeta, editingKoliId ?? undefined, kind) : [];
+    return mrpId ? availableFgToShip(mrpId, vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs, editingKoliId ?? undefined, kind) : [];
   }
 
   const availableByKind: Record<ShippableKind, ReturnType<typeof availableFgToShip>> = {
     FG: availableFor("FG"),
-    REJECT: availableFor("REJECT"),
     REWORK: availableFor("REWORK"),
   };
 
@@ -220,8 +225,8 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
             </select>
             {mrpIds.length === 0 && !editingKoliId && (
               <div className="mt-1 font-sans text-[11px] text-text-muted">
-                Belum ada finish good yang siap dipacking. Warna/lengan baru muncul di sini setelah ditandai &quot;Selesai Produksi&quot; di tab Final
-                Produksi (Produksi &gt; Final Produksi).
+                Belum ada finish good yang siap dipacking. Warna/lengan baru muncul di sini setelah ditandai &quot;Selesai Produksi&quot; di tab Finish
+                Good (tahap 1) — kecuali PO Produksinya sudah di-Close.
               </div>
             )}
           </div>
@@ -237,7 +242,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
             <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">
               Isi koli — pilih apa yang mau dimasukkan, isi qty-nya (sisanya biarkan 0)
             </div>
-            {!anyAvailable && <div className="mt-2 font-sans text-xs text-text-muted">Tidak ada hasil produksi (FG/Reject/Rework) tersedia untuk MRP ini.</div>}
+            {!anyAvailable && <div className="mt-2 font-sans text-xs text-text-muted">Tidak ada hasil produksi (FG/Rework) tersedia untuk MRP ini.</div>}
             {anyAvailable && (
               <div className="mt-2 overflow-hidden rounded-md border border-border-subtle bg-white">
                 <div className="grid grid-cols-6 gap-x-2 border-b border-[#F1F4F7] bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
