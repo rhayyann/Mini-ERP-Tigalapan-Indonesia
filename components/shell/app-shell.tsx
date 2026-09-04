@@ -169,7 +169,7 @@ export function AppShell({
       // Produksi, dan Invoice & Payment).
       "/vendor-maklon/receiving": countVendorGoodReceiveEligible(vendorId, invoices),
       "/vendor-maklon/production": countVendorProduksiActionable(vendorId, productionBatches, productionResults, invoices),
-      "/vendor-maklon/pengiriman": countVendorPengirimanReady(vendorId, productionResults, deliveryKolis, productionGroupMeta),
+      "/vendor-maklon/pengiriman": countVendorPengirimanReady(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs),
       "/vendor-maklon/invoice-payment": countVendorInvoicePaymentTotal(vendorId, mrpDetails, deliveryKolis, vendorInvoices, maklonInvoices),
     };
   }

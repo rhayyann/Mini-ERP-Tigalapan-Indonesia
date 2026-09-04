@@ -8,6 +8,32 @@ import { useMrpStore } from "@/lib/mrp/store";
 import { formatDate, formatDecimal, materialClaimsList, materialClaimStage, type MaterialClaimRow, type MaterialClaimStage } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { MaterialClaimHistory } from "@/lib/mrp/types";
+// Item 2.4: getMaterialClaimPhotoAction DIPANGGIL LANGSUNG dari halaman ini (bukan lewat store) --
+// foto sengaja dikeluarkan dari snapshot (material_claim_photos, migration 0014), jadi tidak ada
+// alur store/backgroundRefresh yang relevan di sini, cuma fetch on-demand saat user klik lihat.
+import { getMaterialClaimPhotoAction } from "@/lib/mrp/actions";
+
+// Item 2.5: "Lihat / Download" -- window.open untuk lihat (sama UX seperti "Lihat bukti" PV di
+// paying-voucher-material-panel.tsx) SEKALIGUS trigger download lewat <a download> sementara
+// (tidak ditaruh di DOM, cukup diklik programatik) supaya file bisa langsung disimpan juga.
+async function viewClaimPhoto(claimKey: string) {
+  const photo = await getMaterialClaimPhotoAction(claimKey);
+  if (!photo) return;
+  window.open(photo.dataUrl, "_blank");
+  const a = document.createElement("a");
+  a.href = photo.dataUrl;
+  a.download = photo.fileName || `${claimKey}.jpg`;
+  a.click();
+}
+
+function BuktiFotoCell({ claimKey, hasPhoto }: { claimKey: string; hasPhoto: boolean }) {
+  if (!hasPhoto) return <span className="font-sans text-[11px] text-text-muted">—</span>;
+  return (
+    <button onClick={() => viewClaimPhoto(claimKey)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+      Lihat / Download
+    </button>
+  );
+}
 
 type ViewTab = "AKTIF" | "RIWAYAT";
 
@@ -98,6 +124,8 @@ export default function MaterialClaimsPage() {
         </span>
       ),
     },
+    // Item 2.5: bukti foto berat bersih yang diupload vendor saat mengajukan claim (item 3).
+    { key: "buktiFoto", label: "Bukti foto", default: true, render: (r) => <BuktiFotoCell claimKey={r.key} hasPhoto={r.hasPhoto} /> },
     { key: "tanggal", label: "Tanggal terima", default: false, render: (r) => formatDate(r.receivedAt) },
     {
       key: "status",
@@ -246,6 +274,12 @@ export default function MaterialClaimsPage() {
     },
     { key: "claimedAt", label: "Tanggal klaim", default: false, render: (h) => formatDate(h.claimedAt) },
     {
+      key: "buktiFoto",
+      label: "Bukti foto",
+      default: true,
+      render: (h) => <BuktiFotoCell claimKey={`${h.invoiceId}|${h.warna}|${h.lengan}|${h.rollIndex}`} hasPhoto={!!h.claimPhotoAt} />,
+    },
+    {
       key: "cara",
       label: "Cara selesai",
       default: true,
@@ -280,7 +314,7 @@ export default function MaterialClaimsPage() {
       activeHref="/procurement/material-claims"
       breadcrumb={["Dashboard", "Klaim Material"]}
       title="Klaim material"
-      subtitle={`${rows.length} klaim selisih berat di luar toleransi (±2%) — ${unresolvedCount} belum selesai`}
+      subtitle={`${rows.length} klaim selisih berat KURANG dari toleransi (−2%) — ${unresolvedCount} belum selesai`}
     >
       <div className="flex gap-2 rounded-lg border border-border-subtle bg-surface-card p-1.5">
         {(
@@ -306,8 +340,8 @@ export default function MaterialClaimsPage() {
       {tab === "AKTIF" && (
         <>
           <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-            Daftar ini otomatis berisi semua roll bahan yang diterima vendor produksi dengan selisih berat di luar toleransi (dikirim sebagai claim saat Cutting
-            menimbang). Alur: hubungi supplier untuk retur roll tsb → klik <b>Minta Retur</b> (vendor diberi tahu) → begitu supplier sudah kirim roll pengganti (mis.
+            Daftar ini otomatis berisi semua roll bahan yang diterima vendor produksi dengan selisih berat KURANG dari toleransi (lebih ringan dari invoice,
+            dikirim sebagai claim saat Cutting menimbang, disertai foto bukti). Alur: hubungi supplier untuk retur roll tsb → klik <b>Minta Retur</b> (vendor diberi tahu) → begitu supplier sudah kirim roll pengganti (mis.
             dikabari lewat WA), klik <b>Tandai Sudah Dikirim</b> → vendor konfirmasi terima di halaman Produksi (Cutting) → begitu vendor timbang ulang dengan hasil
             sesuai toleransi, klaim ini <b>otomatis tertutup sendiri</b> (tidak perlu ditandai manual, dan otomatis pindah ke tab Riwayat/Arsip). Kalau ternyata tidak
             jadi retur (mis. diterima apa adanya), pakai <b>Selesai</b> langsung — atau <b>Batalkan</b> dulu di tahap manapun untuk balik ke awal.
@@ -329,8 +363,13 @@ export default function MaterialClaimsPage() {
                 options: ["Belum ditindak", "Retur diminta", "Retur dikirim", "Retur diterima vendor", "Sudah ditindak"],
                 test: (r, v) => stageLabel[stage(r.key)].label === v,
               },
+              {
+                label: "Bukti foto",
+                options: ["Ada", "Tidak ada"],
+                test: (r, v) => (v === "Ada" ? r.hasPhoto : !r.hasPhoto),
+              },
             ]}
-            emptyText="Belum ada klaim selisih berat di luar toleransi."
+            emptyText="Belum ada klaim selisih berat KURANG dari toleransi."
           />
         </>
       )}

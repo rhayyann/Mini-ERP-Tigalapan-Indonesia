@@ -94,6 +94,14 @@ export type MaklonPO = {
   status: MaklonPoStatus;
   approved: boolean;
   cancelledLines: { note: string; rolls: number; warna?: string; lengan?: Lengan; pcs?: number; from?: string; time: string }[];
+  /** Item 21 (migration 0016) — "Close PO" untuk siklus produksi parsial: begitu terisi, SEMUA
+   *  warna/lengan PO Produksi ini terkunci (tidak ada FG/reject/rework baru) DAN semua Finish Good
+   *  yang belum masuk koli (termasuk yang sudah fgConfirmed sebelum ditutup) tidak lagi shippable
+   *  — lihat closeProductionPoAction & availableFgToShip di lib/mrp/derive.ts. Tidak menambah nilai
+   *  enum baru ke MaklonPoStatus supaya badge map lama tidak perlu disentuh.
+   */
+  closedAt?: string;
+  closeReason?: string;
 };
 
 export type InvoiceStatus = "WAITING_INVOICE" | "INVOICED" | "PAID" | "DELIVERY" | "RECEIVING" | "WAITING_PRODUCTION" | "PRODUCTION_DONE";
@@ -106,7 +114,20 @@ export type ColorEntry = { warna: string; lengan: Lengan; hargaPerRoll: number; 
 // valid — totalHarga-nya sendiri tidak berubah/tidak perlu dimigrasikan.
 export type AddBuyItem = { id: string; item: string; warna: string; beratKg: number; hargaPerKg?: number; totalHarga: number; remark: string };
 
-export type RollReceipt = { netKg: number; receivedAt: string; codeRoll?: string; codeLot?: string };
+export type RollReceipt = {
+  netKg: number;
+  receivedAt: string;
+  codeRoll?: string;
+  codeLot?: string;
+  /** Ada tidaknya foto bukti berat bersih (item 2/3, migration 0014) -- payload asli TIDAK ada di
+   *  sini (sengaja dikeluarkan dari snapshot, lihat material_claim_photos), cuma flag timestamp
+   *  buat tahu apakah roll ini punya foto yang bisa diambil lewat getMaterialClaimPhotoAction. */
+  claimPhotoAt?: string;
+  /** Tahap "Konfirmasi" (item 13, migration 0015) yang menutup tahap timbang di Cutting sebelum
+   *  roll bisa dipilih untuk Resting -- lihat availableCodeRollsForColor/weighedUnconfirmedRolls
+   *  di lib/mrp/derive.ts. Null lagi kalau roll ini kena claim baru (harus ditimbang ulang). */
+  weighConfirmedAt?: string;
+};
 
 /** Roll yang sudah ditandai FISIK DITERIMA di Good Receive (arrivedAt) — belum tentu sudah
  *  ditimbang (lihat RollReceipt). Ditimbang & dicek toleransi sekarang di halaman Cutting, bukan
@@ -148,6 +169,9 @@ export type MaterialClaimHistory = {
   resolutionKind?: "AUTO_REWEIGH" | "MANUAL";
   resolvedNetKg?: number;
   resolvedCodeRoll?: string;
+  /** Sama seperti RollReceipt.claimPhotoAt -- flag ada/tidaknya foto bukti berat bersih yang
+   *  disimpan waktu klaim ini diajukan (item 2/3, migration 0014). */
+  claimPhotoAt?: string;
 };
 
 export type RawMaterialInvoice = {
@@ -261,9 +285,15 @@ export type ProductionResult = {
   usia?: Usia;
 };
 
-export type ShippableKind = "FG" | "REJECT" | "REWORK";
+// Item 20 (feedback batch 2026-09-04): Reject bukan barang yang bisa dikirim -- cuma catatan
+// historis per PO/MRP. ShippableKind sekarang cuma yang BENAR-BENAR boleh ditambahkan ke koli baru
+// (lihat PRODUCT_KIND_OPTIONS di app/vendor-maklon/pengiriman/page.tsx). DeliveryItemKind tetap
+// mengizinkan "REJECT" supaya koli LAMA yang sudah terlanjur berisi baris Reject (dari sebelum
+// perubahan ini) masih typecheck & tampil normal -- tidak ada migrasi/penghapusan data historis.
+export type ShippableKind = "FG" | "REWORK";
+export type DeliveryItemKind = ShippableKind | "REJECT";
 
-export type DeliveryKoliItem = { warna: string; lengan: Lengan; size: string; qty: number; kind: ShippableKind; usia?: Usia };
+export type DeliveryKoliItem = { warna: string; lengan: Lengan; size: string; qty: number; kind: DeliveryItemKind; usia?: Usia };
 
 export type DeliveryKoli = {
   id: string;
@@ -322,9 +352,15 @@ export type ProductionGroupMeta = {
    *  (dikunci oleh `doneAt`, bukan field ini). Beda dari `doneAt` (tahap 2, final produksi) --
    *  lihat catatan lengkap di markProductionGroupDoneAction/confirmFgDoneAction. */
   fgConfirmedAt?: string;
-  /** Tahap 2: "Selesai Produksi" diklik di tab FINAL PRODUKSI -- benar-benar mengunci grup ini
-   *  (Finish Good/Reject/Rework/Waste tidak bisa berubah lagi) & baru di titik ini hasilnya boleh
-   *  masuk Pengiriman. Butuh `fgConfirmedAt` sudah terisi duluan. */
+  /** Tahap 2: "Selesai Produksi" diklik di tab FINAL PRODUKSI -- KUNCI FINAL grup ini (Finish
+   *  Good/Reject/Rework/Waste tidak bisa berubah lagi setelah ini) & sumber status
+   *  tepat-waktu/telat lewat productionStatusFromDates. Butuh `fgConfirmedAt` sudah terisi duluan.
+   *  "Close PO" (item 21, closeProductionPoAction) mengisi ini secara massal untuk semua
+   *  warna/lengan satu PO Produksi sekaligus.
+   *  PENTING (item 22, direvisi dari desain awal sesi ini): `doneAt` BUKAN LAGI gate Pengiriman --
+   *  FG sudah boleh dikirim begitu `fgConfirmedAt` (tahap 1) terisi, karena reject sudah dihitung
+   *  final di titik itu juga. Yang tetap memblokir Pengiriman cuma Close PO (`MaklonPO.closedAt`),
+   *  bukan `doneAt` per grup -- lihat availableFgToShip di lib/mrp/derive.ts. */
   doneAt?: string;
   remarkSisaReject?: string;
 };

@@ -188,10 +188,23 @@ type FlowActions = {
   setInvoicesPaid: (invoiceIds: string[], paid: boolean) => Promise<void>;
   setInvoicesDelivery: (invoiceIds: string[], deliveryDate: string) => Promise<void>;
   markRollArrived: (invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, codeRoll?: string, codeLot?: string) => Promise<void>;
-  receiveRawMaterialRoll: (invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, netKg: number, claim?: { diffKg: number; pct: number }, codeRoll?: string) => Promise<void>;
+  receiveRawMaterialRoll: (
+    invoiceId: string,
+    warna: string,
+    lengan: Lengan,
+    rollIndex: number,
+    netKg: number,
+    claim?: { diffKg: number; pct: number },
+    codeRoll?: string,
+    photo?: { dataUrl: string; fileName?: string }
+  ) => Promise<void>;
+  /** Item 13.2: tutup tahap "timbang" untuk sekelompok roll sekaligus (satu klik "Konfirmasi (n)"
+   *  per warna·lengan, item 14.1) -- roll yang net_kg-nya belum diisi atau masih claimable di-skip
+   *  & dilaporkan balik di `skipped`. */
+  confirmRollWeigh: (items: { invoiceId: string; warna: string; lengan: Lengan; rollIndex: number }[]) => Promise<{ confirmed: number; skipped: { invoiceId: string; warna: string; lengan: Lengan; rollIndex: number }[] }>;
   startProductionBatch: (input: { mrpId: string; aduanRowId: string; qtyRoll: number; gramasi: number; restingAt: string; codeRoll?: string }) => Promise<void>;
-  // "WASTE" SENGAJA tidak termasuk di sini — satu-satunya jalur bikin entri WASTE adalah
-  // wasteRejectSize (lihat di bawah), bukan submission FG/REJECT manual biasa ini.
+  // "WASTE" SENGAJA tidak termasuk di sini -- item 19: "Buang ke Sisa" (satu-satunya jalur dulu
+  // bikin entri WASTE) sudah dihapus, jadi kind di sini praktis selalu "FG"/"REJECT" saja.
   submitProductionResult: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; kind: "FG" | "REJECT"; sizeQty: Record<string, number>; note?: string }) => Promise<void>;
   createDeliveryKoli: (input: { mrpId: string; vendorProduksi: string; ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }) => Promise<void>;
   setKoliWeight: (koliId: string, beratKoli: number) => Promise<void>;
@@ -241,16 +254,18 @@ type FlowActions = {
   resolveProductionYield: (batchId: string, note: string) => Promise<void>;
   unresolveProductionYield: (batchId: string) => Promise<void>;
   reworkRejectSize: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; fromSize: string; qty: number; toLengan: Lengan; toSize: string; usia: Usia }) => Promise<void>;
-  wasteRejectSize: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; fromSize: string; qty: number; note?: string }) => Promise<void>;
   updateDeliveryKoli: (koliId: string, patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }) => Promise<void>;
   setVendorInvoiceDueDate: (invoiceId: string, dueDate: string) => Promise<void>;
   setVendorInvoiceOngkir: (invoiceId: string, ongkirTotal: number) => Promise<void>;
   /** TAHAP 1 -- "Selesai Produksi" di tab Finish Good (hitung reject, tidak mengunci rework). */
   confirmFgDone: (groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan) => Promise<void>;
   undoFgConfirm: (groupKey: string) => Promise<void>;
-  /** TAHAP 2 -- "Selesai Produksi" di tab Final Produksi (kunci final, gate Pengiriman). */
+  /** TAHAP 2 -- "Selesai Produksi" di tab Final Produksi (kunci final, basis on-time/delay). */
   markProductionGroupDone: (groupKey: string, mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan) => Promise<void>;
   undoProductionGroupDone: (groupKey: string) => Promise<void>;
+  /** Item 21: "Close PO" per PO Produksi (mrpId+vendorProduksi) -- kunci SEMUA warna/lengannya
+   *  sekaligus DAN blokir Pengiriman untuk sisa FG yang belum masuk koli (item 22). */
+  closeProductionPo: (maklonPoId: string, reason: string) => Promise<void>;
   setRejectRemark: (poId: string, remark: string) => Promise<void>;
   resolveMaterialClaim: (key: string, note: string) => Promise<void>;
   unresolveMaterialClaim: (key: string) => Promise<void>;
@@ -332,6 +347,7 @@ const BUSY_TRACKED_ACTIONS = new Set<string>([
   "reassignMaterialToSupplier",
   "createDeliveryKoli",
   "markKoliDelivered",
+  "closeProductionPo",
 ]);
 
 function withBusyTracking<T extends Record<string, unknown>>(set: Setter, obj: T): T {
@@ -493,9 +509,14 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     }
     backgroundRefresh();
   },
-  receiveRawMaterialRoll: async (invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll) => {
-    await actions.receiveRawMaterialRollAction(invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll);
+  receiveRawMaterialRoll: async (invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll, photo) => {
+    await actions.receiveRawMaterialRollAction(invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll, photo);
     backgroundRefresh();
+  },
+  confirmRollWeigh: async (items) => {
+    const result = await actions.confirmRollWeighAction(items);
+    backgroundRefresh();
+    return result;
   },
   startProductionBatch: async (input) => {
     await actions.startProductionBatchAction(input);
@@ -695,10 +716,6 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     await actions.reworkRejectSizeAction(input);
     backgroundRefresh();
   },
-  wasteRejectSize: async (input) => {
-    await actions.wasteRejectSizeAction(input);
-    backgroundRefresh();
-  },
   updateDeliveryKoli: async (koliId, patch) => {
     await actions.updateDeliveryKoliAction(koliId, patch);
     backgroundRefresh();
@@ -725,6 +742,10 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   },
   undoProductionGroupDone: async (groupKey) => {
     await actions.undoProductionGroupDoneAction(groupKey);
+    backgroundRefresh();
+  },
+  closeProductionPo: async (maklonPoId, reason) => {
+    await actions.closeProductionPoAction(maklonPoId, reason);
     backgroundRefresh();
   },
   setRejectRemark: async (poId, remark) => {

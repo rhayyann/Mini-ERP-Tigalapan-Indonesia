@@ -8,7 +8,18 @@ import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { TransferMaterialModal, type TransferCandidate } from "@/components/mrp/transfer-material-modal";
 import { SetDeliveryModal } from "@/components/mrp/set-delivery-modal";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatDate, formatRupiah, materialPoFullStatus, materialPoFullStatusBadge, mrpDetailFor, rollArrivalProgress, type MaterialPoFullStatus } from "@/lib/mrp/derive";
+import {
+  formatDate,
+  formatRupiah,
+  materialPoFullStatus,
+  materialPoFullStatusBadge,
+  movableRollCountForInvoice,
+  mrpDetailFor,
+  rollArrivalProgress,
+  rollArrivalStatus,
+  rollArrivalStatusBadge,
+  type MaterialPoFullStatus,
+} from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { RawMaterialInvoice } from "@/lib/mrp/types";
 
@@ -98,10 +109,12 @@ export default function MaterialTrackingPage() {
   const selectedRows = rows.filter((r) => selected.has(r.id));
   const selectedInvoiceOnly = selectedRows.filter((r) => r.kind === "invoice" && r.invoice).map((r) => r.invoice!);
   const selectedPaidList = selectedInvoiceOnly.filter((i) => i.status === "PAID");
-  // Pindah ke vendor lain cuma masuk akal SELAMA materialnya masih benar-benar roll utuh --
-  // begitu status sudah PRODUCTION ke atas (vendor sudah mulai potong/proses, lihat
-  // materialPoFullStatus), material itu sudah bukan roll lagi jadi tidak bisa dipindahkan lagi.
-  const TRANSFER_BLOCKED_STATUSES = new Set<MaterialPoFullStatus>(["PRODUCTION", "FINISH_GOOD", "DELIVERED_FROM_VENDOR", "SELESAI"]);
+  // Item 1 (feedback batch 2026-09-04): pindah ke vendor lain sekarang dibolehkan SAMPAI tahap
+  // PRODUCTION (roll individual yang sudah dipotong tetap dilindungi lewat cap "roll belum
+  // dipotong" di TransferMaterialModal, lihat movableRollCountForInvoice) -- begitu status sudah
+  // FINISH_GOOD ke atas (barang jadi, bukan roll lagi, lihat materialPoFullStatus), material itu
+  // baru benar-benar tidak bisa dipindahkan lagi.
+  const TRANSFER_BLOCKED_STATUSES = new Set<MaterialPoFullStatus>(["FINISH_GOOD", "DELIVERED_FROM_VENDOR", "SELESAI"]);
   const transferEligibleRows = selectedRows.filter((r) => r.kind === "invoice" && r.invoice && !TRANSFER_BLOCKED_STATUSES.has(r.status));
   const transferEligibleInvoices = transferEligibleRows.map((r) => r.invoice!);
   const transferBlockedCount = selectedInvoiceOnly.length - transferEligibleInvoices.length;
@@ -116,12 +129,19 @@ export default function MaterialTrackingPage() {
     {
       key: "rollDiterima",
       label: "Roll Diterima",
-      default: false,
+      default: true,
       align: "right",
       render: (r) => {
         if (!r.invoice) return "—";
         const p = rollArrivalProgress(r.invoice);
-        return p.total > 0 ? `${p.arrived}/${p.total}` : "—";
+        if (p.total === 0) return "—";
+        const badge = rollArrivalStatusBadge(rollArrivalStatus(r.invoice));
+        return (
+          <span className="flex items-center justify-end gap-1.5">
+            <span className="font-mono">{`${p.arrived}/${p.total} roll`}</span>
+            <StatusPill tone={badge.tone}>{badge.label}</StatusPill>
+          </span>
+        );
       },
     },
     { key: "nilai", label: "Nilai", default: true, align: "right", render: (r) => (r.nilai != null ? formatRupiah(r.nilai) : "—") },
@@ -167,7 +187,7 @@ export default function MaterialTrackingPage() {
           </div>
           {transferBlockedCount > 0 && (
             <span className="font-sans text-[11px] text-danger-fg">
-              {transferBlockedCount} baris tidak bisa dipindahkan — sudah masuk tahap produksi (bukan roll utuh lagi).
+              {transferBlockedCount} baris tidak bisa dipindahkan — sudah masuk Finish Good (barang jadi, bukan roll lagi).
             </span>
           )}
         </div>
@@ -194,6 +214,15 @@ export default function MaterialTrackingPage() {
             options: Array.from(new Set(rows.map((r) => materialPoFullStatusBadge(r.status).label))),
             test: (r, v) => materialPoFullStatusBadge(r.status).label === v,
           },
+          {
+            label: "Roll diterima",
+            options: ["Belum", "Parsial", "Lengkap"],
+            test: (r, v) => {
+              if (!r.invoice) return false;
+              const s = rollArrivalStatus(r.invoice);
+              return (v === "Belum" && s === "BELUM") || (v === "Parsial" && s === "PARSIAL") || (v === "Lengkap" && s === "LENGKAP");
+            },
+          },
         ]}
         emptyText="Belum ada invoice material yang sudah dibayar Finance."
       />
@@ -213,7 +242,16 @@ export default function MaterialTrackingPage() {
       {transferOpen && (
         <TransferMaterialModal
           items={transferEligibleInvoices.map(
-            (i): TransferCandidate => ({ id: i.id, mrpId: i.mrpId, poId: i.poId, warna: i.colorEntries.map((c) => c.warna).join(", ") || "—", qtyReady: i.qtyReady })
+            (i): TransferCandidate => ({
+              id: i.id,
+              mrpId: i.mrpId,
+              poId: i.poId,
+              warna: i.colorEntries.map((c) => c.warna).join(", ") || "—",
+              // Item 1.4: cap ke roll yang BELUM dipotong (code_roll-nya belum dipakai
+              // ProductionBatch manapun) -- transfer sekarang dibolehkan sampai tahap PRODUCTION,
+              // tapi roll yang sudah dicutting fisiknya tidak boleh ikut "dipindahkan" lagi.
+              qtyReady: Math.min(i.qtyReady, movableRollCountForInvoice(i, productionBatches)),
+            })
           )}
           vendors={Object.keys(VENDOR_PRODUKSI).map((v) => ({ id: v, name: VENDOR_PRODUKSI[v].name }))}
           onCancel={() => setTransferOpen(false)}

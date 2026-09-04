@@ -326,9 +326,14 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
                         </button>
                         {mrpExpanded && (
                           <div className="ml-3 border-l border-[#DDE4EB] py-1.5 pl-3">
-                            <div className="grid grid-cols-7 gap-2 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                            {/* Item 18.5: "Qty PO/cutting" dipecah jadi 2 kolom terpisah -- "Qty PO"
+                                (rencana MRP, targetSizesForGroup) vs "Hasil Cutting" (aktual,
+                                cuttingSizesForGroup) -- dulu disamakan/di-label seolah 1 angka yang
+                                sama, padahal keduanya legitim beda begitu hasil cutting sudah diisi. */}
+                            <div className="grid grid-cols-8 gap-2 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                               <span>Warna / lengan</span>
-                              <span className="text-right">Qty PO/cutting</span>
+                              <span className="text-right">Qty PO</span>
+                              <span className="text-right">Hasil Cutting</span>
                               <span className="text-right">Finish good</span>
                               <span className="text-right">Reject</span>
                               <span className="text-right">Rework</span>
@@ -342,11 +347,12 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
                                 <div key={warnaKey}>
                                   <button
                                     onClick={() => setExpandedWarnaKey(warnaExpanded ? "" : warnaKey)}
-                                    className="grid w-full grid-cols-7 items-center gap-2 border-t border-[#F1F4F7] py-1.5 text-left font-sans text-[11px] text-[#31414F]"
+                                    className="grid w-full grid-cols-8 items-center gap-2 border-t border-[#F1F4F7] py-1.5 text-left font-sans text-[11px] text-[#31414F]"
                                   >
                                     <span>
                                       {r.warna} · {r.lengan}
                                     </span>
+                                    <span className="text-right font-mono">{r.target}</span>
                                     <span className="text-right font-mono">{r.cutting}</span>
                                     <span className="text-right font-mono">{r.finishGood}</span>
                                     <span className="text-right font-mono text-danger-fg">{r.reject}</span>
@@ -356,17 +362,19 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
                                   </button>
                                   {warnaExpanded && (
                                     <div className="ml-3 border-l border-[#DDE4EB] pl-3">
-                                      <div className="grid grid-cols-6 gap-2 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                                      <div className="grid grid-cols-7 gap-2 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                                         <span>Size</span>
-                                        <span className="text-right">Qty PO/cutting</span>
+                                        <span className="text-right">Qty PO</span>
+                                        <span className="text-right">Hasil Cutting</span>
                                         <span className="text-right">Finish good</span>
                                         <span className="text-right">Reject</span>
                                         <span className="text-right">Rework</span>
                                         <span className="text-right">Yield</span>
                                       </div>
                                       {productionYieldBySize(line.mrpId, r.warna, r.lengan as Lengan, mrpDetails, productionBatches, productionResults).map((s) => (
-                                        <div key={s.size} className="grid grid-cols-6 items-center gap-2 border-t border-[#F1F4F7] py-1 font-mono text-[11px] text-[#31414F]">
+                                        <div key={s.size} className="grid grid-cols-7 items-center gap-2 border-t border-[#F1F4F7] py-1 font-mono text-[11px] text-[#31414F]">
                                           <span>{s.size}</span>
+                                          <span className="text-right">{s.target}</span>
                                           <span className="text-right">{s.cutting}</span>
                                           <span className="text-right">{s.finishGood}</span>
                                           <span className="text-right text-danger-fg">{s.reject}</span>

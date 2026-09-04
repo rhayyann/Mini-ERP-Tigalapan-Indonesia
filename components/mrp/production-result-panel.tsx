@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { NumberInput } from "@/components/mrp/number-input";
 import { StatusPill } from "@/components/ui/status-pill";
+import { ProgressBar } from "@/components/ui/progress-bar";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
   cumulativeSizeQtyForGroup,
@@ -17,8 +18,6 @@ import {
   targetDoneProduksiForGroup,
   cuttingSizesForGroup,
   warnaLenganGroupsWithFg,
-  wasteQtyForGroup,
-  wastedAwayBySize,
 } from "@/lib/mrp/derive";
 import type { ProductionResult } from "@/lib/mrp/types";
 
@@ -29,10 +28,9 @@ import type { ProductionResult } from "@/lib/mrp/types";
 // production-final-tab.tsx). Dua tahap terpisah supaya reject yang baru dihitung masih sempat
 // dirework sebelum benar-benar final.
 const FG_COLUMNS = "minmax(170px,1.3fr) minmax(190px,1.5fr) minmax(150px,1fr) minmax(160px,1fr)";
-// REJECT: tiap angka (target/awal/sisa/waste) tetap bermakna terpisah, jadi tetap kolom angka
-// masing-masing — Sisa/Waste ditambah supaya reject yang dibuang (bukan dirework) kelihatan
-// terpisah dari yang masih jadi rework.
-const REJECT_COLUMNS = "minmax(170px,1.3fr) minmax(130px,0.9fr) minmax(110px,0.7fr) minmax(110px,0.7fr) minmax(130px,0.9fr) minmax(130px,0.9fr)";
+// REJECT: tiap angka (target/awal/sisa) tetap bermakna terpisah, jadi tetap kolom angka
+// masing-masing. Kolom "Sisa/Waste" DIHAPUS (item 19 -- "Buang ke Sisa" dihapus dari flow).
+const REJECT_COLUMNS = "minmax(170px,1.3fr) minmax(130px,0.9fr) minmax(110px,0.7fr) minmax(110px,0.7fr) minmax(130px,0.9fr)";
 
 /** Riwayat tiap submission Finish Good untuk 1 grup warna/lengan — diminta supaya progres
  *  pengerjaan bisa dilihat per-hari/jam (co: "Senin 60, Selasa 60"), bukan cuma total kumulatif.
@@ -148,9 +146,12 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
 
       {kind === "FG" && (
         <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-          Ada 2 tahap &quot;Selesai Produksi&quot;: <b>(1) di sini</b> — begitu input Finish Good untuk 1 warna/lengan sudah final, reject langsung dihitung otomatis
-          (hasil cutting dikurangi Finish Good), tapi Rework/Buang ke Sisa TETAP bisa jalan pakai reject itu. <b>(2) di tab Final Produksi</b> — dilakukan
-          SETELAH rework (kalau ada) juga selesai, benar-benar mengunci semuanya & baru di titik itu hasilnya boleh masuk Pengiriman.
+          Ada 2 tahap &quot;Selesai Produksi&quot;: <b>(1) di sini</b> — begitu input Finish Good untuk 1 warna/lengan sudah final, reject langsung dihitung
+          otomatis (hasil cutting dikurangi Finish Good) DAN hasilnya <b>langsung boleh masuk Pengiriman</b> — Rework TETAP bisa jalan pakai reject itu
+          sesudahnya, dan rework yang terkumpul nanti ikut ke koli berikutnya. <b>(2) di tab Final Produksi</b> — dilakukan SETELAH rework (kalau ada) juga
+          selesai, benar-benar mengunci grup ini (tidak bisa berubah lagi) sebagai basis status tepat waktu/telat — bukan gerbang Pengiriman lagi. Pakai
+          <b> Close PO</b> di tab Final Produksi kalau PO Produksi ini mau ditutup lebih awal (sisa Finish Good yang belum masuk koli jadi tidak bisa dikirim
+          lagi).
         </div>
       )}
 
@@ -171,7 +172,6 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                     <span className="text-right">Reject Produksi</span>
                     <span className="text-right">Reject (Final)</span>
                     <span className="text-right">Rework</span>
-                    <span className="text-right">Sisa/Waste</span>
                   </>
                 ) : (
                   <>
@@ -229,7 +229,6 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                           <span className="text-right font-mono text-success-fg">
                             {Object.values(reworkedAwayBySize(groupKey, productionResults)).reduce((a, b) => a + b, 0)}
                           </span>
-                          <span className="text-right font-mono text-warning-fg">{wasteQtyForGroup(groupKey, productionResults)}</span>
                         </>
                       ) : (
                         <>
@@ -283,27 +282,24 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                     {expanded && isFgConfirmed && kind === "REJECT" && (
                       <div className="border-b border-[#CFE0EF] bg-info-bg p-4">
                         <div className="overflow-hidden rounded-md border border-[#CFE0EF] bg-white">
-                          <div className="grid grid-cols-5 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                          <div className="grid grid-cols-4 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                             <span>Size</span>
                             <span className="text-right">Reject (otomatis)</span>
                             <span className="text-right">Rework</span>
-                            <span className="text-right">Sisa/Waste</span>
                             <span className="text-right">Sisa reject</span>
                           </div>
                           {(() => {
                             const grossPerSize = rejectGrossForGroup(groupKey, productionResults);
                             const reworkPerSize = reworkedAwayBySize(groupKey, productionResults);
-                            const wastePerSize = wastedAwayBySize(groupKey, productionResults);
-                            const rejectSizes = sizes.filter((size) => (grossPerSize[size] ?? 0) > 0 || (reworkPerSize[size] ?? 0) > 0 || (wastePerSize[size] ?? 0) > 0);
+                            const rejectSizes = sizes.filter((size) => (grossPerSize[size] ?? 0) > 0 || (reworkPerSize[size] ?? 0) > 0);
                             if (rejectSizes.length === 0) {
                               return <div className="px-3 py-3 text-center font-sans text-[11px] text-text-muted">Tidak ada reject — finish good sudah mencapai target.</div>;
                             }
                             return rejectSizes.map((size) => (
-                              <div key={size} className="grid grid-cols-5 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
+                              <div key={size} className="grid grid-cols-4 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
                                 <span className="font-mono font-medium">{size}</span>
                                 <span className="text-right font-mono">{grossPerSize[size] ?? 0}</span>
                                 <span className="text-right font-mono text-success-fg">{reworkPerSize[size] ?? 0}</span>
-                                <span className="text-right font-mono text-warning-fg">{wastePerSize[size] ?? 0}</span>
                                 <span className="text-right font-mono text-danger-fg">{recorded[size] ?? 0}</span>
                               </div>
                             ));
@@ -405,8 +401,8 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
               style={{
                 gridTemplateColumns:
                   kind === "REJECT"
-                    ? "minmax(90px,0.7fr) minmax(120px,0.9fr) minmax(90px,0.7fr) minmax(90px,0.7fr) minmax(90px,0.7fr) minmax(110px,0.8fr) minmax(160px,1.5fr) minmax(90px,0.7fr)"
-                    : "minmax(100px,1fr) minmax(120px,1fr) minmax(100px,0.8fr) minmax(90px,0.7fr)",
+                    ? "minmax(90px,0.7fr) minmax(120px,0.9fr) minmax(90px,0.7fr) minmax(90px,0.7fr) minmax(110px,0.8fr) minmax(160px,1.5fr) minmax(90px,0.7fr)"
+                    : "minmax(100px,0.9fr) minmax(120px,1fr) minmax(220px,1.6fr) minmax(90px,0.7fr)",
               }}
             >
               <span>No MRP</span>
@@ -415,12 +411,11 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                 <>
                   <span className="text-right">Qty reject</span>
                   <span className="text-right">Qty rework</span>
-                  <span className="text-right">Qty waste</span>
                   <span className="text-right">Qty sisa reject</span>
                   <span>Remark sisa reject</span>
                 </>
               ) : (
-                <span className="text-right">Total qty</span>
+                <span>Progres FG</span>
               )}
               <span className="text-right">Detail</span>
             </div>
@@ -443,14 +438,19 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                 kind === "REJECT"
                   ? Array.from(new Set(rows.map((r) => r.groupKey))).reduce((sum, gk) => sum + reworkQtyForGroup(gk, productionResults), 0)
                   : 0;
-              // Qty waste: entri kind "WASTE" (bukan REJECT) untuk PO ini — lihat wasteRejectSizeAction.
-              const qtyWaste =
-                kind === "REJECT"
-                  ? productionResults
-                      .filter((r) => r.vendorProduksi === vendorId && r.kind === "WASTE" && r.poId === poId)
-                      .reduce((sum, r) => sum + Object.values(r.sizeQty).reduce((a, b) => a + b, 0), 0)
+              const qtySisaReject = total; // net (gross - rework) — sama dengan total sizeQty semua entri REJECT PO ini.
+              // Item 17: denominator progres FG = total hasil cutting AKTUAL (cuttingSizesForGroup,
+              // sudah termasuk grup tujuan rework lintas lengan lewat warnaLenganGroupsWithFg) dari
+              // SEMUA warna/lengan mrpId row ini, bukan cuma yang tercatat di PO ini saja.
+              const fgTargetPo =
+                kind === "FG"
+                  ? warnaLenganGroupsWithFg(mrpId, vendorId, productionBatches, productionResults).reduce(
+                      (sum, g) => sum + Object.values(cuttingSizesForGroup(mrpId, g.warna, g.lengan, mrpDetails, productionBatches)).reduce((a, b) => a + b, 0),
+                      0
+                    )
                   : 0;
-              const qtySisaReject = total; // net (gross - rework - waste) — sama dengan total sizeQty semua entri REJECT PO ini.
+              const fgPct = fgTargetPo > 0 ? Math.min(100, Math.round((total / fgTargetPo) * 100)) : 0;
+              const fgTone = fgTargetPo > 0 && total > fgTargetPo ? "over" : fgPct >= 100 ? "done" : "active";
               return (
                 <div key={poId}>
                   <div
@@ -458,8 +458,8 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                     style={{
                       gridTemplateColumns:
                         kind === "REJECT"
-                          ? "minmax(90px,0.7fr) minmax(120px,0.9fr) minmax(90px,0.7fr) minmax(90px,0.7fr) minmax(90px,0.7fr) minmax(110px,0.8fr) minmax(160px,1.5fr) minmax(90px,0.7fr)"
-                          : "minmax(100px,1fr) minmax(120px,1fr) minmax(100px,0.8fr) minmax(90px,0.7fr)",
+                          ? "minmax(90px,0.7fr) minmax(120px,0.9fr) minmax(90px,0.7fr) minmax(90px,0.7fr) minmax(110px,0.8fr) minmax(160px,1.5fr) minmax(90px,0.7fr)"
+                          : "minmax(100px,0.9fr) minmax(120px,1fr) minmax(220px,1.6fr) minmax(90px,0.7fr)",
                     }}
                   >
                     <span className="font-mono">{mrpId}</span>
@@ -468,7 +468,6 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                       <>
                         <span className="text-right font-mono">{qtyRejectGross}</span>
                         <span className="text-right font-mono">{qtyRework}</span>
-                        <span className="text-right font-mono text-warning-fg">{qtyWaste}</span>
                         <span className="text-right font-mono text-danger-fg">{qtySisaReject}</span>
                         <input
                           value={rejectRemarks[poId] ?? ""}
@@ -478,7 +477,13 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                         />
                       </>
                     ) : (
-                      <span className="text-right font-mono">{total}</span>
+                      <span className="flex items-center gap-2">
+                        <span className="font-mono">
+                          {total} / {fgTargetPo} pcs
+                        </span>
+                        <ProgressBar pct={Math.min(100, fgPct)} tone={fgTone} className="w-[80px]" />
+                        <span className="font-mono text-[10.5px] text-text-muted">{fgPct}%</span>
+                      </span>
                     )}
                     <span className="text-right">
                       <button onClick={() => setExpandedPoId(expanded ? "" : poId)} className="font-sans text-[11px] font-semibold text-action-primary">

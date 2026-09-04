@@ -1,4 +1,4 @@
-import { EKSPEDISI_RATES, MATERIAL_RATE_PER_ROLL, VENDOR_PRODUKSI } from "./seed";
+import { EKSPEDISI_RATES, MATERIAL_RATE_PER_ROLL, ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "./seed";
 import type { MrpDetail, PpicApprovalStatus } from "./store";
 import type { HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow } from "./masterData";
 import type { AduanPolaRow, ColorBreakdown, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, Usia, VendorInvoice } from "./types";
@@ -332,11 +332,11 @@ export function advanceMaklonToDeliveryIfFullyDone(
  *  colorBreakdown untuk dijumlah jadi total amount PO. */
 export function materialAmountForPo(hargaKain: HargaKainRow[], hargaKainPks: HargaKainPksRow[], supplierName: string, colorBreakdown: ColorBreakdown[]): number {
   const kgByWarna = new Map<string, number>();
-  for (const c of colorBreakdown) kgByWarna.set(c.warna, (kgByWarna.get(c.warna) ?? 0) + c.rollCount * 25);
+  for (const c of colorBreakdown) kgByWarna.set(c.warna, (kgByWarna.get(c.warna) ?? 0) + c.rollCount * ROLL_KG_ESTIMATE);
   const rateByWarna = new Map<string, number>();
   for (const [warna, kg] of kgByWarna) rateByWarna.set(warna, hargaKainRate(hargaKain, hargaKainPks, supplierName, warna, kg));
   let total = 0;
-  for (const c of colorBreakdown) total += c.rollCount * 25 * (rateByWarna.get(c.warna) ?? 0);
+  for (const c of colorBreakdown) total += c.rollCount * ROLL_KG_ESTIMATE * (rateByWarna.get(c.warna) ?? 0);
   return Math.round(total);
 }
 
@@ -811,11 +811,17 @@ export function materialReceivedForMaklon(mrpId: string, vendorProduksi: string,
 
 export const WEIGHT_TOLERANCE_PCT = 2;
 
+// Item 4 (feedback batch 2026-09-04): klaim cuma masuk akal kalau material datang LEBIH RINGAN
+// dari yang diinvoice -- kalau lebih BERAT dari invoice, itu bukan kerugian, jadi tidak perlu
+// diklaim (disimpan normal, roll tetap bisa dipakai). `withinTolerance` sengaja dipertahankan
+// apa adanya (dua arah) supaya konsumen lama yang masih memakainya tidak berubah perilaku --
+// `claimable` adalah field TAMBAHAN yang searah, dipakai buat gate klaim/roll-lock yang baru.
 export function weightVariance(grossKg: number, netKg: number) {
   const diff = netKg - grossKg;
   const pct = grossKg > 0 ? (diff / grossKg) * 100 : 0;
   const withinTolerance = Math.abs(pct) <= WEIGHT_TOLERANCE_PCT;
-  return { diff, pct, withinTolerance };
+  const claimable = !withinTolerance && diff < 0;
+  return { diff, pct, withinTolerance, claimable };
 }
 
 export type MaterialClaimRow = {
@@ -837,6 +843,9 @@ export type MaterialClaimRow = {
   diffKg: number;
   pct: number;
   receivedAt: string;
+  /** Ada tidaknya foto bukti berat bersih (item 2/3) -- `!!receipt.claimPhotoAt`. Byte foto
+   *  sendiri diambil terpisah lewat getMaterialClaimPhotoAction, tidak ada di sini. */
+  hasPhoto: boolean;
 };
 
 /** Tahap alur retur klaim selisih berat — dipakai di halaman Procurement (Klaim Material) DAN
@@ -863,12 +872,13 @@ export function materialClaimStage(
   return "BELUM";
 }
 
-/** Daftar klaim selisih berat DI LUAR TOLERANSI — diturunkan langsung dari `invoices` (gross per
- *  roll ada di `colorEntries[].rolls[idx]`, net ada di `rollReceipts`), bukan dari field
- *  tersendiri — setiap roll yang berhasil disimpan dengan selisih di luar toleransi PASTI sudah
- *  lewat dialog "Kirim Claim" di Good Receive vendor (lihat app/vendor-maklon/receiving/page.tsx),
- *  jadi tidak butuh flag terpisah untuk tahu roll mana yang "diklaim". Dipakai halaman Procurement
- *  > Klaim Material. */
+/** Daftar klaim selisih berat KURANG dari toleransi (item 4: cuma roll yang datang LEBIH RINGAN
+ *  dari invoice yang diklaim, lihat `weightVariance().claimable`; lebih berat dari invoice bukan
+ *  klaim) — diturunkan langsung dari `invoices` (gross per roll ada di `colorEntries[].rolls[idx]`,
+ *  net ada di `rollReceipts`), bukan dari field tersendiri — setiap roll yang berhasil disimpan
+ *  dengan selisih di luar toleransi & lebih ringan PASTI sudah lewat dialog "Kirim Claim" di Cutting
+ *  vendor (lihat components/mrp/production-cutting-tab.tsx), jadi tidak butuh flag terpisah untuk
+ *  tahu roll mana yang "diklaim". Dipakai halaman Procurement > Klaim Material. */
 export function materialClaimsList(invoices: RawMaterialInvoice[]): MaterialClaimRow[] {
   const out: MaterialClaimRow[] = [];
   for (const inv of invoices) {
@@ -879,7 +889,7 @@ export function materialClaimsList(invoices: RawMaterialInvoice[]): MaterialClai
         const receipt = receipts[idx];
         if (!receipt) return;
         const variance = weightVariance(grossKg, receipt.netKg);
-        if (variance.withinTolerance) return;
+        if (!variance.claimable) return;
         out.push({
           key: inv.id + "|" + colorKey + "|" + idx,
           invoiceId: inv.id,
@@ -897,6 +907,7 @@ export function materialClaimsList(invoices: RawMaterialInvoice[]): MaterialClai
           diffKg: variance.diff,
           pct: variance.pct,
           receivedAt: receipt.receivedAt,
+          hasPhoto: !!receipt.claimPhotoAt,
         });
       });
     }
@@ -934,11 +945,15 @@ function receivedRollCountWithCodeForColor(mrpId: string, vendorProduksi: string
     const receipts = i.rollReceipts[key] ?? [];
     receipts.forEach((r, idx) => {
       if (!r || !r.codeRoll) return;
-      // Roll dengan klaim selisih berat AKTIF (di luar toleransi & belum ditimbang ulang sampai
-      // sesuai — lihat requestMaterialClaimRetur) sengaja TIDAK dihitung tersedia untuk dipotong,
-      // supaya material bermasalah tidak terpakai produksi sebelum retur ke supplier selesai.
+      // Roll dengan klaim selisih berat AKTIF (kurang dari toleransi & belum ditimbang ulang
+      // sampai sesuai — lihat requestMaterialClaimRetur) sengaja TIDAK dihitung tersedia untuk
+      // dipotong, supaya material bermasalah tidak terpakai produksi sebelum retur ke supplier
+      // selesai. Item 4: cuma yang `claimable` (lebih RINGAN) yang mengunci — roll yang lebih
+      // BERAT dari invoice tetap dihitung tersedia. Item 13: roll juga harus sudah "Konfirmasi"
+      // (weighConfirmedAt) sebelum dihitung tersedia untuk Resting.
       const grossKg = colorEntry?.rolls[idx];
-      if (grossKg !== undefined && !weightVariance(grossKg, r.netKg).withinTolerance) return;
+      if (grossKg !== undefined && weightVariance(grossKg, r.netKg).claimable) return;
+      if (!r.weighConfirmedAt) return;
       count++;
     });
   }
@@ -987,6 +1002,53 @@ export function rollArrivalProgress(inv: RawMaterialInvoice): { arrived: number;
   return { arrived, total };
 }
 
+/** Status ringkas kedatangan roll satu invoice (item 11), diturunkan MURNI dari
+ *  `rollArrivalProgress` — tidak ada field DB baru. Dipakai di kedua sisi (Good Receive & Material
+ *  Tracking) supaya keduanya selalu sinkron. */
+export type RollArrivalStatus = "BELUM" | "PARSIAL" | "LENGKAP";
+
+export function rollArrivalStatus(inv: RawMaterialInvoice): RollArrivalStatus {
+  const { arrived, total } = rollArrivalProgress(inv);
+  if (total === 0 || arrived === 0) return "BELUM";
+  if (arrived < total) return "PARSIAL";
+  return "LENGKAP";
+}
+
+export function rollArrivalStatusBadge(s: RollArrivalStatus): { label: string; tone: "neutral" | "warning" | "success" } {
+  const map: Record<RollArrivalStatus, { label: string; tone: "neutral" | "warning" | "success" }> = {
+    BELUM: { label: "BELUM DITERIMA", tone: "neutral" },
+    PARSIAL: { label: "PARSIAL", tone: "warning" },
+    LENGKAP: { label: "LENGKAP", tone: "success" },
+  };
+  return map[s];
+}
+
+/** Item 1.4 (feedback batch 2026-09-04): begitu transfer material dibolehkan sampai ke tahap
+ *  PRODUCTION (item 1.1), roll yang code_roll-nya SUDAH dipakai suatu ProductionBatch (sudah
+ *  dipilih untuk Resting -- fisiknya sudah dipotong) tidak boleh ikut pindah vendor lagi. Hitungan
+ *  "roll bisa dipindahkan" per invoice ini pakai exclusion logic yang SAMA seperti
+ *  `availableCodeRollsForColor` (roll dengan codeRoll yang dipakai batch mana pun MRP+vendor+
+ *  warna+lengan yang sama dikeluarkan) -- dipakai untuk clamp `moveQty` di transferMaterialAction
+ *  DAN untuk cap "roll belum dipotong" yang ditampilkan di TransferMaterialModal. */
+export function movableRollCountForInvoice(inv: RawMaterialInvoice, batches: ProductionBatch[]): number {
+  let count = 0;
+  for (const c of inv.colorEntries) {
+    const key = c.warna + "|" + c.lengan;
+    const receipts = inv.rollReceipts[key] ?? [];
+    const usedCodeRolls = new Set(
+      batches
+        .filter((b) => b.mrpId === inv.mrpId && b.vendorProduksi === inv.destinationVendor && b.warna === c.warna && b.lengan === c.lengan && b.codeRoll)
+        .map((b) => b.codeRoll!)
+    );
+    for (let idx = 0; idx < c.rolls.length; idx++) {
+      const cr = receipts[idx]?.codeRoll;
+      if (cr && usedCodeRolls.has(cr)) continue;
+      count++;
+    }
+  }
+  return count;
+}
+
 export type PendingWeighRoll = {
   invoiceId: string;
   poId: string;
@@ -997,23 +1059,34 @@ export type PendingWeighRoll = {
   codeRoll?: string;
   codeLot?: string;
   arrivedAt: string;
-  /** Roll ini sudah pernah ditimbang tapi selisihnya di luar toleransi & belum ditimbang ulang
-   *  sesuai — perlu ditimbang ULANG (lihat materialClaimsList), bukan ditimbang pertama kali. */
+  /** Roll ini sudah pernah ditimbang tapi selisihnya KURANG dari toleransi (item 4) & belum
+   *  ditimbang ulang sesuai — perlu ditimbang ULANG (lihat materialClaimsList), bukan ditimbang
+   *  pertama kali. */
   netKg?: number;
+  weighConfirmedAt?: string;
 };
 
-/** Roll yang sudah ditandai diterima (Good Receive) untuk MRP+vendor ini tapi belum ditimbang —
- *  atau sudah ditimbang tapi masih ada klaim selisih berat aktif (di luar toleransi, perlu
- *  ditimbang ulang) — dipakai di halaman Cutting sebagai daftar "Timbang roll" sebelum roll itu
- *  bisa dipilih untuk Resting (lihat availableCodeRollsForColor). */
-/** Roll yang sudah ditimbang & dalam toleransi TETAP ikut ditampilkan di sini selama roll itu
- *  belum benar-benar dipakai di suatu ProductionBatch (dipilih code roll-nya lalu di-submit
- *  Resting) — supaya salah timbang masih bisa dikoreksi sebelum benar-benar masuk tahap cutting
- *  (dulu roll langsung "hilang" dari sini begitu disimpan, padahal cuma jadi tersedia dipilih,
- *  belum jadi batch — tidak ada cara balik lihat/edit kalau salah timbang). Begitu code roll-nya
- *  sudah terpakai di suatu batch, roll ini baru hilang dari daftar (edit sesudahnya akan bikin
- *  data batch yang sudah tersimpan tidak konsisten). */
+// Item 12/13 (feedback batch 2026-09-04) — model 3 daftar di tab Cutting, semua diturunkan dari
+// arrival/receipt yang sama, TIDAK ADA field DB baru selain weigh_confirmed_at (migration 0015):
+//   1. pendingWeighRolls        -- arrival ada, BELUM ditimbang, ATAU sedang butuh timbang ULANG
+//      (klaim aktif). Roll dengan net_kg tersimpan & tanpa klaim aktif SUDAH TIDAK muncul di sini
+//      lagi (dulu tetap tampil sampai terpakai batch — sekarang pindah ke daftar 2/3 di bawah).
+//   2. weighedUnconfirmedRolls  -- net_kg terisi, bebas klaim, TAPI `weighConfirmedAt` masih
+//      kosong & code roll belum terpakai batch manapun -- ini yang masih bisa dikoreksi (Simpan)
+//      dan yang punya tombol "Konfirmasi" (confirmRollWeighAction) sebelum bisa dipilih di
+//      Resting (lihat availableCodeRollsForColor, yang mensyaratkan weighConfirmedAt != null).
+//   3. (read-only, lihat production-cutting-tab.tsx "Riwayat timbang — sudah dikonfirmasi") --
+//      net_kg terisi, `weighConfirmedAt` terisi, code roll belum terpakai batch -- claim masih
+//      bisa diajukan dari sini (mengosongkan weighConfirmedAt lagi, balik ke daftar 1).
+/** Roll yang sudah ditandai diterima (Good Receive) untuk MRP+vendor ini tapi BELUM ditimbang —
+ *  atau sudah ditimbang tapi masih ada klaim selisih berat aktif (kurang dari toleransi, perlu
+ *  ditimbang ulang) — dipakai di halaman Cutting sebagai daftar "Timbang roll". Roll yang sudah
+ *  tersimpan net_kg-nya & bebas klaim TIDAK lagi muncul di sini (lihat weighedUnconfirmedRolls). */
 export function pendingWeighRolls(mrpId: string, vendorId: string, invoices: RawMaterialInvoice[], batches: ProductionBatch[]): PendingWeighRoll[] {
+  // `batches` dipertahankan di signature (dipanggil dgn argumen yang sama seperti
+  // weighedUnconfirmedRolls/confirmedWeighedRolls dari UI) walau tidak dipakai lagi di sini --
+  // exclusion "sudah dipakai batch" tidak lagi relevan untuk daftar 1 (lihat catatan di atas).
+  void batches;
   const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
   const out: PendingWeighRoll[] = [];
   for (const inv of invoices) {
@@ -1022,15 +1095,12 @@ export function pendingWeighRolls(mrpId: string, vendorId: string, invoices: Raw
       const key = c.warna + "|" + c.lengan;
       const arrivals = inv.rollArrivals[key] ?? [];
       const receipts = inv.rollReceipts[key] ?? [];
-      const usedCodeRolls = new Set(
-        batches.filter((b) => b.mrpId === mrpId && b.vendorProduksi === vendorId && b.warna === c.warna && b.lengan === c.lengan && b.codeRoll).map((b) => b.codeRoll!)
-      );
       c.rolls.forEach((grossKg, idx) => {
         const arrival = arrivals[idx];
         if (!arrival) return;
         const receipt = receipts[idx];
         const claimKey = `${inv.id}|${key}|${idx}`;
-        if (receipt && !activeClaimKeys.has(claimKey) && receipt.codeRoll && usedCodeRolls.has(receipt.codeRoll)) return;
+        if (receipt != null && !activeClaimKeys.has(claimKey)) return;
         out.push({
           invoiceId: inv.id,
           poId: inv.poId,
@@ -1049,14 +1119,94 @@ export function pendingWeighRolls(mrpId: string, vendorId: string, invoices: Raw
   return out;
 }
 
-/** Total roll yang muncul di section "Timbang roll" Cutting (belum ditimbang, ATAU sudah
- *  ditimbang tapi belum terpakai di batch manapun — lihat catatan di pendingWeighRolls),
- *  dihitung lintas SEMUA MRP untuk vendor ini — dipakai badge sidebar "Produksi" dan tab
- *  "Cutting" (lib/shell/badges.ts) supaya roll yang nyangkut di sana ikut kelihatan. Sebelumnya
- *  badge cuma menghitung ProductionBatch, padahal roll yang belum ditimbang belum jadi
- *  ProductionBatch sama sekali (baru jadi batch setelah ditimbang + dipilih ke Resting) — jadi
- *  roll yang menunggu ditimbang tidak pernah kelihatan di badge mana pun. Logic sama seperti
- *  pendingWeighRolls di atas, cuma tidak dibatasi ke satu mrpId. */
+/** Daftar 2 (item 12/13): roll yang sudah ditimbang, bebas klaim, TAPI belum "Konfirmasi"
+ *  (`weighConfirmedAt` kosong) — masih bisa dikoreksi (Simpan per baris) dan punya tombol
+ *  "Konfirmasi (n)" per grup warna·lengan (confirmRollWeighAction) sebelum bisa dipilih untuk
+ *  Resting. Berhenti muncul begitu code roll-nya sudah terpakai di suatu ProductionBatch. */
+export function weighedUnconfirmedRolls(mrpId: string, vendorId: string, invoices: RawMaterialInvoice[], batches: ProductionBatch[]): PendingWeighRoll[] {
+  const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
+  const out: PendingWeighRoll[] = [];
+  for (const inv of invoices) {
+    if (inv.mrpId !== mrpId || inv.destinationVendor !== vendorId) continue;
+    for (const c of inv.colorEntries) {
+      const key = c.warna + "|" + c.lengan;
+      const arrivals = inv.rollArrivals[key] ?? [];
+      const receipts = inv.rollReceipts[key] ?? [];
+      const usedCodeRolls = new Set(
+        batches.filter((b) => b.mrpId === mrpId && b.vendorProduksi === vendorId && b.warna === c.warna && b.lengan === c.lengan && b.codeRoll).map((b) => b.codeRoll!)
+      );
+      c.rolls.forEach((grossKg, idx) => {
+        const receipt = receipts[idx];
+        if (!receipt) return;
+        const claimKey = `${inv.id}|${key}|${idx}`;
+        if (activeClaimKeys.has(claimKey)) return;
+        if (receipt.weighConfirmedAt) return;
+        if (receipt.codeRoll && usedCodeRolls.has(receipt.codeRoll)) return;
+        const arrival = arrivals[idx];
+        out.push({
+          invoiceId: inv.id,
+          poId: inv.poId,
+          warna: c.warna,
+          lengan: c.lengan,
+          rollIndex: idx,
+          grossKg,
+          codeRoll: receipt.codeRoll ?? arrival?.codeRoll,
+          codeLot: receipt.codeLot ?? arrival?.codeLot,
+          arrivedAt: arrival?.arrivedAt ?? receipt.receivedAt,
+          netKg: receipt.netKg,
+          weighConfirmedAt: receipt.weighConfirmedAt,
+        });
+      });
+    }
+  }
+  return out;
+}
+
+/** Daftar 3 (item 13.6): roll yang sudah "Konfirmasi" (`weighConfirmedAt` terisi) & belum
+ *  terpakai di batch manapun — read-only kecuali tombol "Ajukan Claim" (membuka dialog klaim yang
+ *  sama seperti item 3, dan begitu diajukan `weighConfirmedAt` di-null-kan lagi supaya roll balik
+ *  ke pendingWeighRolls / masuk alur retur klaim). */
+export function confirmedWeighedRolls(mrpId: string, vendorId: string, invoices: RawMaterialInvoice[], batches: ProductionBatch[]): PendingWeighRoll[] {
+  const out: PendingWeighRoll[] = [];
+  for (const inv of invoices) {
+    if (inv.mrpId !== mrpId || inv.destinationVendor !== vendorId) continue;
+    for (const c of inv.colorEntries) {
+      const key = c.warna + "|" + c.lengan;
+      const arrivals = inv.rollArrivals[key] ?? [];
+      const receipts = inv.rollReceipts[key] ?? [];
+      const usedCodeRolls = new Set(
+        batches.filter((b) => b.mrpId === mrpId && b.vendorProduksi === vendorId && b.warna === c.warna && b.lengan === c.lengan && b.codeRoll).map((b) => b.codeRoll!)
+      );
+      c.rolls.forEach((grossKg, idx) => {
+        const receipt = receipts[idx];
+        if (!receipt || !receipt.weighConfirmedAt) return;
+        if (receipt.codeRoll && usedCodeRolls.has(receipt.codeRoll)) return;
+        const arrival = arrivals[idx];
+        out.push({
+          invoiceId: inv.id,
+          poId: inv.poId,
+          warna: c.warna,
+          lengan: c.lengan,
+          rollIndex: idx,
+          grossKg,
+          codeRoll: receipt.codeRoll ?? arrival?.codeRoll,
+          codeLot: receipt.codeLot ?? arrival?.codeLot,
+          arrivedAt: arrival?.arrivedAt ?? receipt.receivedAt,
+          netKg: receipt.netKg,
+          weighConfirmedAt: receipt.weighConfirmedAt,
+        });
+      });
+    }
+  }
+  return out;
+}
+
+/** Total roll yang muncul di section "Timbang roll" + "Sudah ditimbang — belum dikonfirmasi"
+ *  Cutting (daftar 1 & 2 dari pendingWeighRolls/weighedUnconfirmedRolls di atas), dihitung lintas
+ *  SEMUA MRP untuk vendor ini — dipakai badge sidebar "Produksi" dan tab "Cutting"
+ *  (lib/shell/badges.ts) supaya roll yang nyangkut di salah satu dari kedua daftar itu ikut
+ *  kelihatan & badge tidak "diam" padahal masih ada kerjaan tersisa (item 12.3). Daftar 3 (sudah
+ *  dikonfirmasi) sengaja TIDAK ikut dihitung — itu bukan kerjaan tertunda. */
 export function pendingWeighRollsCount(vendorId: string, invoices: RawMaterialInvoice[], batches: ProductionBatch[]): number {
   const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
   let count = 0;
@@ -1071,11 +1221,18 @@ export function pendingWeighRollsCount(vendorId: string, invoices: RawMaterialIn
       );
       c.rolls.forEach((_grossKg, idx) => {
         const arrival = arrivals[idx];
-        if (!arrival) return;
         const receipt = receipts[idx];
         const claimKey = `${inv.id}|${key}|${idx}`;
-        if (receipt && !activeClaimKeys.has(claimKey) && receipt.codeRoll && usedCodeRolls.has(receipt.codeRoll)) return;
-        count++;
+        if (!arrival) return;
+        if (!receipt) {
+          count++;
+          return;
+        }
+        if (activeClaimKeys.has(claimKey)) {
+          count++;
+          return;
+        }
+        if (!receipt.weighConfirmedAt && !(receipt.codeRoll && usedCodeRolls.has(receipt.codeRoll))) count++;
       });
     }
   }
@@ -1145,10 +1302,12 @@ export function availableCodeRollsForColor(
     const colorEntry = inv.colorEntries.find((c) => c.warna === warna && c.lengan === lengan);
     (inv.rollReceipts[key] ?? []).forEach((r, idx) => {
       if (!r || !r.codeRoll) return;
-      // Sama seperti receivedRollCountWithCodeForColor — roll dengan klaim aktif tidak boleh
-      // muncul sebagai code roll yang bisa dipilih untuk Resting/Cutting.
+      // Sama seperti receivedRollCountWithCodeForColor — roll dengan klaim aktif (lebih RINGAN
+      // dari toleransi, item 4) tidak boleh muncul sebagai code roll yang bisa dipilih untuk
+      // Resting/Cutting, dan roll juga harus sudah "Konfirmasi" (item 13).
       const grossKg = colorEntry?.rolls[idx];
-      if (grossKg !== undefined && !weightVariance(grossKg, r.netKg).withinTolerance) return;
+      if (grossKg !== undefined && weightVariance(grossKg, r.netKg).claimable) return;
+      if (!r.weighConfirmedAt) return;
       received.push(r.codeRoll!);
     });
   }
@@ -1253,15 +1412,20 @@ export function actualCutSizesForGroup(mrpId: string, warna: string, lengan: Len
   return out;
 }
 
-/** "Total Qty" hasil cutting per grup warna/lengan — SUMBER UTAMA sekarang hasil aduan AKTUAL
- *  yang diinput vendor per roll (actualCutSizesForGroup), fallback ke estimasi rasio lama
- *  (targetSizesForGroup) hanya kalau belum ada satu pun batch grup ini yang diisi hasil aduannya.
- *  Dipakai sebagai denominator progres Finish Good & basis target Reject (bukan lagi murni
- *  estimasi dari rencana MRP, sesuai permintaan user). */
-export function cuttingSizesForGroup(mrpId: string, warna: string, lengan: Lengan, mrpDetails: MrpDetail[], batches: ProductionBatch[]): Record<string, number> {
-  const actual = actualCutSizesForGroup(mrpId, warna, lengan, batches);
-  if (Object.keys(actual).length > 0) return actual;
-  return targetSizesForGroup(mrpId, warna, lengan, mrpDetails, batches);
+/** "Total Qty" hasil cutting per grup warna/lengan — item 18.1 (feedback batch 2026-09-04):
+ *  SELALU hasil aduan AKTUAL yang diinput vendor per roll (actualCutSizesForGroup). Dulu ada
+ *  fallback ke estimasi rasio rencana MRP (targetSizesForGroup) kalau belum ada satu pun batch
+ *  yang diisi hasil aduannya — itu ROOT CAUSE bug reject dobel-hitung (mis. target 10, cutting
+ *  aktual 8, FG 6, reject seharusnya 2 tapi tampil 4): begitu hasil cutting belum diisi,
+ *  confirmFgDoneAction diam-diam memakai target 10 sebagai baseline, jadi gap rencana-vs-cutting
+ *  (2) ikut terhitung sebagai reject. Sekarang fallback itu DIHAPUS — grup yang punya batch cutting
+ *  tapi belum ada satupun yang diisi hasil aduannya akan mengembalikan `{}` (kosong), dan
+ *  confirmFgDoneAction (lihat actions.ts) menolak "Selesai Produksi" untuk kasus itu sampai
+ *  "Input Hasil Cutting" diisi — bukan lagi diam-diam memakai angka rencana PO/MRP.
+ *  `targetSizesForGroup` (rencana PO/MRP) tetap ada sebagai figur TERPISAH untuk perbandingan
+ *  "Qty PO" (lihat productionYieldByWarna/BySize) — tidak lagi dipakai sebagai basis reject. */
+export function cuttingSizesForGroup(mrpId: string, warna: string, lengan: Lengan, _mrpDetails: MrpDetail[], batches: ProductionBatch[]): Record<string, number> {
+  return actualCutSizesForGroup(mrpId, warna, lengan, batches);
 }
 
 export const YIELD_ALERT_THRESHOLD_PCT = 99;
@@ -1526,8 +1690,9 @@ function isReworkResult(r: ProductionResult): boolean {
   return !!r.note && r.note.startsWith("Rework dari");
 }
 
+// Item 20: Reject bukan lagi produk yang bisa dikirim -- resultMatchesShippableKind sekarang cuma
+// membedakan FG "murni" (hasil cutting langsung) vs REWORK (reject yang dipotong ulang jadi FG).
 function resultMatchesShippableKind(r: ProductionResult, source: ShippableKind): boolean {
-  if (source === "REJECT") return r.kind === "REJECT";
   if (source === "REWORK") return r.kind === "FG" && isReworkResult(r);
   return r.kind === "FG" && !isReworkResult(r);
 }
@@ -1557,27 +1722,36 @@ export function fgPackedBySize(mrpId: string, vendorProduksi: string, kolis: Del
   return map;
 }
 
+// Item 22 (feedback batch 2026-09-04, merevisi gate yang dibangun di sesi ini juga): FG sudah
+// "terkunci" dan reject-nya sudah dihitung final begitu tahap 1 ("Selesai Produksi" di tab FINISH
+// GOOD, `fgConfirmedAt`) diklik -- jadi AMAN dikirim dari titik itu, tidak perlu menunggu tahap 2
+// (`doneAt`, "Selesai Produksi" di tab FINAL PRODUKSI) lagi seperti desain sebelumnya. Konsekuensi
+// yang DIINGINKAN: FG yang ditambahkan ke grup yang SUDAH fgConfirmed sebelumnya (mis. hasil
+// rework dari lengan lain) otomatis ikut shippable begitu tersimpan, tanpa perlu re-confirm --
+// akan masuk ke koli BERIKUTNYA secara alami. `doneAt` tetap ada sebagai KUNCI FINAL (freeze
+// FG/reject/rework, basis on-time/delay) tapi BUKAN LAGI gate Pengiriman.
+// Yang MASIH bisa memblokir pengiriman: Close PO (item 21, `MaklonPO.closedAt`) -- begitu PO
+// Produksi (mrpId+vendorProduksi) ditutup, SEMUA Finish Good yang belum masuk koli langsung tidak
+// shippable lagi, termasuk yang sudah fgConfirmed sebelum ditutup.
 export function availableFgToShip(
   mrpId: string,
   vendorProduksi: string,
   results: ProductionResult[],
   kolis: DeliveryKoli[],
   productionGroupMeta: ProductionGroupMeta[],
+  maklonPOs: MaklonPO[],
   excludeKoliId?: string,
   source: ShippableKind = "FG"
 ): AvailableFgRow[] {
+  const maklonPO = maklonPOs.find((p) => p.mrpId === mrpId && p.vendorProduksi === vendorProduksi);
+  if (maklonPO?.closedAt) return [];
   const produced = fgProducedBySize(mrpId, vendorProduksi, results, source);
   const packed = fgPackedBySize(mrpId, vendorProduksi, kolis, excludeKoliId, source);
   const out: AvailableFgRow[] = [];
   for (const [key, producedQty] of produced.entries()) {
     const [warna, lengan, size, usia] = key.split("|");
-    // Hasil produksi 1 warna/lengan baru boleh masuk Pengiriman setelah "Selesai Produksi"
-    // diklik di tab Final Produksi (productionGroupMeta.doneAt) -- sebelum itu Finish Good
-    // masih bisa berubah (belum tentu semuanya sudah diinput, reject/rework/waste-nya belum
-    // final), jadi belum boleh dikirim meski qty Finish Good yang sudah masuk sekilas terlihat
-    // "cukup". Dulu FG langsung kelihatan di Pengiriman begitu disimpan, terlepas dari status
-    // grupnya -- itu penyebab bisa kekirim sebelum Final Produksi dikonfirmasi.
-    if (!productionGroupMetaFor(mrpId + "|" + warna + "|" + lengan, productionGroupMeta)?.doneAt) continue;
+    // Tahap 1 saja (fgConfirmedAt) sudah cukup untuk shippable -- lihat catatan di atas fungsi ini.
+    if (!productionGroupMetaFor(mrpId + "|" + warna + "|" + lengan, productionGroupMeta)?.fgConfirmedAt) continue;
     const available = producedQty - (packed.get(key) ?? 0);
     if (available > 0) {
       out.push({ warna, lengan: lengan as Lengan, size, usia: (usia || undefined) as Usia | undefined, available });
@@ -1586,11 +1760,18 @@ export function availableFgToShip(
   return out;
 }
 
-export function mrpIdsWithUnpackedFg(vendorProduksi: string, results: ProductionResult[], kolis: DeliveryKoli[], productionGroupMeta: ProductionGroupMeta[]): string[] {
-  const sources: ShippableKind[] = ["FG", "REJECT", "REWORK"];
+export function mrpIdsWithUnpackedFg(
+  vendorProduksi: string,
+  results: ProductionResult[],
+  kolis: DeliveryKoli[],
+  productionGroupMeta: ProductionGroupMeta[],
+  maklonPOs: MaklonPO[]
+): string[] {
+  // Item 20: Reject bukan lagi shippable -- source cuma FG & REWORK.
+  const sources: ShippableKind[] = ["FG", "REWORK"];
   const mrpIds = Array.from(new Set(results.filter((r) => r.vendorProduksi === vendorProduksi).map((r) => r.mrpId)));
   return mrpIds.filter((mrpId) =>
-    sources.some((source) => availableFgToShip(mrpId, vendorProduksi, results, kolis, productionGroupMeta, undefined, source).length > 0)
+    sources.some((source) => availableFgToShip(mrpId, vendorProduksi, results, kolis, productionGroupMeta, maklonPOs, undefined, source).length > 0)
   );
 }
 
@@ -1911,29 +2092,28 @@ export function reworkedAwayBySize(groupKey: string, results: ProductionResult[]
   return out;
 }
 
-/** Per-size: berapa reject yang sudah dibuang ke sisa/waste (bukan dirework) — mirror
- *  reworkedAwayBySize tapi untuk deduksi dari wasteRejectSizeAction (note diawali "Waste"). */
-export function wastedAwayBySize(groupKey: string, results: ProductionResult[]): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const r of results) {
-    if (r.kind !== "REJECT" || r.groupKey !== groupKey || !r.note?.startsWith("Waste")) continue;
-    for (const [size, qty] of Object.entries(r.sizeQty)) {
-      if (qty < 0) out[size] = (out[size] ?? 0) + -qty;
-    }
-  }
-  return out;
-}
+// Item 19 (feedback batch 2026-09-04): "Buang ke Sisa" dihapus dari UI & flow — `wastedAwayBySize`
+// (dulu dipakai kolom "Sisa/Waste" di production-result-panel.tsx/production-final-tab.tsx) sudah
+// tidak dipakai lagi, jadi dihapus di sini juga. `wasteQtyForGroup` di atas SENGAJA DIPERTAHANKAN
+// — masih dipakai sebagai guard di undoFgConfirmAction (actions.ts) dan baris WASTE lama (legacy)
+// tetap mungkin ada di DB. Enum "WASTE" (ProductionResultKind, production_kind_t) juga tetap ada,
+// tidak dihapus (lihat catatan di actions.ts wasteRejectSizeAction — action-nya sendiri dihapus,
+// tapi nilai enum & data historis dibiarkan apa adanya, tidak ada migration baru untuk ini).
 
+// Item 18.5 (feedback batch 2026-09-04): "target" (rencana PO/MRP) dan "cutting" (hasil cutting
+// AKTUAL) sekarang DIPISAH jadi 2 kolom ("Qty PO" vs "Hasil Cutting") di invoice-vendor-panel.tsx
+// & invoice-vendor-review-panel.tsx, bukan disamakan seperti dulu — yieldPct dihitung dari cutting
+// aktual (fg/cutting), bukan dari target rencana lagi.
 export function productionYieldByWarna(mrpId: string, vendorProduksi: string, mrpDetails: MrpDetail[], batches: ProductionBatch[], results: ProductionResult[]): ProductionYieldRow[] {
   const groups = cutWarnaLenganGroups(mrpId, vendorProduksi, batches);
   return groups.map((g) => {
-    const target = targetSizesForGroup(mrpId, g.warna, g.lengan, mrpDetails, batches);
-    const cutting = Object.values(target).reduce((a, b) => a + b, 0);
+    const target = Object.values(targetSizesForGroup(mrpId, g.warna, g.lengan, mrpDetails, batches)).reduce((a, b) => a + b, 0);
+    const cutting = Object.values(cuttingSizesForGroup(mrpId, g.warna, g.lengan, mrpDetails, batches)).reduce((a, b) => a + b, 0);
     const groupKey = mrpId + "|" + g.warna + "|" + g.lengan;
     const fg = Object.values(cumulativeSizeQtyForGroup(groupKey, "FG", results)).reduce((a, b) => a + b, 0);
     const reject = Object.values(cumulativeSizeQtyForGroup(groupKey, "REJECT", results)).reduce((a, b) => a + b, 0);
     const rework = reworkQtyForGroup(groupKey, results);
-    return { warna: g.warna, lengan: g.lengan, target: cutting, cutting, finishGood: fg, reject, rework, yieldPct: cutting > 0 ? (fg / cutting) * 100 : 0 };
+    return { warna: g.warna, lengan: g.lengan, target, cutting, finishGood: fg, reject, rework, yieldPct: cutting > 0 ? (fg / cutting) * 100 : 0 };
   });
 }
 
@@ -1969,17 +2149,19 @@ export function fgMurniAndReworkForGroup(groupKey: string, results: ProductionRe
 
 export function productionYieldBySize(mrpId: string, warna: string, lengan: Lengan, mrpDetails: MrpDetail[], batches: ProductionBatch[], results: ProductionResult[]): ProductionYieldRow[] {
   const target = targetSizesForGroup(mrpId, warna, lengan, mrpDetails, batches);
+  const cutting = cuttingSizesForGroup(mrpId, warna, lengan, mrpDetails, batches);
   const groupKey = mrpId + "|" + warna + "|" + lengan;
   const fg = cumulativeSizeQtyForGroup(groupKey, "FG", results);
   const reject = cumulativeSizeQtyForGroup(groupKey, "REJECT", results);
   const rework = reworkBySizeForGroup(groupKey, results);
-  const sizes = Array.from(new Set([...Object.keys(target), ...Object.keys(fg), ...Object.keys(reject), ...Object.keys(rework)]));
+  const sizes = Array.from(new Set([...Object.keys(target), ...Object.keys(cutting), ...Object.keys(fg), ...Object.keys(reject), ...Object.keys(rework)]));
   return sizes.map((size) => {
     const t = target[size] ?? 0;
+    const c = cutting[size] ?? 0;
     const f = fg[size] ?? 0;
     const r = reject[size] ?? 0;
     const rw = rework[size] ?? 0;
-    return { warna, lengan, size, target: t, cutting: t, finishGood: f, reject: r, rework: rw, yieldPct: t > 0 ? (f / t) * 100 : 0 };
+    return { warna, lengan, size, target: t, cutting: c, finishGood: f, reject: r, rework: rw, yieldPct: c > 0 ? (f / c) * 100 : 0 };
   });
 }
 
