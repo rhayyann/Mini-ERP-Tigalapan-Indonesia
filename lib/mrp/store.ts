@@ -25,6 +25,7 @@ import type {
 } from "./types";
 import type { ParsedMrpImport } from "./parseImport";
 import type { EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow } from "./masterData";
+import { localDateString } from "./derive";
 import * as rawActions from "./actions";
 
 // Setiap Server Action di lib/mrp/actions.ts lempar Error("Unauthorized: ...") / Error("Forbidden:
@@ -399,8 +400,26 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
     return id;
   },
+  // PERFORMA: optimistic PATCH SEBELUM tulisnya selesai (bukan sesudah, beda dari
+  // updateBatchToCutting) -- dropdown "Vendor Material" di Procurement langsung pindah nilai
+  // seketika diklik, tidak nunggu round-trip server sama sekali. Aman: kalau tulisnya GAGAL,
+  // state di-ROLLBACK ke sebelum klik + user diberi tahu lewat alert, jadi tidak pernah ada
+  // kondisi UI bilang "sudah tersimpan" padahal database-nya beda (lihat juga markRollArrived
+  // di bawah, pola yang sama).
   assignMaterialSupplier: async (mrpId, materialRowIds, supplier) => {
-    await actions.assignMaterialSupplierAction(mrpId, materialRowIds, supplier);
+    const previous = get().mrpDetails;
+    set({
+      mrpDetails: previous.map((d) =>
+        d.mrp.id !== mrpId ? d : { ...d, materialRows: d.materialRows.map((r) => (materialRowIds.includes(r.id) ? { ...r, supplier } : r)) }
+      ),
+    });
+    try {
+      await actions.assignMaterialSupplierAction(mrpId, materialRowIds, supplier);
+    } catch (err) {
+      set({ mrpDetails: previous });
+      window.alert("Gagal menyimpan pilihan vendor material -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   assignMaterialEntitas: async (mrpId, materialRowId, entitas) => {
@@ -443,8 +462,35 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     await actions.setInvoicesDeliveryAction(invoiceIds, deliveryDate);
     backgroundRefresh();
   },
+  // Optimistic PATCH sebelum tulisnya selesai (sama seperti assignMaterialSupplier di atas) --
+  // "Tandai diterima" langsung ganti jadi pill "Diterima" seketika diklik. status/receivedAt
+  // invoice dihitung persis logika server-nya (markRollArrivedAction: DELIVERY -> RECEIVING,
+  // receivedAt cuma diisi kalau belum ada) supaya tidak menyimpang dari yang bakal ditulis.
+  // Rollback + alert kalau tulisnya gagal.
   markRollArrived: async (invoiceId, warna, lengan, rollIndex, codeRoll, codeLot) => {
-    await actions.markRollArrivedAction(invoiceId, warna, lengan, rollIndex, codeRoll, codeLot);
+    const colorKey = `${warna}|${lengan}`;
+    const arrivedAt = localDateString(new Date());
+    const previous = get().invoices;
+    set({
+      invoices: previous.map((inv) => {
+        if (inv.id !== invoiceId) return inv;
+        const arr = [...(inv.rollArrivals[colorKey] ?? [])];
+        arr[rollIndex] = { arrivedAt, codeRoll, codeLot };
+        return {
+          ...inv,
+          rollArrivals: { ...inv.rollArrivals, [colorKey]: arr },
+          status: inv.status === "DELIVERY" ? "RECEIVING" : inv.status,
+          receivedAt: inv.receivedAt ?? arrivedAt,
+        };
+      }),
+    });
+    try {
+      await actions.markRollArrivedAction(invoiceId, warna, lengan, rollIndex, codeRoll, codeLot);
+    } catch (err) {
+      set({ invoices: previous });
+      window.alert("Gagal menandai roll diterima -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   receiveRawMaterialRoll: async (invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll) => {
