@@ -186,6 +186,10 @@ type FlowActions = {
     input: { colorEntries: ColorEntry[]; addBuys: AddBuyItem[]; diskon: number; kodeTransaksi: string; noInvoiceVendor: string; buktiPvDataUrl?: string; buktiPvFileName?: string }
   ) => Promise<void>;
   setInvoicesPaid: (invoiceIds: string[], paid: boolean) => Promise<void>;
+  // Item 2.6: getter-nya (getInvoicePaymentProofAction) SENGAJA tidak dilewatkan lewat store --
+  // sama seperti getMaterialClaimPhotoAction, payload-nya on-demand murni, dipanggil langsung dari
+  // komponen (lihat payment-panel.tsx / paying-voucher-material-panel.tsx).
+  setInvoicePaymentProof: (invoiceIds: string[], dataUrl: string, fileName?: string) => Promise<void>;
   setInvoicesDelivery: (invoiceIds: string[], deliveryDate: string) => Promise<void>;
   markRollArrived: (invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, codeRoll?: string, codeLot?: string) => Promise<void>;
   receiveRawMaterialRoll: (
@@ -336,6 +340,7 @@ const BUSY_TRACKED_ACTIONS = new Set<string>([
   "approveMaklonPo",
   "bookInvoice",
   "setInvoicesPaid",
+  "setInvoicePaymentProof",
   "setInvoicesDelivery",
   "approveMaklonInvoice",
   "payMaklonInvoice",
@@ -472,6 +477,10 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   },
   setInvoicesPaid: async (invoiceIds, paid) => {
     await actions.setInvoicesPaidAction(invoiceIds, paid);
+    backgroundRefresh();
+  },
+  setInvoicePaymentProof: async (invoiceIds, dataUrl, fileName) => {
+    await actions.setInvoicePaymentProofAction(invoiceIds, dataUrl, fileName);
     backgroundRefresh();
   },
   setInvoicesDelivery: async (invoiceIds, deliveryDate) => {

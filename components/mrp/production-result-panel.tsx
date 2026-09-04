@@ -19,6 +19,7 @@ import {
   cuttingSizesForGroup,
   warnaLenganGroupsWithFg,
 } from "@/lib/mrp/derive";
+import { countFgShortfallGroupsForMrp, countRejectActionableGroupsForMrp, pendingMarker } from "@/lib/shell/badges";
 import type { ProductionResult } from "@/lib/mrp/types";
 
 // FG: Warna/lengan | Progres (target+terinput+bar digabung jadi satu kolom, bukan 3 kolom
@@ -135,11 +136,21 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
           className="mt-1 w-full max-w-[420px] rounded-md border border-[#DDE4EB] px-[11px] py-[9px] font-sans text-[12.5px] font-medium text-text-primary"
         >
           <option value="">— pilih MRP —</option>
-          {mrpIds.map((id) => (
-            <option key={id} value={id}>
-              {id}
-            </option>
-          ))}
+          {mrpIds.map((id) => {
+            // Item 3: unit/predikat beda per kind -- FG pakai countFgShortfallGroupsForMrp
+            // ("warna/lengan belum lengkap"), REJECT pakai countRejectActionableGroupsForMrp
+            // ("warna/lengan ada sisa reject") -- sama predikat dengan badge tab masing-masing.
+            const n =
+              kind === "FG"
+                ? countFgShortfallGroupsForMrp(id, vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails)
+                : countRejectActionableGroupsForMrp(id, vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails);
+            return (
+              <option key={id} value={id}>
+                {id}
+                {pendingMarker(n, kind === "FG" ? "warna/lengan belum lengkap" : "warna/lengan ada sisa reject")}
+              </option>
+            );
+          })}
         </select>
         {mrpIds.length === 0 && <div className="mt-2 font-sans text-xs text-text-muted">Belum ada MRP yang sudah dicutting.</div>}
       </div>

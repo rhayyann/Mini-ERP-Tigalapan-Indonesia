@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { NumberInput } from "@/components/mrp/number-input";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import {
   materialReceivedForMaklon,
   pendingWeighRolls,
   restingMinutes,
+  restingSessionGroups,
   targetSizesForBatch,
   weighedUnconfirmedRolls,
   weightVariance,
@@ -23,6 +24,7 @@ import {
   type MaterialClaimStage,
   type PendingWeighRoll,
 } from "@/lib/mrp/derive";
+import { countCuttingAwaitingUpdateForMrp, pendingMarker } from "@/lib/shell/badges";
 import { RESTING_TARGET_MINUTES } from "@/lib/mrp/seed";
 import type { AduanPolaRow, Lengan, ProductionBatch } from "@/lib/mrp/types";
 
@@ -103,12 +105,19 @@ function toUtcIso(localDatetimeValue: string): string {
 type AduanGroup = { kode: string; lengan: Lengan; rows: (AduanPolaRow & { available: number })[]; totalQty: number; totalAvailable: number };
 type CuttingLine = { id: string; warna: string; codeRoll: string; gramasi: number };
 
-// Kolom "Material dalam produksi" -- MRP | Kode | Warna/lengan | Code roll | Roll | Gramasi |
-// Resting | Cutting | Durasi Resting | Status Resting | Hasil Aduan/Yield. "Status Resting"
-// (badge "RESTING KURANG DARI TARGET") sekarang kolom TERSENDIRI, tidak lagi digabung dengan
-// "Durasi Resting" -- sebelumnya keduanya di satu sel bikin badge menabrak kolom sebelahnya.
-const CUTTING_BATCH_COLUMNS =
-  "minmax(85px,0.5fr) minmax(75px,0.4fr) minmax(150px,1fr) minmax(130px,0.8fr) minmax(60px,0.4fr) minmax(90px,0.5fr) minmax(160px,1fr) minmax(190px,1.1fr) minmax(110px,0.6fr) minmax(160px,0.9fr) minmax(230px,1.4fr)";
+// Kolom baris GRUP "Material dalam produksi" -- MRP | Kode·lengan | Part | Warna | Roll | Resting |
+// Cutting | Durasi Resting | Status Resting | Hasil Aduan/Yield | expander. Item 5 (feedback
+// batch 2026-09-05): sebelumnya 1 baris = 1 ROLL (Code roll & Gramasi ada di kolom ini) --
+// sekarang 1 baris = 1 SESI RESTING ("Part", lihat restingSessionGroups di lib/mrp/derive.ts),
+// Code roll & Gramasi pindah ke sub-tabel per-roll (CUTTING_BATCH_COLUMNS di bawah) karena
+// keduanya spesifik per roll, bukan per sesi. "Status Resting" (badge "RESTING KURANG DARI
+// TARGET") tetap kolom TERSENDIRI, tidak digabung dengan "Durasi Resting".
+const CUTTING_SESSION_COLUMNS =
+  "minmax(85px,0.5fr) minmax(140px,0.8fr) minmax(90px,0.5fr) minmax(150px,0.9fr) minmax(60px,0.4fr) minmax(160px,1fr) minmax(190px,1.1fr) minmax(110px,0.6fr) minmax(160px,0.9fr) minmax(230px,1.4fr) minmax(110px,0.6fr)";
+
+// Kolom sub-tabel PER ROLL (ditampilkan begitu 1 baris grup di atas di-expand) -- Warna | Code
+// roll | Gramasi | Cutting | Hasil Aduan/Yield.
+const CUTTING_BATCH_COLUMNS = "minmax(150px,1fr) minmax(130px,0.8fr) minmax(90px,0.5fr) minmax(160px,1fr) minmax(230px,1.4fr)";
 
 export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
@@ -161,6 +170,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   // Item 3: foto bukti berat bersih -- WAJIB sebelum "Ya, Kirim Claim" bisa diklik.
   const [claimPhotoDataUrl, setClaimPhotoDataUrl] = useState<string | null>(null);
   const [claimPhotoFileName, setClaimPhotoFileName] = useState<string | undefined>(undefined);
+  // Item 4 round-2 (Tester cosmetic note): ref ke <input type="file"> supaya "Ganti foto" bisa
+  // ikut mengosongkan value DOM-nya, bukan cuma state React -- tanpa ini, memilih file YANG SAMA
+  // lagi setelah "Ganti foto" tidak memicu onChange sama sekali (browser anggap value tidak berubah).
+  const claimPhotoInputRef = useRef<HTMLInputElement>(null);
   const [claimPhotoError, setClaimPhotoError] = useState<string | null>(null);
   const [claimPhotoBusy, setClaimPhotoBusy] = useState(false);
   // Pesan error dari receiveRawMaterialRoll -- SEHARUSNYA jarang muncul karena tombol Simpan
@@ -186,11 +199,30 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const [reweighError, setReweighError] = useState<string | null>(null);
   // Item 16: modal "Input/Perbaiki Hasil Cutting" sekarang di-scope ke SATU GRUP aduan/pola
   // (kode|lengan, sama seperti groupList di bawah) sekaligus, bukan satu batch/roll per modal.
+  // Item 5 (feedback batch 2026-09-05): di-scope LEBIH LANJUT ke satu SESI RESTING ("Part") --
+  // `activeCuttingGroupKey` sekarang berisi RestingSessionGroup.key penuh (sudah mengandung
+  // mrpId|kode|lengan|restingAt), BUKAN lagi cuma "kode|lengan" -- lihat 5.6 kenapa modal TIDAK
+  // boleh digabung lintas-Part: saveGroup menyetempel SATU cuttingAt ke semua batch di modal, dan
+  // Part 1/Part 2 adalah stack fisik berbeda yang dipotong di waktu berbeda -- menggabungnya akan
+  // memalsukan timestamp cutting & durasi/badge resting yang diturunkan darinya.
   const [activeCuttingGroupKey, setActiveCuttingGroupKey] = useState<string | null>(null);
   const [cuttingGroupDateDraft, setCuttingGroupDateDraft] = useState(nowLocalDatetime());
   // Item 14.2: "Isi semua roll tersedia" di form Resting butuh SATU nilai gramasi yang dipakai
   // buat mengisi semua baris otomatis -- baris tetap bisa diedit satu-satu sesudahnya.
   const [fillGramasi, setFillGramasi] = useState(0);
+  // Item 5: expand/collapse per SESI RESTING ("Part") di tabel "Material dalam produksi" -- Set
+  // multi-key (sama pola dengan expandedKoli di app/vendor-maklon/pengiriman/page.tsx) karena
+  // banyak Part bisa di-expand independen sekaligus, beda dari confirmedExpanded di atas yang
+  // cuma 1 seksi. Default collapsed (Set kosong).
+  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
+  function toggleSessionExpanded(key: string) {
+    setExpandedSessions((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   const activeStages: string[] = ["PARTIAL_WAITING_MATERIAL", "FULL_WAITING_MATERIAL", "PRODUCTION", "PARTIAL_PRODUCTION"];
   const readyMrpIds = maklonPOs
@@ -289,6 +321,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
     setClaimPhotoFileName(undefined);
     setClaimPhotoError(null);
     setClaimPhotoBusy(false);
+    // Dialog claim TETAP mounted saat antrean pindah ke roll berikutnya (claimQueue.shift), jadi
+    // <input type="file"> yang sama dipakai ulang -- kosongkan value DOM-nya juga (lihat komentar
+    // claimPhotoInputRef di atas) supaya foto yang sama bisa dipilih lagi untuk roll berikutnya.
+    if (claimPhotoInputRef.current) claimPhotoInputRef.current.value = "";
   }
   async function onClaimPhotoSelected(file: File) {
     setClaimPhotoError(null);
@@ -462,20 +498,27 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
 
   const myBatches = productionBatches.filter((b) => b.vendorProduksi === vendorId);
   const canSubmit = lines.some((l) => l.warna && l.codeRoll);
+  // Item 5: satu-satunya sumber "sesi resting" (Part) untuk tabel "Material dalam produksi" DAN
+  // modal Input Hasil Cutting -- dihitung sekali di sini supaya keduanya selalu konsisten.
+  const sessionGroups = restingSessionGroups(myBatches);
 
-  // Item 16: buka modal "Input/Perbaiki Hasil Cutting" untuk SATU GRUP aduan/pola (kode|lengan)
-  // sekaligus -- listing semua batch grup itu yang masih butuh aksi (belum cutting ATAU sudah
-  // cutting tapi hasil aduannya kosong/nol semua, lihat batchNeedsCuttingInput), lintas warna.
-  function openCuttingGroupModal(kode: string, lengan: Lengan) {
-    const key = kode + "|" + lengan;
-    const groupBatches = myBatches.filter((b) => b.kode === kode && b.lengan === lengan && batchNeedsCuttingInput(b));
+  // Item 16: buka modal "Input/Perbaiki Hasil Cutting" untuk SATU SESI RESTING ("Part") --
+  // listing semua batch sesi itu yang masih butuh aksi (belum cutting ATAU sudah cutting tapi
+  // hasil aduannya kosong/nol semua, lihat batchNeedsCuttingInput), lintas warna. `kode`/`lengan`
+  // dipertahankan di signature buat kejelasan pemanggil (lihat 5.4) walau sessionKey sendiri
+  // sudah cukup unik (sudah mengandung mrpId|kode|lengan|restingAt).
+  function openCuttingGroupModal(kode: string, lengan: Lengan, sessionKey: string) {
+    void kode;
+    void lengan;
+    const session = sessionGroups.find((g) => g.key === sessionKey);
+    const groupBatches = (session?.batches ?? []).filter(batchNeedsCuttingInput);
     setCuttingSizeDraft((prev) => {
       const next = { ...prev };
       for (const b of groupBatches) next[b.id] = next[b.id] ?? b.sizeQty ?? {};
       return next;
     });
     setCuttingGroupDateDraft(nowLocalDatetime());
-    setActiveCuttingGroupKey(key);
+    setActiveCuttingGroupKey(sessionKey);
   }
   function closeCuttingGroupModal() {
     setActiveCuttingGroupKey(null);
@@ -494,6 +537,7 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
           {readyMrps.map((d) => (
             <option key={d.mrp.id} value={d.mrp.id}>
               {d.mrp.id}
+              {pendingMarker(countCuttingAwaitingUpdateForMrp(d.mrp.id, vendorId, productionBatches, invoices), "roll belum selesai")}
             </option>
           ))}
         </select>
@@ -918,82 +962,148 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
         <div className="overflow-x-auto">
           <div>
             <div
-              className="grid min-w-[1650px] gap-x-5 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
+              className="grid min-w-[1550px] gap-x-5 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
               style={{
-                gridTemplateColumns: CUTTING_BATCH_COLUMNS,
+                gridTemplateColumns: CUTTING_SESSION_COLUMNS,
               }}
             >
               <span>MRP</span>
               <span>Kode</span>
-              <span>Warna / lengan</span>
-              <span>Code roll</span>
+              <span>Part</span>
+              <span>Warna</span>
               <span className="text-right">Roll</span>
-              <span className="text-right">Gramasi</span>
               <span>Resting</span>
               <span>Cutting</span>
               <span>Durasi Resting</span>
               <span>Status Resting</span>
               <span>Hasil Aduan / Yield</span>
+              <span />
             </div>
-            {myBatches.length === 0 && <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">Belum ada batch produksi.</div>}
-            {myBatches.map((b) => {
-              const durasiKurang = b.cuttingAt ? restingMinutes(b.restingAt, b.cuttingAt) < RESTING_TARGET_MINUTES : false;
-              const detail = mrpDetails.find((d) => d.mrp.id === b.mrpId);
-              const targetSizes = targetSizesForBatch(b, detail?.aduanRows ?? []);
-              const targetTotal = Object.values(targetSizes).reduce((a, c) => a + c, 0);
-              const actualTotal = b.sizeQty ? Object.values(b.sizeQty).reduce((a, c) => a + c, 0) : 0;
-              const yieldPct = targetTotal > 0 && b.sizeQty ? (actualTotal / targetTotal) * 100 : null;
-              const yieldAlert = yieldPct !== null && yieldPct < YIELD_ALERT_THRESHOLD_PCT;
-              // Rincian per size (bukan cuma total qty) -- diminta supaya kelihatan size mana
-              // yang hasilnya kurang, bukan cuma total gabungan yang bisa menyamarkan itu.
-              const sizesForDetail = Array.from(new Set([...Object.keys(targetSizes), ...Object.keys(b.sizeQty ?? {})]));
+            {sessionGroups.length === 0 && <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">Belum ada batch produksi.</div>}
+            {sessionGroups.map((g) => {
+              const isExpanded = expandedSessions.has(g.key);
+              const detail = mrpDetails.find((d) => d.mrp.id === g.mrpId);
+              const distinctWarna = Array.from(new Set(g.batches.map((b) => b.warna))).join(", ");
+              const anyMissingCuttingAt = g.batches.some((b) => !b.cuttingAt);
+              const anyNeedsInput = g.batches.some((b) => batchNeedsCuttingInput(b));
+              const sessionComplete = !anyMissingCuttingAt && !anyNeedsInput;
+              const cuttingAts = g.batches.map((b) => b.cuttingAt).filter((c): c is string => !!c);
+              // "Kalau mereka pernah berbeda, tampilkan yang paling awal" (5.2) -- normalnya semua
+              // identik karena saveGroup menyetempel SATU cuttingAt untuk semua batch di grup ini.
+              const earliestCuttingAt = cuttingAts.length > 0 ? cuttingAts.reduce((min, c) => (Date.parse(c) < Date.parse(min) ? c : min)) : undefined;
+              const durasiKurang = g.batches.some((b) => b.cuttingAt && restingMinutes(g.restingAt, b.cuttingAt) < RESTING_TARGET_MINUTES);
+              const filledCount = g.batches.filter((b) => !!b.sizeQty).length;
+              const totalTarget = g.batches.reduce((sum, b) => sum + Object.values(targetSizesForBatch(b, detail?.aduanRows ?? [])).reduce((a, c) => a + c, 0), 0);
+              const totalActual = g.batches.reduce((sum, b) => sum + (b.sizeQty ? Object.values(b.sizeQty).reduce((a, c) => a + c, 0) : 0), 0);
+              const groupYieldPct = filledCount === g.batches.length && totalTarget > 0 ? (totalActual / totalTarget) * 100 : null;
+              const groupYieldAlert = groupYieldPct !== null && groupYieldPct < YIELD_ALERT_THRESHOLD_PCT;
               return (
-                <div key={b.id} className="border-b border-[#F1F4F7] last:border-b-0">
-                  <div className="grid min-w-[1650px] items-center gap-x-5 px-4 py-[11px] font-sans text-xs text-[#31414F]" style={{ gridTemplateColumns: CUTTING_BATCH_COLUMNS }}>
-                    <span className="font-mono">{b.mrpId}</span>
-                    <span className="font-mono font-medium">{b.kode}</span>
-                    <span>
-                      {b.warna} · {b.lengan}
+                <div key={g.key} className="border-b border-[#F1F4F7] last:border-b-0">
+                  <div className="grid min-w-[1550px] items-center gap-x-5 px-4 py-[11px] font-sans text-xs text-[#31414F]" style={{ gridTemplateColumns: CUTTING_SESSION_COLUMNS }}>
+                    <span className="font-mono">{g.mrpId}</span>
+                    <span className="font-mono font-medium">
+                      {g.kode} · {g.lengan}
                     </span>
-                    <span className="font-mono text-[11px]">{b.codeRoll || "—"}</span>
-                    <span className="text-right font-mono">{b.qtyRoll}</span>
-                    <span className="text-right font-mono">{b.gramasi} gsm</span>
-                    <span className="font-mono text-[11px]">{formatDateTime(b.restingAt)}</span>
+                    <span>
+                      Part {g.partNo}
+                      {g.partTotal > 1 && <span className="ml-1 font-mono text-[10px] text-text-muted">dari {g.partTotal}</span>}
+                    </span>
+                    <span>{distinctWarna}</span>
+                    <span className="text-right font-mono">{g.batches.length}</span>
+                    <span className="font-mono text-[11px]">{formatDateTime(g.restingAt)}</span>
                     <span className="font-mono text-[11px]">
-                      {b.cuttingAt && !batchNeedsCuttingInput(b) ? (
-                        formatDateTime(b.cuttingAt)
+                      {sessionComplete ? (
+                        formatDateTime(earliestCuttingAt ?? g.restingAt)
                       ) : (
-                        <Button onClick={() => openCuttingGroupModal(b.kode, b.lengan)} variant="primary" size="xs">
-                          {b.cuttingAt ? "Perbaiki Hasil Cutting →" : "Input Hasil Cutting →"}
+                        <Button onClick={() => openCuttingGroupModal(g.kode, g.lengan, g.key)} variant="primary" size="xs">
+                          {anyMissingCuttingAt ? "Input Hasil Cutting →" : "Perbaiki Hasil Cutting →"}
                         </Button>
                       )}
                     </span>
-                    <span className="font-mono text-[11px] text-text-muted">{formatDuration(b.restingAt, b.cuttingAt ?? new Date().toISOString())}</span>
+                    <span className="font-mono text-[11px] text-text-muted">{formatDuration(g.restingAt, earliestCuttingAt ?? new Date().toISOString())}</span>
                     <span>{durasiKurang && <StatusPill tone="warning">RESTING KURANG DARI TARGET</StatusPill>}</span>
                     <span className="flex flex-col gap-0.5 font-mono text-[11px]">
-                      {b.cuttingAt ? (
-                        b.sizeQty ? (
-                          <>
-                            <span className="flex flex-wrap items-center gap-1">
-                              <span>
-                                {actualTotal} / {targetTotal} pcs
-                              </span>
-                              {yieldPct !== null && <StatusPill tone={yieldAlert ? "danger" : "success"}>{yieldPct.toFixed(1)}%</StatusPill>}
-                            </span>
-                            {sizesForDetail.length > 0 && (
-                              <span className="text-[10px] text-text-muted">
-                                {sizesForDetail.map((size) => `${size} ${b.sizeQty?.[size] ?? 0}/${targetSizes[size] ?? 0}`).join(" · ")}
-                              </span>
-                            )}
-                          </>
-                        ) : (
-                          <span className="text-text-muted">— (belum diisi)</span>
-                        )
+                      {filledCount === 0 ? (
+                        <span className="text-text-muted">Target: {totalTarget} pcs</span>
+                      ) : filledCount < g.batches.length ? (
+                        <span className="text-text-muted">
+                          {filledCount}/{g.batches.length} roll terisi
+                        </span>
                       ) : (
-                        <span className="text-text-muted">Target: {targetTotal} pcs</span>
+                        <span className="flex flex-wrap items-center gap-1">
+                          <span>
+                            {totalActual} / {totalTarget} pcs
+                          </span>
+                          {groupYieldPct !== null && <StatusPill tone={groupYieldAlert ? "danger" : "success"}>{groupYieldPct.toFixed(1)}%</StatusPill>}
+                        </span>
                       )}
                     </span>
+                    <span className="text-right">
+                      <button onClick={() => toggleSessionExpanded(g.key)} className="font-sans text-[11px] font-semibold text-action-primary">
+                        {isExpanded ? "Sembunyikan" : "Lihat roll →"}
+                      </button>
+                    </span>
                   </div>
+                  {isExpanded && (
+                    <div className="bg-[#FAFBFC]">
+                      <div
+                        className="grid min-w-[1550px] gap-x-3 border-y border-[#F1F4F7] bg-[#F2F4F7] px-8 py-[7px] font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted"
+                        style={{ gridTemplateColumns: CUTTING_BATCH_COLUMNS }}
+                      >
+                        <span>Warna</span>
+                        <span>Code roll</span>
+                        <span className="text-right">Gramasi</span>
+                        <span>Cutting</span>
+                        <span>Hasil Aduan / Yield</span>
+                      </div>
+                      {g.batches.map((b) => {
+                        // Item 5.3: blok kalkulasi per-roll ini SENGAJA verbatim sama dengan yang
+                        // dulu dipakai langsung di baris tabel (sebelum direstruktur jadi grup) --
+                        // lihat catatan derive.ts targetSizesForBatch/cuttingSizesForGroup.
+                        const targetSizes = targetSizesForBatch(b, detail?.aduanRows ?? []);
+                        const targetTotal = Object.values(targetSizes).reduce((a, c) => a + c, 0);
+                        const actualTotal = b.sizeQty ? Object.values(b.sizeQty).reduce((a, c) => a + c, 0) : 0;
+                        const yieldPct = targetTotal > 0 && b.sizeQty ? (actualTotal / targetTotal) * 100 : null;
+                        const yieldAlert = yieldPct !== null && yieldPct < YIELD_ALERT_THRESHOLD_PCT;
+                        const sizesForDetail = Array.from(new Set([...Object.keys(targetSizes), ...Object.keys(b.sizeQty ?? {})]));
+                        return (
+                          <div
+                            key={b.id}
+                            className="grid min-w-[1550px] items-center gap-x-3 border-b border-[#F1F4F7] px-8 py-[9px] font-sans text-xs text-[#31414F] last:border-b-0"
+                            style={{ gridTemplateColumns: CUTTING_BATCH_COLUMNS }}
+                          >
+                            <span>{b.warna}</span>
+                            <span className="font-mono text-[11px]">{b.codeRoll || "—"}</span>
+                            <span className="text-right font-mono">{b.gramasi} gsm</span>
+                            <span className="font-mono text-[11px]">{b.cuttingAt ? formatDateTime(b.cuttingAt) : "—"}</span>
+                            <span className="flex flex-col gap-0.5 font-mono text-[11px]">
+                              {b.cuttingAt ? (
+                                b.sizeQty ? (
+                                  <>
+                                    <span className="flex flex-wrap items-center gap-1">
+                                      <span>
+                                        {actualTotal} / {targetTotal} pcs
+                                      </span>
+                                      {yieldPct !== null && <StatusPill tone={yieldAlert ? "danger" : "success"}>{yieldPct.toFixed(1)}%</StatusPill>}
+                                    </span>
+                                    {sizesForDetail.length > 0 && (
+                                      <span className="text-[10px] text-text-muted">
+                                        {sizesForDetail.map((size) => `${size} ${b.sizeQty?.[size] ?? 0}/${targetSizes[size] ?? 0}`).join(" · ")}
+                                      </span>
+                                    )}
+                                  </>
+                                ) : (
+                                  <span className="text-text-muted">— (belum diisi)</span>
+                                )
+                              ) : (
+                                <span className="text-text-muted">Target: {targetTotal} pcs</span>
+                              )}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1003,8 +1113,13 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
 
       {activeCuttingGroupKey &&
         (() => {
-          const [kode, lengan] = activeCuttingGroupKey.split("|");
-          const groupBatches = myBatches.filter((b) => b.kode === kode && b.lengan === lengan && batchNeedsCuttingInput(b));
+          // Item 5.5: modal di-scope ke SATU SESI RESTING ("Part"), bukan lagi kode+lengan lintas
+          // semua Part -- cari sesinya dari sessionGroups (satu-satunya sumber, sama dengan tabel
+          // di atas) lewat key penuhnya, baru filter batch yang masih butuh aksi di sesi itu SAJA.
+          const session = sessionGroups.find((g) => g.key === activeCuttingGroupKey);
+          if (!session) return null;
+          const { kode, lengan, partNo } = session;
+          const groupBatches = session.batches.filter(batchNeedsCuttingInput);
           if (groupBatches.length === 0) return null;
           const byWarna = new Map<string, typeof groupBatches>();
           for (const b of groupBatches) byWarna.set(b.warna, [...(byWarna.get(b.warna) ?? []), b]);
@@ -1029,7 +1144,7 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
               <div className="w-full max-w-[720px] rounded-lg bg-white shadow-[0_8px_24px_rgba(11,19,27,.2)]">
                 <div className="border-b border-border-subtle px-5 py-3.5">
                   <span className="font-sans text-[13px] font-semibold text-text-primary">
-                    Input Hasil Cutting — {kode} · {lengan} ({groupBatches.length} roll)
+                    Input Hasil Cutting — {kode} · {lengan} · Part {partNo} ({groupBatches.length} roll)
                   </span>
                 </div>
                 <div className="max-h-[70vh] overflow-y-auto px-5 py-4">
@@ -1148,22 +1263,47 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
               </div>
               <div className="mt-2 font-sans text-xs text-text-muted">Kirim claim ke Procurement supaya selisih ini dicatat dan bisa ditindaklanjuti?</div>
 
-              <div className="mt-3 font-sans text-[11px] font-semibold text-text-primary">Foto bukti berat bersih — wajib</div>
-              <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) onClaimPhotoSelected(file);
-                }}
-                className="mt-1.5 w-full font-sans text-[11px]"
-              />
-              {claimPhotoBusy && <div className="mt-1.5 font-sans text-[11px] text-text-muted">Memproses foto…</div>}
-              {claimPhotoError && <div className="mt-1.5 font-sans text-[11px] text-danger-fg">{claimPhotoError}</div>}
-              {claimPhotoDataUrl && !claimPhotoBusy && !claimPhotoError && (
-                <div className="mt-1.5 font-sans text-[11px] text-success-fg">Foto siap diunggah ({claimPhotoFileName}).</div>
-              )}
+              <div className="mt-3 font-sans text-[11px] font-semibold text-text-primary">
+                Foto bukti berat bersih — <span className="text-danger-fg">wajib</span>
+              </div>
+              <div className="mt-1.5 rounded-md border border-dashed border-[#CBD5DF] bg-[#FAFBFC] p-3">
+                <input
+                  ref={claimPhotoInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) onClaimPhotoSelected(file);
+                  }}
+                  className="input w-full file:mr-2.5 file:rounded file:border-0 file:bg-info-bg file:px-2.5 file:py-1 file:font-sans file:text-[11px] file:font-semibold file:text-info-fg"
+                />
+                {!claimPhotoDataUrl && !claimPhotoBusy && !claimPhotoError && (
+                  <div className="mt-1.5 font-sans text-[11px] text-text-muted">Belum ada foto — wajib sebelum claim bisa dikirim.</div>
+                )}
+                {claimPhotoBusy && <div className="mt-1.5 font-sans text-[11px] text-text-muted">Memproses foto…</div>}
+                {claimPhotoError && <div className="mt-1.5 font-sans text-[11px] text-danger-fg">{claimPhotoError}</div>}
+                {claimPhotoDataUrl && !claimPhotoBusy && !claimPhotoError && (
+                  <div className="mt-1.5 flex items-center gap-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- preview data URI base64, bukan aset statis (lihat compressImageToDataUrl di atas) */}
+                    <img src={claimPhotoDataUrl} alt="Foto bukti berat bersih" className="h-16 w-16 rounded-md border border-[#E4E8EE] object-cover" />
+                    <div>
+                      <div className="font-sans text-[11px] text-success-fg">✓ {claimPhotoFileName} terupload.</div>
+                      <button
+                        onClick={() => {
+                          setClaimPhotoDataUrl(null);
+                          setClaimPhotoFileName(undefined);
+                          // Kosongkan value DOM-nya juga -- lihat komentar claimPhotoInputRef di atas.
+                          if (claimPhotoInputRef.current) claimPhotoInputRef.current.value = "";
+                        }}
+                        className="mt-0.5 font-sans text-[10.5px] font-semibold text-action-primary underline"
+                      >
+                        Ganti foto
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
             <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-3.5">
               <button onClick={cancelPendingClaim} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-[7px] font-sans text-xs font-semibold text-action-primary">

@@ -17,7 +17,7 @@
 // komentar di masing-masing fungsi kalau ada penyesuaian dari bentuk aslinya.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { requireSession, requireInternalRole } from "../auth/session";
+import { requireSession, requireInternalRole, requireAnyInternalRole } from "../auth/session";
 import { supabaseServer } from "../supabase/server";
 import { nextReadableId } from "./repo/ids";
 import { getFlowSnapshot } from "./repo/snapshot";
@@ -781,6 +781,9 @@ export async function setInvoicesPaidAction(invoiceIds: string[], paid: boolean)
   const { data: invoices } = await db.from("raw_material_invoices").select("id,status,po_id").in("id", invoiceIds);
   for (const inv of invoices ?? []) {
     if (paid && inv.status === "INVOICED") await db.from("raw_material_invoices").update({ status: "PAID", paid_at: today() }).eq("id", inv.id);
+    // Item 2: "Batalkan Bayar" SENGAJA tidak menghapus invoice_payment_proofs -- file itu bukti
+    // audit yang sudah pernah diserahkan, dan Status pill sudah cukup menunjukkan status aslinya
+    // sekarang (INVOICED lagi). Menghapusnya cuma menghilangkan jejak tanpa manfaat.
     if (!paid && inv.status === "PAID") await db.from("raw_material_invoices").update({ status: "INVOICED", paid_at: null }).eq("id", inv.id);
   }
   if (paid && invoices && invoices.length > 0) {
@@ -790,6 +793,42 @@ export async function setInvoicesPaidAction(invoiceIds: string[], paid: boolean)
       if (mrpRow && !mrpRow.first_payment_at) await db.from("mrp").update({ first_payment_at: today() }).eq("id", po.mrp_id);
     }
   }
+}
+
+/** Item 2.5: Finance melampirkan bukti pembayaran (PDF) untuk 1+ invoice sekaligus -- diterima
+ *  sebagai array karena satu transfer bank sering melunasi beberapa invoice sekaligus, jadi 1
+ *  file yang sama perlu nempel ke semua invoice itu dalam SATU round-trip (alur kerja Finance
+ *  yang sebenarnya), bukan upload berulang per invoice. */
+export async function setInvoicePaymentProofAction(invoiceIds: string[], dataUrl: string, fileName?: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "finance");
+  const db = supabaseServer();
+  const uploadedAt = nowIso();
+  for (const invoiceId of invoiceIds) {
+    const { error: proofErr } = await db.from("invoice_payment_proofs").upsert({
+      invoice_id: invoiceId,
+      data_url: dataUrl,
+      file_name: fileName ?? null,
+      uploaded_at: uploadedAt,
+    });
+    if (proofErr) throw new Error(`Gagal menyimpan bukti pembayaran: ${proofErr.message}`);
+    const { error: invErr } = await db
+      .from("raw_material_invoices")
+      .update({ bukti_bayar_at: uploadedAt, bukti_bayar_file_name: fileName ?? null })
+      .eq("id", invoiceId);
+    if (invErr) throw new Error(invErr.message);
+  }
+}
+
+/** Item 2.5: ambil BYTE bukti pembayaran 1 invoice on-demand -- `invoice_payment_proofs` sengaja
+ *  DIKELUARKAN dari get_flow_snapshot_raw() (migration 0017) supaya payloadnya tidak ikut
+ *  re-download di setiap refresh snapshot. Dibaca Finance MAUPUN Procurement (Procurement
+ *  menyerahkan bukti ini ke vendor material). */
+export async function getInvoicePaymentProofAction(invoiceId: string): Promise<{ dataUrl: string; fileName?: string } | null> {
+  await requireAnyInternalRole(await requireSession(), ["finance", "procurement"]);
+  const db = supabaseServer();
+  const { data } = await db.from("invoice_payment_proofs").select("data_url,file_name").eq("invoice_id", invoiceId).maybeSingle();
+  if (!data) return null;
+  return { dataUrl: data.data_url, fileName: data.file_name ?? undefined };
 }
 
 export async function setInvoicesDeliveryAction(invoiceIds: string[], deliveryDate: string): Promise<void> {

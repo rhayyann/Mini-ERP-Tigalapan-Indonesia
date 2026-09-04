@@ -196,6 +196,13 @@ export type RawMaterialInvoice = {
    *  bookInvoice). `buktiPvFileName` cuma buat tampilan (nama file asli), bukan dipakai logic. */
   buktiPvDataUrl?: string;
   buktiPvFileName?: string;
+  /** Bukti pembayaran (PDF) yang diupload Finance saat/setelah invoice ini dibayar — inilah
+   *  bukti yang diserahkan Procurement ke vendor material. Sama seperti buktiPvDataUrl, payload
+   *  data URI-nya SENGAJA tidak ikut snapshot (lihat migration 0017 + getInvoicePaymentProofAction)
+   *  supaya tidak membengkakkan getFlowSnapshot() yang di-refetch tiap user tiap aksi — di sini
+   *  cuma flag `bukti_bayar_at` yang ikut. */
+  buktiBayarAt?: string;
+  buktiBayarFileName?: string;
   paidAt?: string;
   deliveredAt?: string;
   receivedAt?: string;

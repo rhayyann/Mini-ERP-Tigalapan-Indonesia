@@ -11,6 +11,16 @@ import { useMrpStore } from "@/lib/mrp/store";
 import { formatDate, formatRupiah, invoiceBadge, materialSupplierNamesForWarna } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { RawMaterialInvoice } from "@/lib/mrp/types";
+// Item 2.8: getInvoicePaymentProofAction dipanggil langsung (bukan lewat store), sama pola dengan
+// "Lampiran Invoice" di atas -- Procurement cuma BACA bukti ini untuk diserahkan ke vendor
+// material, tidak ada kontrol upload di sisi Procurement.
+import { getInvoicePaymentProofAction } from "@/lib/mrp/actions";
+
+async function viewPaymentProof(invoiceId: string) {
+  const proof = await getInvoicePaymentProofAction(invoiceId);
+  if (!proof) return;
+  window.open(proof.dataUrl, "_blank");
+}
 
 /** Panel "Invoice Material" — konten diekstrak dari halaman lama Paying Voucher (Invoice)
  *  (yang sekarang jadi satu sub-tab, berdampingan dengan panel monitoring Invoice Maklon). */
@@ -48,6 +58,19 @@ export function PayingVoucherMaterialPanel() {
       render: (i) =>
         i.buktiPvDataUrl ? (
           <button onClick={() => window.open(i.buktiPvDataUrl, "_blank")} className="font-sans text-[11px] font-semibold text-action-primary underline">
+            Lihat bukti
+          </button>
+        ) : (
+          <span className="font-sans text-[11px] text-text-muted">—</span>
+        ),
+    },
+    {
+      key: "buktiBayar",
+      label: "Bukti Pembayaran",
+      default: true,
+      render: (i) =>
+        i.buktiBayarAt ? (
+          <button onClick={() => viewPaymentProof(i.id)} className="font-sans text-[11px] font-semibold text-action-primary underline">
             Lihat bukti
           </button>
         ) : (

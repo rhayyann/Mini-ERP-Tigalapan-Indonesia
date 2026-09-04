@@ -1206,12 +1206,18 @@ export function confirmedWeighedRolls(mrpId: string, vendorId: string, invoices:
  *  SEMUA MRP untuk vendor ini — dipakai badge sidebar "Produksi" dan tab "Cutting"
  *  (lib/shell/badges.ts) supaya roll yang nyangkut di salah satu dari kedua daftar itu ikut
  *  kelihatan & badge tidak "diam" padahal masih ada kerjaan tersisa (item 12.3). Daftar 3 (sudah
- *  dikonfirmasi) sengaja TIDAK ikut dihitung — itu bukan kerjaan tertunda. */
-export function pendingWeighRollsCount(vendorId: string, invoices: RawMaterialInvoice[], batches: ProductionBatch[]): number {
+ *  dikonfirmasi) sengaja TIDAK ikut dihitung — itu bukan kerjaan tertunda.
+ *  `mrpId` opsional (item 3.2, post-Tester-round-1 fix): kalau diisi, hitungan di-scope ke SATU
+ *  MRP saja supaya marker dropdown "pilih MRP" di tab Cutting bisa mencerminkan definisi yang
+ *  sama persis dengan badge menu-level di atas (termasuk roll "sudah ditimbang tapi belum
+ *  dikonfirmasi", yang sebelumnya salah dihitung pakai `pendingWeighRolls` yang TIDAK mencakup
+ *  kasus itu). Kalau tidak diisi, perilaku sama seperti sebelumnya (semua MRP vendor ini). */
+export function pendingWeighRollsCount(vendorId: string, invoices: RawMaterialInvoice[], batches: ProductionBatch[], mrpId?: string): number {
   const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
   let count = 0;
   for (const inv of invoices) {
     if (inv.destinationVendor !== vendorId) continue;
+    if (mrpId && inv.mrpId !== mrpId) continue;
     for (const c of inv.colorEntries) {
       const key = c.warna + "|" + c.lengan;
       const arrivals = inv.rollArrivals[key] ?? [];
@@ -1349,6 +1355,80 @@ export function cutWarnaLenganGroups(mrpId: string, vendorProduksi: string, batc
     if (!seen.has(key)) seen.set(key, { warna: b.warna, lengan: b.lengan });
   }
   return Array.from(seen.values());
+}
+
+export type RestingSessionGroup = {
+  key: string; // `${mrpId}|${kode}|${lengan}|${restingEpochMs}` (atau string resting_at mentah kalau NaN, lihat catatan di bawah)
+  mrpId: string;
+  kode: string;
+  lengan: Lengan;
+  restingAt: string; // ISO -- identik untuk semua batch di sesi ini
+  partNo: number; // 1-based, kronologis per (mrpId|kode|lengan)
+  partTotal: number;
+  batches: ProductionBatch[];
+};
+
+/** Item 5 (feedback batch 2026-09-05): kelompokkan ProductionBatch jadi "sesi resting" ("Part")
+ *  untuk tabel "Material dalam produksi" (production-cutting-tab.tsx) -- 1 baris per
+ *  (mrpId, kode, lengan, waktu resting), bukan lagi 1 baris per ROLL.
+ *
+ *  Bucket by EXACT timestamp equality (`Date.parse`), TANPA tolerance window -- ini aman karena
+ *  `submitResting` (production-cutting-tab.tsx) menghitung `effectiveRestingAt` SATU KALI sebelum
+ *  loop per-roll, dan `startProductionBatchAction` (lib/mrp/actions.ts:1630) menyimpan string itu
+ *  APA ADANYA ke kolom `resting_at` -- jadi semua roll dari SATU submission dijamin byte-identical.
+ *  Tolerance window (mis. +-1 menit) justru SALAH di sini: 2 stack roll yang disubmit terpisah
+ *  semenit kemudian akan salah tergabung jadi satu Part, padahal itu 2 stack fisik berbeda.
+ *
+ *  Kalau `Date.parse` menghasilkan NaN, fallback ke string resting_at mentah sebagai bucket id
+ *  (defensif -- jangan pernah crash gara-gara data lama yang aneh).
+ *
+ *  Edge case terdokumentasi (bukan bug):
+ *  - Batch yang ditulis SEBELUM migration 0010 (resting_at masih date-only, jam 00:00) akan
+ *    collapse jadi SATU Part per HARI untuk kode+lengan yang sama -- cuma memengaruhi data
+ *    historis, diterima sebagai trade-off.
+ *  - 2 submission yang di-backdate MANUAL ke datetime yang PERSIS sama akan tergabung jadi satu
+ *    Part -- ini disengaja/diinginkan (bukan bug). */
+export function restingSessionGroups(batches: ProductionBatch[]): RestingSessionGroup[] {
+  type Bucket = { mrpId: string; kode: string; lengan: Lengan; restingAt: string; sortKey: number | string; batches: ProductionBatch[] };
+  const buckets = new Map<string, Bucket>();
+  for (const b of batches) {
+    const parsed = Date.parse(b.restingAt);
+    const sortKey: number | string = Number.isNaN(parsed) ? b.restingAt : parsed;
+    const bucketKey = `${b.mrpId}|${b.kode}|${b.lengan}|${sortKey}`;
+    const bucket = buckets.get(bucketKey);
+    if (bucket) bucket.batches.push(b);
+    else buckets.set(bucketKey, { mrpId: b.mrpId, kode: b.kode, lengan: b.lengan, restingAt: b.restingAt, sortKey, batches: [b] });
+  }
+
+  const byTriple = new Map<string, Bucket[]>();
+  for (const bucket of buckets.values()) {
+    const tripleKey = `${bucket.mrpId}|${bucket.kode}|${bucket.lengan}`;
+    const arr = byTriple.get(tripleKey) ?? [];
+    arr.push(bucket);
+    byTriple.set(tripleKey, arr);
+  }
+
+  const out: RestingSessionGroup[] = [];
+  for (const arr of byTriple.values()) {
+    arr.sort((a, b) => (a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0));
+    const partTotal = arr.length;
+    arr.forEach((bucket, idx) => {
+      const sortedBatches = [...bucket.batches].sort((a, b) => a.warna.localeCompare(b.warna) || (a.codeRoll ?? "").localeCompare(b.codeRoll ?? ""));
+      out.push({
+        key: `${bucket.mrpId}|${bucket.kode}|${bucket.lengan}|${bucket.sortKey}`,
+        mrpId: bucket.mrpId,
+        kode: bucket.kode,
+        lengan: bucket.lengan,
+        restingAt: bucket.restingAt,
+        partNo: idx + 1,
+        partTotal,
+        batches: sortedBatches,
+      });
+    });
+  }
+
+  out.sort((a, b) => a.mrpId.localeCompare(b.mrpId) || a.kode.localeCompare(b.kode) || a.lengan.localeCompare(b.lengan) || a.partNo - b.partNo);
+  return out;
 }
 
 /** Sama seperti cutWarnaLenganGroups, TAPI juga menyertakan grup warna/lengan yang TIDAK PERNAH
