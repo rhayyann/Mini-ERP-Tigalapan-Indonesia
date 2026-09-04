@@ -6,6 +6,7 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
 import { formatPcs, formatRupiah, maklonFeeForColorLine, materialPoFullStatus, materialPoFullStatusBadge } from "@/lib/mrp/derive";
+import { countPendingMaterialPoForMrp, pendingMarker } from "@/lib/shell/badges";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { MaterialPO } from "@/lib/mrp/types";
 
@@ -180,7 +181,7 @@ export function PoMaterialPanel() {
             <option value="">— pilih MRP —</option>
             {selectable.map((d) => (
               <option key={d.mrp.id} value={d.mrp.id}>
-                {d.mrp.id} · {formatPcs(d.mrp.qty)} pcs
+                {d.mrp.id} · {formatPcs(d.mrp.qty)} pcs{pendingMarker(countPendingMaterialPoForMrp(d.mrp.id, materialPOs), "PO belum di-approve")}
               </option>
             ))}
           </select>

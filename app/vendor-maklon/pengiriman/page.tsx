@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { VendorAuthGuard } from "@/components/mrp/vendor-auth-guard";
 import { useMrpStore } from "@/lib/mrp/store";
 import { availableFgToShip, ekspedisiPrice, formatDate, formatDecimal, formatRupiah, mrpIdsWithUnpackedFg } from "@/lib/mrp/derive";
+import { countPengirimanPendingForMrp, pendingMarker } from "@/lib/shell/badges";
 import { EKSPEDISI_LIST, VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { AvailableFgRow } from "@/lib/mrp/derive";
 import type { DeliveryKoliItem, ShippableKind, Usia } from "@/lib/mrp/types";
@@ -220,6 +221,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
               {(editingKoliId && !mrpIds.includes(mrpId) ? [mrpId, ...mrpIds] : mrpIds).map((id) => (
                 <option key={id} value={id}>
                   {id}
+                  {pendingMarker(countPengirimanPendingForMrp(id, vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs), "pcs belum dikemas")}
                 </option>
               ))}
             </select>

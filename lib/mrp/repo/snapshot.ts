@@ -524,6 +524,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
       bookedAt: inv.booked_at,
       buktiPvDataUrl: inv.bukti_pv_storage_path ?? undefined,
       buktiPvFileName: inv.bukti_pv_file_name ?? undefined,
+      buktiBayarAt: inv.bukti_bayar_at ?? undefined,
+      buktiBayarFileName: inv.bukti_bayar_file_name ?? undefined,
       paidAt: inv.paid_at ?? undefined,
       deliveredAt: inv.delivered_at ?? undefined,
       receivedAt: inv.received_at ?? undefined,

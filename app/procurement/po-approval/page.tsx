@@ -26,6 +26,7 @@ import {
   summarizeRateSources,
   vendorProduksiRows,
 } from "@/lib/mrp/derive";
+import { countMaterialRowsWithoutSupplierForMrp, pendingMarker } from "@/lib/shell/badges";
 import { exportMaklonPoPdf, exportMaterialPoPdf } from "@/lib/mrp/exportPoPdf";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { MaklonPO, MaterialPO } from "@/lib/mrp/types";
@@ -300,7 +301,7 @@ export default function PoApprovalPage() {
             <option value="">— pilih MRP —</option>
             {selectable.map((d) => (
               <option key={d.mrp.id} value={d.mrp.id}>
-                {d.mrp.id} · {formatPcs(d.mrp.qty)} pcs
+                {d.mrp.id} · {formatPcs(d.mrp.qty)} pcs{pendingMarker(countMaterialRowsWithoutSupplierForMrp(d), "material belum ada vendor")}
               </option>
             ))}
           </select>

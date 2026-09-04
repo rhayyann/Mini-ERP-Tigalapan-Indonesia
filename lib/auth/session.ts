@@ -101,6 +101,15 @@ export function requireInternalRole(session: Session, role: InternalRole): void 
   }
 }
 
+/** Sama seperti requireInternalRole tapi mengizinkan LEBIH DARI SATU role -- dipakai untuk data
+ *  yang diupload satu modul tapi wajar dibaca modul lain juga (mis. bukti pembayaran invoice:
+ *  diupload Finance, tapi dibaca juga oleh Procurement untuk diserahkan ke vendor material). */
+export function requireAnyInternalRole(session: Session, roles: InternalRole[]): void {
+  if (!roles.some((role) => session.internalRoles.includes(role))) {
+    throw new Error(`Forbidden: aksi ini hanya untuk modul ${roles.join("/")}.`);
+  }
+}
+
 export const sessionCookieOptions = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",

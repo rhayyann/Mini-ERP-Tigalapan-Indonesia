@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { VendorAuthGuard } from "@/components/mrp/vendor-auth-guard";
 import { useMrpStore } from "@/lib/mrp/store";
 import { addDays, formatDate, formatDecimal, formatPcs, invoiceBadge, materialReceivedForMaklon, rollArrivalProgress, rollArrivalStatus, rollArrivalStatusBadge } from "@/lib/mrp/derive";
+import { countGoodReceiveEligibleForMrp, pendingMarker } from "@/lib/shell/badges";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
 type DraftCode = { codeRoll: string; codeLot: string };
@@ -162,6 +163,7 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
           {mrpIds.map((id) => (
             <option key={id} value={id}>
               {id} ({eligible.filter((i) => i.mrpId === id).length} PO)
+              {pendingMarker(countGoodReceiveEligibleForMrp(id, vendorId, invoices), "PO belum lengkap diterima")}
             </option>
           ))}
         </select>

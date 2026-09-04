@@ -15,6 +15,7 @@ import {
   reworkQtyForGroup,
   warnaLenganGroupsWithFg,
 } from "@/lib/mrp/derive";
+import { countProductionFinalReadyForMrp, pendingMarker } from "@/lib/shell/badges";
 
 /** Halaman rekap akhir (satu tempat) sebelum Pengiriman -- gabungan Finish Good + Reject +
  *  Rework per warna/lengan, dengan tombol "Selesai Produksi" TAHAP 2 (final) di sini -- butuh
@@ -65,6 +66,7 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
               {mrpIds.map((id) => (
                 <option key={id} value={id}>
                   {id}
+                  {pendingMarker(countProductionFinalReadyForMrp(id, vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails), "warna/lengan belum final")}
                 </option>
               ))}
             </select>

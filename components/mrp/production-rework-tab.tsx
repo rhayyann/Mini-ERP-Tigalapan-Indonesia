@@ -5,6 +5,7 @@ import { NumberInput } from "@/components/mrp/number-input";
 import { Button } from "@/components/ui/button";
 import { useMrpStore } from "@/lib/mrp/store";
 import { cumulativeSizeQtyForGroup, cutWarnaLenganGroups, formatDateTimeShort, mrpDetailFor, mrpIdsWithRemainingReject, productionGroupMetaFor } from "@/lib/mrp/derive";
+import { countRemainingRejectGroupsForMrp, pendingMarker } from "@/lib/shell/badges";
 import type { Lengan, Usia } from "@/lib/mrp/types";
 
 const USIA_OPTIONS: Usia[] = ["DEWASA", "KIDS"];
@@ -102,6 +103,7 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
           {mrpIds.map((id) => (
             <option key={id} value={id}>
               {id}
+              {pendingMarker(countRemainingRejectGroupsForMrp(id, vendorId, productionBatches, productionResults), "warna/lengan ada sisa reject")}
             </option>
           ))}
         </select>
