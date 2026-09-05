@@ -462,7 +462,15 @@ export default function PoApprovalPage() {
                 <span className="font-medium">{c.warna}</span>
                 <span>{c.lengan}</span>
                 <span className="text-right font-mono">{c.rollCount}</span>
-                <span>{c.entitas ?? "—"}</span>
+                {/* Fix 2026-09-05: dulu langsung render `c.entitas` -- karena colorBreakdown[].entitas
+                   sudah diisi DEFAULT sejak PO dibuat (lihat sendPoToFinanceAction), Procurement
+                   kelihatan seolah entitas per-warna sudah final padahal Finance belum input/approve
+                   apa-apa. Gating-nya disamakan persis dengan kolom "Entitas" level-PO di atas
+                   (p.approved ? ... : "-") supaya konsisten: keduanya sama-sama representasi entitas
+                   yang sama, cuma level PO vs per-warna. */}
+                <span className={p.approved ? undefined : "text-text-muted"} title={p.approved ? undefined : "Menunggu input dari Finance"}>
+                  {p.approved ? (c.entitas ?? "—") : "-"}
+                </span>
               </div>
             ))}
           </div>
