@@ -430,6 +430,28 @@ export function mrpWarnaBreakdown(detail: MrpDetail | undefined): MrpWarnaBreakd
   return Array.from(map.values());
 }
 
+export type MaklonPoWarnaBreakdown = { warna: string; lengan: Lengan; qty: number; qtyRoll: number };
+
+/** Rincian per warna/lengan (qty pcs & estimasi roll) untuk SATU PO Produksi (mrpId+vendor) --
+ *  item revisi 2026-09-06: Finance minta bisa klik baris PO Maklon untuk lihat detail, sama
+ *  seperti PPIC/SCM (lihat mrpWarnaBreakdown di atas), tapi MaklonPO sendiri tidak punya
+ *  colorBreakdown (beda dari MaterialPO) -- di-derive dari aduanRows MRP ini yang vendor-nya
+ *  cocok, karena itu satu-satunya sumber "warna apa saja & berapa qty yang jadi tanggung jawab
+ *  vendor produksi ini". */
+export function maklonPoWarnaBreakdown(detail: MrpDetail | undefined, vendorId: string): MaklonPoWarnaBreakdown[] {
+  if (!detail) return [];
+  const map = new Map<string, MaklonPoWarnaBreakdown>();
+  for (const a of detail.aduanRows) {
+    if (a.vendor !== vendorId) continue;
+    const key = a.warna + "|" + a.lengan;
+    const cur = map.get(key) ?? { warna: a.warna, lengan: a.lengan, qty: 0, qtyRoll: 0 };
+    cur.qty += a.qty;
+    cur.qtyRoll += a.qtyRoll;
+    map.set(key, cur);
+  }
+  return Array.from(map.values());
+}
+
 export function effectiveMrpQty(mrpId: string, fallbackQty: number, maklonPOs: MaklonPO[]): number {
   const related = maklonPOs.filter((p) => p.mrpId === mrpId);
   if (related.length === 0) return fallbackQty;

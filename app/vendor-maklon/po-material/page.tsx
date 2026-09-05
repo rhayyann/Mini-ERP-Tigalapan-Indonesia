@@ -8,6 +8,19 @@ import { useMrpStore } from "@/lib/mrp/store";
 import { addDays, formatDate, invoiceBadge, receivedNotYetProducedRows } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { Lengan, RawMaterialInvoice } from "@/lib/mrp/types";
+// Item revisi 2026-09-06: vendor produksi sekarang bisa lihat/download bukti PV & bukti
+// pembayaran untuk PO material tujuannya sendiri -- dulu tidak ada sama sekali di halaman ini.
+// buktiPvDataUrl/buktiPvFileName sudah ada di snapshot (tidak perlu fetch tambahan); bukti
+// pembayaran TETAP fetch on-demand (getInvoicePaymentProofAction, sekarang juga mengizinkan
+// vendor tujuan invoice-nya sendiri -- lihat lib/mrp/actions.ts).
+import { getInvoicePaymentProofAction } from "@/lib/mrp/actions";
+import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
+
+async function viewPaymentProof(invoiceId: string, fileName?: string) {
+  const proof = await getInvoicePaymentProofAction(invoiceId);
+  if (!proof) return;
+  viewAndDownloadFile(proof.dataUrl, fileName ?? proof.fileName);
+}
 
 const REMARK_BY_STATUS: Record<string, string> = {
   WAITING_INVOICE: "Menunggu invoice supplier",
@@ -38,6 +51,11 @@ type Row = {
   deliveredAt?: string;
   receivedAt?: string;
   productionStart?: string;
+  invoiceId?: string;
+  buktiPvDataUrl?: string;
+  buktiPvFileName?: string;
+  buktiBayarAt?: string;
+  buktiBayarFileName?: string;
 };
 
 function PoMaterialContent({ vendorId }: { vendorId: string }) {
@@ -98,6 +116,11 @@ function PoMaterialContent({ vendorId }: { vendorId: string }) {
         deliveredAt: i.deliveredAt,
         receivedAt: i.receivedAt,
         productionStart: i.productionStart,
+        invoiceId: i.id,
+        buktiPvDataUrl: i.buktiPvDataUrl,
+        buktiPvFileName: i.buktiPvFileName,
+        buktiBayarAt: i.buktiBayarAt,
+        buktiBayarFileName: i.buktiBayarFileName,
       };
     }),
   ];
@@ -126,6 +149,32 @@ function PoMaterialContent({ vendorId }: { vendorId: string }) {
         ),
     },
     { key: "remark", label: "Remark", default: false, render: (r) => REMARK_BY_STATUS[r.status] ?? "—" },
+    {
+      key: "buktiPv",
+      label: "Bukti Invoice (PV)",
+      default: false,
+      render: (r) =>
+        r.buktiPvDataUrl ? (
+          <button onClick={() => viewAndDownloadFile(r.buktiPvDataUrl!, r.buktiPvFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+            Lihat / Download
+          </button>
+        ) : (
+          <span className="font-sans text-[11px] text-text-muted">—</span>
+        ),
+    },
+    {
+      key: "buktiBayar",
+      label: "Bukti Pembayaran",
+      default: false,
+      render: (r) =>
+        r.buktiBayarAt && r.invoiceId ? (
+          <button onClick={() => viewPaymentProof(r.invoiceId!, r.buktiBayarFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+            Lihat / Download
+          </button>
+        ) : (
+          <span className="font-sans text-[11px] text-text-muted">—</span>
+        ),
+    },
     { key: "tglDelivery", label: "Tanggal Delivery", default: true, render: (r) => formatDate(r.deliveredAt) },
     { key: "tglReceiving", label: "Tanggal Receiving", default: true, render: (r) => formatDate(r.receivedAt) },
     { key: "tglProduksi", label: "Tanggal Start Produksi", default: false, render: (r) => formatDate(r.productionStart) },

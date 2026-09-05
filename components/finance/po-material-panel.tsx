@@ -358,6 +358,38 @@ export function PoMaterialPanel() {
           },
         ]}
         emptyText="Belum ada PO material disetujui."
+        // Item revisi 2026-09-06: klik baris untuk lihat rincian per warna/lengan (roll dari
+        // totalan, estimasi nilai & biaya maklon) -- sama pola dengan PPIC/SCM & kartu detail yang
+        // sudah ada di bagian "pending" di atas, sekarang dibuat sama untuk PO yang sudah approved.
+        renderExpanded={(p) => (
+          <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
+            <div className="grid grid-cols-5 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+              <span>Warna / lengan</span>
+              <span className="text-right">Roll</span>
+              <span className="text-right">Nilai material (estimasi)</span>
+              <span className="text-right">Biaya maklon (estimasi)</span>
+              <span>Entitas</span>
+            </div>
+            {p.colorBreakdown.map((c, i) => (
+              <div key={i} className="grid grid-cols-5 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                <span className="font-medium">
+                  {c.warna} · {c.lengan}
+                </span>
+                <span className="text-right font-mono">{c.rollCount}</span>
+                <span className="text-right font-mono">{formatRupiah(p.rollCount > 0 ? (p.amount / p.rollCount) * c.rollCount : 0)}</span>
+                <span className="text-right font-mono">{formatRupiah(maklonFeeForColorLine(p, c, maklonPOs, mrpDetails))}</span>
+                <span>{c.entitas ?? "—"}</span>
+              </div>
+            ))}
+            <div className="grid grid-cols-5 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
+              <span>Subtotal PO {p.id}</span>
+              <span className="text-right font-mono">{p.rollCount} roll</span>
+              <span className="text-right font-mono">{formatRupiah(p.amount)}</span>
+              <span className="text-right font-mono">{formatRupiah(p.colorBreakdown.reduce((a, c) => a + maklonFeeForColorLine(p, c, maklonPOs, mrpDetails), 0))}</span>
+              <span />
+            </div>
+          </div>
+        )}
       />
     </>
   );

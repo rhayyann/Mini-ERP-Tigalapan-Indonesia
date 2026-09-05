@@ -36,7 +36,11 @@ export const NAV: Record<RoleKey, RoleNav> = {
       { label: "Dashboard", href: "/dashboard/finance" },
       { label: "PO Approval", href: "/finance/po-approval" },
       { label: "Payment", href: "/finance/payment" },
-      { label: "Ledger", href: "/finance/ledger" },
+      // Item revisi 2026-09-06: disembunyikan dari nav atas permintaan owner ("mungkin comment
+      // saja biar tidak tampil, saya siapa tau perlu nanti") -- SENGAJA cuma dikomentari, BUKAN
+      // dihapus. Halaman /finance/ledger sendiri TIDAK disentuh (masih ada, tetap bisa diakses
+      // langsung lewat URL kalau memang dibutuhkan) -- panggil lagi kalau mau dimunculkan ulang.
+      // { label: "Ledger", href: "/finance/ledger" },
       { label: "Laporan HPP", href: "/finance/laporan-hpp" },
       { label: "Master Data", href: "/finance/master-data" },
     ],

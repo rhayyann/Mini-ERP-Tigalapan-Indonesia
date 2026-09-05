@@ -15,11 +15,13 @@ import type { RawMaterialInvoice } from "@/lib/mrp/types";
 // "Lampiran Invoice" di atas -- Procurement cuma BACA bukti ini untuk diserahkan ke vendor
 // material, tidak ada kontrol upload di sisi Procurement.
 import { getInvoicePaymentProofAction } from "@/lib/mrp/actions";
+// Revisi 2026-09-06: preview+download konsisten di semua modul -- lihat komentar di file ini.
+import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
 
-async function viewPaymentProof(invoiceId: string) {
+async function viewPaymentProof(invoiceId: string, fileName?: string) {
   const proof = await getInvoicePaymentProofAction(invoiceId);
   if (!proof) return;
-  window.open(proof.dataUrl, "_blank");
+  viewAndDownloadFile(proof.dataUrl, fileName ?? proof.fileName);
 }
 
 /** Panel "Invoice Material" — konten diekstrak dari halaman lama Paying Voucher (Invoice)
@@ -57,8 +59,8 @@ export function PayingVoucherMaterialPanel() {
       default: true,
       render: (i) =>
         i.buktiPvDataUrl ? (
-          <button onClick={() => window.open(i.buktiPvDataUrl, "_blank")} className="font-sans text-[11px] font-semibold text-action-primary underline">
-            Lihat bukti
+          <button onClick={() => viewAndDownloadFile(i.buktiPvDataUrl!, i.buktiPvFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+            Lihat / Download
           </button>
         ) : (
           <span className="font-sans text-[11px] text-text-muted">—</span>
@@ -70,8 +72,8 @@ export function PayingVoucherMaterialPanel() {
       default: true,
       render: (i) =>
         i.buktiBayarAt ? (
-          <button onClick={() => viewPaymentProof(i.id)} className="font-sans text-[11px] font-semibold text-action-primary underline">
-            Lihat bukti
+          <button onClick={() => viewPaymentProof(i.id, i.buktiBayarFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+            Lihat / Download
           </button>
         ) : (
           <span className="font-sans text-[11px] text-text-muted">—</span>

@@ -13,6 +13,8 @@ import type { RawMaterialInvoice } from "@/lib/mrp/types";
 // sengaja dikeluarkan dari snapshot (migration 0017), jadi cuma fetch on-demand saat user klik
 // "Lihat bukti".
 import { getInvoicePaymentProofAction } from "@/lib/mrp/actions";
+// Revisi 2026-09-06: preview+download konsisten di semua modul -- lihat komentar di file ini.
+import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
 
 // Round-2 fix (Tester bug 2): batas HARUS dicek pada ukuran hasil ENCODE base64, bukan
 // `file.size` mentah -- base64 menggembungkan ukuran kira-kira +33%, jadi file 1.5 MB mentah jadi
@@ -38,10 +40,10 @@ function dataUrlEncodedBytes(dataUrl: string): number {
 }
 const MAX_PROOF_ENCODED_BYTES = 1.5 * 1024 * 1024; // batas ASLI hasil-encode -- margin ~500 KB di bawah limit 2 MB body Server Action
 
-async function viewPaymentProof(invoiceId: string) {
+async function viewPaymentProof(invoiceId: string, fileName?: string) {
   const proof = await getInvoicePaymentProofAction(invoiceId);
   if (!proof) return;
-  window.open(proof.dataUrl, "_blank");
+  viewAndDownloadFile(proof.dataUrl, fileName ?? proof.fileName);
 }
 
 /** Panel "Payment" (material) — konten diekstrak dari halaman lama /finance/payment,
@@ -53,6 +55,10 @@ export function PaymentPanel() {
   const invoices = useMrpStore((s) => s.invoices);
   const setInvoicesPaid = useMrpStore((s) => s.setInvoicesPaid);
   const setInvoicePaymentProof = useMrpStore((s) => s.setInvoicePaymentProof);
+  // Item revisi 2026-09-06: dipakai untuk detail biaya maklon terkait begitu baris invoice
+  // di-expand (lihat renderExpanded di bawah) -- Finance minta lihat "detail maklon" juga, bukan
+  // cuma rincian material invoice-nya sendiri.
+  const maklonPOs = useMrpStore((s) => s.maklonPOs);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Bukti pembayaran opsional yang dipilih SEBELUM klik "Bayar" — dipasangkan ke semua invoice
@@ -111,12 +117,18 @@ export function PaymentPanel() {
     reader.readAsDataURL(file);
   }
 
+  // Item revisi 2026-09-06: bukti pembayaran SEKARANG WAJIB sebelum tombol "Bayar" bisa diklik --
+  // dulu opsional (bisa dilampirkan belakangan lewat kolom "Bukti Pembayaran"), tapi Finance minta
+  // dibalik supaya tidak ada invoice yang ke-PAID tanpa bukti transfer sama sekali. Upload
+  // belakangan lewat kolom di tabel (openRowUpload) TETAP ada untuk kasus invoice lama yang
+  // terlanjur PAID sebelum aturan ini berlaku.
+  const canPay = !!proofDataUrl && selectableToPay.length > 0;
+
   async function handlePay() {
+    if (!proofDataUrl) return;
     const ids = selectableToPay.map((i) => i.id);
     await setInvoicesPaid(ids, true);
-    // Bukti TIDAK PERNAH wajib untuk membayar -- kalau dipilih, dipasangkan ke semua invoice yang
-    // baru dibayar di klik ini sekaligus (1 file bank transfer bisa melunasi beberapa invoice).
-    if (proofDataUrl) await setInvoicePaymentProof(ids, proofDataUrl, proofFileName);
+    await setInvoicePaymentProof(ids, proofDataUrl, proofFileName);
     setSelected(new Set());
     setProofDataUrl(undefined);
     setProofFileName(undefined);
@@ -177,8 +189,8 @@ export function PaymentPanel() {
       default: true,
       render: (i) =>
         i.buktiPvDataUrl ? (
-          <button onClick={() => window.open(i.buktiPvDataUrl, "_blank")} className="font-sans text-[11px] font-semibold text-action-primary underline">
-            Lihat bukti
+          <button onClick={() => viewAndDownloadFile(i.buktiPvDataUrl!, i.buktiPvFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+            Lihat / Download
           </button>
         ) : (
           <span className="font-sans text-[11px] text-text-muted">—</span>
@@ -208,8 +220,8 @@ export function PaymentPanel() {
         if (i.buktiBayarAt) {
           return (
             <div className="flex items-center gap-2">
-              <button onClick={() => viewPaymentProof(i.id)} className="font-sans text-[11px] font-semibold text-action-primary underline">
-                Lihat bukti
+              <button onClick={() => viewPaymentProof(i.id, i.buktiBayarFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+                Lihat / Download
               </button>
               <button onClick={() => openRowUpload(i.id)} className="font-sans text-[11px] text-text-muted underline">
                 Ganti
@@ -235,31 +247,41 @@ export function PaymentPanel() {
     <>
       {invoices.length > 0 && (
         <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-          Centang invoice berstatus INVOICED lalu klik Bayar untuk mengubah ke PAID. Bukti pembayaran (PDF) bersifat opsional -- bisa dilampirkan
-          sekalian saat klik Bayar, atau menyusul kapan saja lewat kolom &quot;Bukti Pembayaran&quot;. Pembayaran juga dapat dibatalkan (kembali ke
-          INVOICED) jika keliru.
+          Centang invoice berstatus INVOICED, lampirkan bukti pembayaran (PDF, wajib), lalu klik Bayar untuk mengubah ke PAID. Bukti bisa diganti kapan
+          saja lewat kolom &quot;Bukti Pembayaran&quot;. Pembayaran juga dapat dibatalkan (kembali ke INVOICED) jika keliru -- bukti yang sudah terlampir
+          tidak ikut terhapus.
         </div>
       )}
 
       {selected.size > 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-[10px]">
+        <div className="flex flex-wrap items-end gap-3 rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-[10px]">
           <span className="font-sans text-xs font-medium text-info-fg">{selected.size} dipilih</span>
           {selectableToPay.length > 0 && (
             <>
-              <div className="flex flex-col">
-                <label className="font-sans text-[10.5px] font-medium text-info-fg">Bukti pembayaran (opsional)</label>
+              {/* Item revisi 2026-09-06: dulu <input type=file> polos + label kecil -- sekarang
+                 kotak upload yang jelas terlihat klik-able (border dashed + latar putih), sama
+                 bahasa visual dengan upload lain di app ini (mis. bukti PV di
+                 paying-voucher-wizard.tsx), plus status "belum ada file"/"sudah terupload" yang
+                 eksplisit -- bukan cuma nama file kalau sudah dipilih. */}
+              <div className="flex flex-col gap-1 rounded-md border border-dashed border-[#8FB3D9] bg-white px-3 py-2">
+                <label className="font-sans text-[10.5px] font-semibold uppercase tracking-wider text-info-fg">
+                  Bukti Pembayaran (PDF) <span className="text-danger-fg">*wajib</span>
+                </label>
                 <input
                   type="file"
                   accept="application/pdf"
                   onChange={(e) => handleProofFileChange(e.target.files?.[0] ?? null)}
-                  className="w-56 text-[10.5px] file:mr-1.5 file:rounded file:border-0 file:bg-white file:px-2 file:py-0.5 file:font-sans file:text-[10.5px] file:font-semibold file:text-info-fg"
+                  className="w-56 text-[10.5px] file:mr-1.5 file:rounded file:border-0 file:bg-info-bg file:px-2 file:py-1 file:font-sans file:text-[10.5px] file:font-semibold file:text-info-fg"
                 />
-                {proofFileName && !proofError && <span className="font-sans text-[10.5px] text-success-fg">✓ {proofFileName} terupload.</span>}
-                {proofError && <span className="font-sans text-[10.5px] text-danger-fg">{proofError}</span>}
+                {proofFileName && !proofError && <span className="font-sans text-[10.5px] font-medium text-success-fg">✓ {proofFileName} terupload.</span>}
+                {!proofFileName && !proofError && <span className="font-sans text-[10.5px] text-text-muted">Belum ada file dipilih.</span>}
+                {proofError && <span className="font-sans text-[10.5px] font-medium text-danger-fg">{proofError}</span>}
               </div>
               <button
                 onClick={handlePay}
-                className="rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11.5px] font-semibold text-success-fg"
+                disabled={!canPay}
+                title={!proofDataUrl ? "Upload bukti pembayaran (PDF) dulu" : undefined}
+                className="rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11.5px] font-semibold text-success-fg disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Bayar ({selectableToPay.length})
               </button>
@@ -295,6 +317,91 @@ export function PaymentPanel() {
           { label: "Status", options: Array.from(new Set(invoices.map((i) => i.status))), test: (i, v) => i.status === v },
         ]}
         emptyText="Belum ada invoice. Input di halaman Paying Voucher (Invoice) terlebih dahulu."
+        // Item revisi 2026-09-06: klik baris untuk lihat detail material (rincian per warna + add
+        // buy) DAN detail maklon (biaya PO Produksi terkait) sekaligus, supaya Finance bisa lihat
+        // apa yang sebenarnya harus dibayar tanpa pindah halaman.
+        renderExpanded={(i) => {
+          const relatedMaklon = maklonPOs.find((p) => p.mrpId === i.mrpId && p.vendorProduksi === i.destinationVendor);
+          const materialSubtotal = i.colorEntries.reduce((a, c) => a + c.hargaPerRoll * c.rolls.reduce((s, w) => s + w, 0), 0);
+          const addBuyTotal = i.addBuys.reduce((a, b) => a + b.totalHarga, 0);
+          return (
+            <div className="flex flex-col gap-3">
+              <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
+                <div className="bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">Detail Material — {i.id}</div>
+                <div className="grid grid-cols-4 gap-x-2 border-t border-[#F1F4F7] bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                  <span>Warna / lengan</span>
+                  <span className="text-right">Roll</span>
+                  <span className="text-right">Harga/roll</span>
+                  <span className="text-right">Subtotal</span>
+                </div>
+                {i.colorEntries.map((c, idx) => (
+                  <div key={idx} className="grid grid-cols-4 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                    <span className="font-medium">
+                      {c.warna} · {c.lengan}
+                    </span>
+                    <span className="text-right font-mono">{c.rolls.length}</span>
+                    <span className="text-right font-mono">{formatRupiah(c.hargaPerRoll)}</span>
+                    <span className="text-right font-mono">{formatRupiah(c.hargaPerRoll * c.rolls.reduce((s, w) => s + w, 0))}</span>
+                  </div>
+                ))}
+                {i.addBuys.length > 0 && (
+                  <>
+                    <div className="grid grid-cols-4 gap-x-2 border-t border-[#F1F4F7] bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                      <span>Add buy</span>
+                      <span className="text-right">Berat (kg)</span>
+                      <span />
+                      <span className="text-right">Subtotal</span>
+                    </div>
+                    {i.addBuys.map((b) => (
+                      <div key={b.id} className="grid grid-cols-4 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                        <span className="font-medium">
+                          {b.item} · {b.warna}
+                        </span>
+                        <span className="text-right font-mono">{b.beratKg}</span>
+                        <span />
+                        <span className="text-right font-mono">{formatRupiah(b.totalHarga)}</span>
+                      </div>
+                    ))}
+                  </>
+                )}
+                <div className="grid grid-cols-4 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
+                  <span>Material + add buy</span>
+                  <span />
+                  <span />
+                  <span className="text-right font-mono">{formatRupiah(materialSubtotal + addBuyTotal)}</span>
+                </div>
+                {i.diskon > 0 && (
+                  <div className="grid grid-cols-4 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-danger-fg">
+                    <span>Diskon</span>
+                    <span />
+                    <span />
+                    <span className="text-right font-mono">-{formatRupiah(i.diskon)}</span>
+                  </div>
+                )}
+                <div className="grid grid-cols-4 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[12px] font-bold text-info-fg">
+                  <span>Total yang harus dibayar (invoice ini)</span>
+                  <span />
+                  <span />
+                  <span className="text-right font-mono">{formatRupiah(i.totalBiaya)}</span>
+                </div>
+              </div>
+              <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
+                <div className="bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                  Detail Maklon (PO Produksi terkait)
+                </div>
+                {relatedMaklon ? (
+                  <div className="grid grid-cols-3 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                    <span className="font-mono font-medium">{relatedMaklon.id}</span>
+                    <span>{VENDOR_PRODUKSI[relatedMaklon.vendorProduksi]?.name ?? relatedMaklon.vendorProduksi}</span>
+                    <span className="text-right font-mono">Biaya maklon: {formatRupiah(relatedMaklon.amount)}</span>
+                  </div>
+                ) : (
+                  <div className="border-t border-[#F1F4F7] px-3 py-2 font-sans text-[11.5px] text-text-muted">Belum ada PO Produksi terkait untuk MRP/vendor ini.</div>
+                )}
+              </div>
+            </div>
+          );
+        }}
       />
     </>
   );
