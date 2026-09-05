@@ -203,7 +203,10 @@ export function PaymentMaklonPanel() {
             disabled={paying}
             className="rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11.5px] font-semibold text-success-fg disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {paying ? "Memproses..." : "Bayar Penuh"}
+            {/* Item revisi 2026-09-05: tombol tidak lagi menampilkan status "Memproses..." --
+               `disabled={paying}` di atas tetap mencegah dobel klik, cuma tidak lagi terlihat
+               user; hasilnya tampil begitu backgroundRefresh selesai (lihat store.ts). */}
+            Bayar Penuh
           </button>
         </div>
       )}

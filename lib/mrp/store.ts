@@ -326,9 +326,17 @@ function notYetMigrated(name: string) {
  *  lihat catatan panjang di `guardAction` di atas soal kenapa Proxy berbahaya untuk pola begini.
  */
 // Cuma action yang (a) reset data, atau (b) benar-benar "oper" alur/data ke modul/role LAIN
-// (approve, kirim PO, booking invoice, bayar, dst.) yang munculkan overlay -- klik kecil yang
-// sering dipencet berkali-kali dalam satu sesi kerja (pilih entitas, tandai notifikasi dibaca,
-// edit field kecil, dst.) SENGAJA tidak, supaya tidak berasa mengganggu/lambat.
+// (approve, kirim PO, booking invoice, bayar, dst.) yang dipagari lewat `busy` ini -- klik kecil
+// yang sering dipencet berkali-kali dalam satu sesi kerja (pilih entitas, tandai notifikasi
+// dibaca, edit field kecil, dst.) SENGAJA tidak, supaya tidak ada penundaan tambahan sama sekali
+// sebelum klik berikutnya diterima.
+//
+// CATATAN (revisi 2026-09-05): `busy` DULU memicu overlay penuh layar yang TERLIHAT (spinner +
+// teks "Memproses...", lihat busy-overlay.tsx) -- sekarang overlay itu dibuat transparan (fungsi
+// blokir klik-nya TETAP SAMA PERSIS, cuma tidak lagi terlihat user). Jadi daftar di bawah ini
+// sekarang murni soal PENCEGAHAN DOBEL-KLIK, bukan lagi soal "action mana yang layak bikin user
+// menunggu terlihat" -- semua action tetap benar-benar menunggu tulisannya selesai (tidak berubah
+// jadi optimistic), cuma penundaan itu tidak lagi ditampilkan ke user.
 const BUSY_TRACKED_ACTIONS = new Set<string>([
   "resetAll",
   "approvePpicMrp",

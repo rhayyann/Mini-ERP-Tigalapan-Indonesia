@@ -438,7 +438,10 @@ export function PayingVoucherWizard({
           title={!buktiPvDataUrl ? "Upload bukti Paying Voucher (PDF) dulu" : undefined}
           className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {submitting ? "Memproses..." : "Bayar (Paying Voucher)"}
+          {/* Item revisi 2026-09-05: tidak lagi menampilkan status "Memproses..." -- canSubmit
+             (sudah memasukkan `!submitting`) tetap mencegah dobel klik, cuma tidak lagi terlihat
+             user; PV baru tampil di "Riwayat Paying Voucher" begitu backgroundRefresh selesai. */}
+          Bayar (Paying Voucher)
         </button>
         <button onClick={onCancel} disabled={submitting} className="rounded-md border border-[#CBD5DF] px-3.5 py-2 font-sans text-xs font-semibold text-action-primary disabled:cursor-not-allowed disabled:opacity-50">
           Batal
