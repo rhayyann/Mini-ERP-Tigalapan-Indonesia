@@ -118,11 +118,25 @@ async function checkPoApproved(mrpId: string) {
 // MRP / import / approval
 // =========================================================================
 
+// PERFORMA (2026-09-06): dulu 9 round-trip Supabase BERURUTAN (generate id, cek entitas, insert
+// mrp, insert lengan_groups, insert size-nya, insert aduan_pola_rows, insert size-nya, insert
+// material_rows, kirim notifikasi) -- di project ini biaya SATU round-trip saja terukur
+// 300-700ms (region Supabase jauh dari region default Vercel, lihat vercel.json), jadi 9
+// berurutan gampang jadi beberapa detik. Sekarang dipisah jadi 3 "gelombang" sesuai foreign key
+// yang BENAR-BENAR wajib berurutan (mrp harus ada duluan sebelum lengan_groups, dan lengan_groups
+// harus ada duluan sebelum aduan_pola_rows/material_rows -- keduanya referensi lengan_group_id,
+// lihat supabase/migrations/0001_init.sql) -- semua yang TIDAK punya hubungan foreign key
+// langsung dijalankan paralel dalam gelombang yang sama.
 export async function importMrpAction(parsed: ParsedMrpImport, customId?: string): Promise<string> {
   await requireInternalRole(await requireSession(), "ppic");
   const db = supabaseServer();
 
-  const id = customId?.trim() || (await nextReadableId("MRP"));
+  // Gelombang 1: generate id (kalau belum dikasih customId) & cek entitas default -- 2 query yang
+  // sama sekali tidak saling bergantung.
+  const [id, entitasRows] = await Promise.all([
+    customId?.trim() ? Promise.resolve(customId.trim()) : nextReadableId("MRP"),
+    db.from("entitas").select("nama").order("nama").limit(1).then((r) => r.data),
+  ]);
   const idMap = new Map<string, string>();
   const lenganGroups = parsed.lenganGroups.map((g) => {
     const newId = id + "-" + g.id;
@@ -130,10 +144,10 @@ export async function importMrpAction(parsed: ParsedMrpImport, customId?: string
     return { ...g, id: newId };
   });
   const aduanRows = parsed.aduanRows.map((a, i) => ({ ...a, id: id + "-ad-" + i, lenganGroupId: idMap.get(a.lenganGroupId) ?? a.lenganGroupId }));
-  const { data: entitasRows } = await db.from("entitas").select("nama").order("nama").limit(1);
   const defaultEntitas = entitasRows?.[0]?.nama ?? ENTITAS_LIST[0];
   const materialRows = parsed.materialRows.map((m) => ({ ...m, id: id + "-" + m.id, lenganGroupId: idMap.get(m.lenganGroupId) ?? m.lenganGroupId, entitas: defaultEntitas }));
 
+  // Gelombang 2: insert mrp -- WAJIB selesai duluan (lengan_groups.mrp_id references mrp(id)).
   const { error: mrpErr } = await db.from("mrp").insert({
     id,
     kategori: parsed.kategori,
@@ -149,27 +163,39 @@ export async function importMrpAction(parsed: ParsedMrpImport, customId?: string
   });
   if (mrpErr) throw new Error(`Gagal membuat MRP: ${mrpErr.message}`);
 
+  // Gelombang 3: insert lengan_groups -- WAJIB selesai duluan (aduan_pola_rows.lengan_group_id
+  // DAN material_rows.lengan_group_id sama-sama references lengan_groups(id)).
   if (lenganGroups.length > 0) {
     await db.from("lengan_groups").insert(
       lenganGroups.map((g) => ({ id: g.id, mrp_id: id, warna: g.warna, lengan: g.lengan, total_qty: g.totalQty, rib_kg: g.ribKg, roll_estimate: g.rollEstimate, vendor_default: g.vendorDefault }))
     );
-    const sizeRows = lenganGroups.flatMap((g) => g.sizes.map((s) => ({ lengan_group_id: g.id, size: s.size, qty: s.qty })));
-    if (sizeRows.length > 0) await db.from("lengan_group_sizes").insert(sizeRows);
-  }
-  if (aduanRows.length > 0) {
-    await db.from("aduan_pola_rows").insert(
-      aduanRows.map((a) => ({ id: a.id, lengan_group_id: a.lenganGroupId, mrp_id: id, warna: a.warna, lengan: a.lengan, kode: a.kode, qty_roll: a.qtyRoll, qty: a.qty, vendor: a.vendor, rib_allocated_roll: a.ribAllocatedRoll ?? null }))
-    );
-    const aduanSizeRows = aduanRows.flatMap((a) => a.sizes.map((s) => ({ aduan_row_id: a.id, size: s.size, qty: s.qty })));
-    if (aduanSizeRows.length > 0) await db.from("aduan_pola_sizes").insert(aduanSizeRows);
-  }
-  if (materialRows.length > 0) {
-    await db.from("material_rows").insert(
-      materialRows.map((m) => ({ id: m.id, lengan_group_id: m.lenganGroupId, mrp_id: id, warna: m.warna, lengan: m.lengan, qty_roll: m.qtyRoll, rib_kg: m.ribKg, supplier: m.supplier, entitas: m.entitas }))
-    );
   }
 
-  await insertNotification(notif(`MRP ${id} diajukan PPIC — menunggu approval SCM sebelum diproses Procurement`, ["scm"]));
+  // Gelombang 4: lengan_group_sizes, aduan_pola_rows(+size-nya), material_rows, dan notifikasi --
+  // KEEMPATNYA cuma butuh lengan_groups (gelombang 3) sudah ada, TIDAK saling butuh satu sama
+  // lain, jadi paralel penuh.
+  await Promise.all([
+    (async () => {
+      const sizeRows = lenganGroups.flatMap((g) => g.sizes.map((s) => ({ lengan_group_id: g.id, size: s.size, qty: s.qty })));
+      if (sizeRows.length > 0) await db.from("lengan_group_sizes").insert(sizeRows);
+    })(),
+    (async () => {
+      if (aduanRows.length === 0) return;
+      await db.from("aduan_pola_rows").insert(
+        aduanRows.map((a) => ({ id: a.id, lengan_group_id: a.lenganGroupId, mrp_id: id, warna: a.warna, lengan: a.lengan, kode: a.kode, qty_roll: a.qtyRoll, qty: a.qty, vendor: a.vendor, rib_allocated_roll: a.ribAllocatedRoll ?? null }))
+      );
+      const aduanSizeRows = aduanRows.flatMap((a) => a.sizes.map((s) => ({ aduan_row_id: a.id, size: s.size, qty: s.qty })));
+      if (aduanSizeRows.length > 0) await db.from("aduan_pola_sizes").insert(aduanSizeRows);
+    })(),
+    (async () => {
+      if (materialRows.length === 0) return;
+      await db.from("material_rows").insert(
+        materialRows.map((m) => ({ id: m.id, lengan_group_id: m.lenganGroupId, mrp_id: id, warna: m.warna, lengan: m.lengan, qty_roll: m.qtyRoll, rib_kg: m.ribKg, supplier: m.supplier, entitas: m.entitas }))
+      );
+    })(),
+    insertNotification(notif(`MRP ${id} diajukan PPIC — menunggu approval SCM sebelum diproses Procurement`, ["scm"])),
+  ]);
+
   return id;
 }
 
