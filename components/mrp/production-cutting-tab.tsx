@@ -307,10 +307,18 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
     }
     await commitWeigh(r, netKg);
   }
-  // Item 14.1: "Simpan semua (n)" per grup -- setiap roll dengan input diproses SATU PER SATU
-  // (await berurutan): dalam toleransi/over-weight disimpan langsung diam-diam, roll claimable
-  // ditambahkan ke claimQueue (dialog fotonya muncul belakangan, setelah loop ini selesai).
+  // Item 14.1: "Simpan semua (n)" per grup -- dalam toleransi/over-weight disimpan diam-diam,
+  // roll claimable ditambahkan ke claimQueue (dialog fotonya muncul belakangan).
+  // PERFORMA (2026-09-06): dulu SATU PER SATU berurutan (await di dalam loop) -- untuk grup besar
+  // (owner memberi contoh 50 roll 1 warna) itu artinya nunggu 50 round-trip server BERANTAI.
+  // Sekarang semua commitWeigh non-claimable ditembak BERSAMAAN (Promise.all) -- setiap roll
+  // SUDAH kelihatan "tersimpan" seketika di layar begitu dipanggil (lihat optimistic patch di
+  // receiveRawMaterialRoll, store.ts), jadi ini murni mempercepat KAPAN tulisan aslinya benar2
+  // selesai di background, bukan mengubah apa yang user lihat. Aman paralel karena commitWeigh
+  // menangkap errornya sendiri (tidak saling melempar exception) dan tiap roll independen
+  // (key unik per rollIndex, tidak ada roll yang saling menimpa draft roll lain).
   async function saveAllInGroup(rows: PendingWeighRoll[]) {
+    const toCommit: PendingWeighRoll[] = [];
     for (const r of rows) {
       const key = weighKey(r);
       const netKg = weighDraft[key] ?? r.netKg ?? r.grossKg;
@@ -319,8 +327,9 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
         setClaimQueue((prev) => [...prev, { key, roll: r, netKg, diffKg: variance.diff, pct: variance.pct }]);
         continue;
       }
-      await commitWeigh(r, netKg);
+      toCommit.push(r);
     }
+    await Promise.all(toCommit.map((r) => commitWeigh(r, weighDraft[weighKey(r)] ?? r.netKg ?? r.grossKg)));
   }
   // Item 13.5: "Konfirmasi (n)" per grup -- panggil confirmRollWeighAction untuk semua roll grup
   // sekaligus, server yang menentukan mana yang benar-benar lolos (net_kg terisi & tidak claimable).

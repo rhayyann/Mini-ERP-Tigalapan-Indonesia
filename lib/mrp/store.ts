@@ -48,8 +48,26 @@ import * as rawActions from "./actions";
 // yang sudah dibungkus try/catch -- tidak men-trap akses ke modul asli sama sekali, jadi tidak
 // kena invariant itu.
 let redirectingForAuthError = false;
-function guardAction<Args extends unknown[], R>(fn: (...args: Args) => Promise<R>): (...args: Args) => Promise<R> {
+// Bug fix (2026-09-06): race condition "Tandai diterima 4 baris cepat-cepat -> 2 baris sempat
+// balik lagi jadi belum diterima, lalu balik sendiri jadi diterima". Root cause: tiap action
+// optimistic (assignMaterialSupplier, markRollArrived, dkk) memanggil backgroundRefresh() begitu
+// TULISANNYA SENDIRI selesai -- kalau user klik beberapa roll berdekatan, klik roll-3 bisa selesai
+// (server confirm) DULUAN dan langsung fetch ulang snapshot PENUH, padahal tulisan roll-4 (dari
+// klik berikutnya) masih di tengah jalan di server. Snapshot yang diambil saat itu masih versi
+// LAMA (belum ikut roll-4), dan `set()`-nya MENIMPA BALIK state Zustand -- termasuk patch
+// optimistic roll-4 yang sudah benar duluan di layar -- sampai refresh KEDUA (dipicu oleh
+// backgroundRefresh milik klik roll-4 sendiri) datang membetulkannya lagi beberapa saat kemudian.
+// Ini bukan soal 1 action tertentu, tapi soal KAPAN snapshot boleh diambil relatif ke SEMUA
+// action lain yang mungkin masih berjalan bersamaan -- makanya di-perbaiki di sini (guardAction,
+// satu-satunya titik yang membungkus SEMUA pemanggilan actions.xxxAction(...) tanpa kecuali),
+// bukan diulang manual di setiap action satu-satu. Counter di bawah menghitung "berapa banyak
+// actions.xxxAction() yang tulisannya masih berjalan SEKARANG" (getFlowSnapshotAction sengaja
+// TIDAK dihitung -- itu baca, bukan tulis, dan refresh() sendiri lewat sini juga; menghitungnya
+// bikin backgroundRefresh menunggu dirinya sendiri).
+let inFlightWriteCount = 0;
+function guardAction<Args extends unknown[], R>(fn: (...args: Args) => Promise<R>, countInFlight: boolean): (...args: Args) => Promise<R> {
   return async (...args: Args) => {
+    if (countInFlight) inFlightWriteCount++;
     try {
       return await fn(...args);
     } catch (err) {
@@ -66,12 +84,14 @@ function guardAction<Args extends unknown[], R>(fn: (...args: Args) => Promise<R
         return undefined as R;
       }
       throw err;
+    } finally {
+      if (countInFlight) inFlightWriteCount--;
     }
   };
 }
 
 const actions = Object.fromEntries(
-  Object.entries(rawActions).map(([key, fn]) => [key, guardAction(fn as (...args: unknown[]) => Promise<unknown>)])
+  Object.entries(rawActions).map(([key, fn]) => [key, guardAction(fn as (...args: unknown[]) => Promise<unknown>, key !== "getFlowSnapshotAction")])
 ) as typeof rawActions;
 
 export type MrpDates = {
@@ -410,10 +430,35 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   // ada komponen manapun yang butuh state ter-refresh SEBELUM action-nya sendiri selesai (tidak
   // ada pemanggilan `useMrpStore.getState()` sinkron setelah `await store.xxxAction(...)` di
   // seluruh components/app -- polanya selalu subscription `useMrpStore((s) => s.x)`).
+  // Bug fix (2026-09-06, lihat catatan panjang di guardAction/inFlightWriteCount di atas):
+  // backgroundRefresh() dulu langsung fetch snapshot SAAT ITU JUGA setiap dipanggil -- kalau ada
+  // action LAIN yang tulisannya masih berjalan bersamaan (klik beberapa roll/baris berdekatan),
+  // snapshot yang diambil bisa "separuh jalan" dan menimpa balik patch optimistic tulisan itu
+  // sampai refresh berikutnya (milik action itu sendiri) datang membetulkannya lagi -- gejalanya:
+  // status sempat "flicker" balik ke lama sebelum benar lagi. Sekarang backgroundRefresh cuma
+  // MENJADWALKAN (debounce singkat, coalesce beberapa panggilan berdekatan jadi 1 fetch), dan
+  // fetch-nya sendiri BARU benar-benar jalan begitu `inFlightWriteCount` balik ke 0 (semua tulisan
+  // yang sedang berlangsung SAAT scheduleRefresh() dievaluasi sudah selesai) -- kalau masih ada
+  // yang berjalan, coba lagi sebentar kemudian. Hasilnya: snapshot yang diambil selalu mencakup
+  // SEMUA tulisan dari klik-klik berdekatan sekaligus, bukan potongan di tengah jalan.
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleRefresh() {
+    if (refreshTimer) return; // sudah ada 1 fetch terjadwal -- panggilan lain cukup numpang itu
+    refreshTimer = setTimeout(async () => {
+      refreshTimer = null;
+      if (inFlightWriteCount > 0) {
+        scheduleRefresh(); // masih ada tulisan lain yang belum selesai -- tunda lagi sebentar
+        return;
+      }
+      try {
+        await get().refresh();
+      } catch (err) {
+        console.warn("[mrp-store] background refresh gagal:", err);
+      }
+    }, 120);
+  }
   function backgroundRefresh() {
-    get()
-      .refresh()
-      .catch((err) => console.warn("[mrp-store] background refresh gagal:", err));
+    scheduleRefresh();
   }
 
   return withBusyTracking(set, {
@@ -622,8 +667,71 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     }
     backgroundRefresh();
   },
+  // Optimistic PATCH sebelum tulisnya selesai (pola sama seperti assignMaterialSupplier/
+  // markRollArrived) -- HANYA untuk jalur NON-claim (claim === undefined), yaitu kasus paling umum
+  // (roll dalam toleransi, atau lebih berat -- item 4) yang dipicu tombol "Simpan"/"Simpan semua"
+  // di Cutting. Jalur claim (upload foto, lebih jarang & lebih rawan gagal validasi ukuran/tipe
+  // gambar server-side) SENGAJA TETAP menunggu seperti biasa -- lihat catatan yang sama di batch
+  // perbaikan sebelumnya soal kenapa aksi dengan hasil "belum pasti sampai server selesai" tidak
+  // dioptimalkan begitu saja. `receivedAt` di RollReceipt TIDAK diubah (itu tanggal Good Receive,
+  // dari raw_material_invoice_rolls.received_at yang sama dipakai RollArrival -- bukan tanggal
+  // ditimbang, lihat lib/mrp/repo/snapshot.ts) -- diwariskan dari nilai yang sudah ada.
   receiveRawMaterialRoll: async (invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll, photo) => {
-    await actions.receiveRawMaterialRollAction(invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll, photo);
+    const colorKey = `${warna}|${lengan}`;
+    const claimKey = `${invoiceId}|${warna}|${lengan}|${rollIndex}`;
+    const previousInvoices = get().invoices;
+    const previousClaimResolutions = get().materialClaimResolutions;
+    const previousClaimReturRequests = get().materialClaimReturRequests;
+    const previousClaimReturDeliveries = get().materialClaimReturDeliveries;
+    const previousClaimReturReceipts = get().materialClaimReturReceipts;
+    if (!claim) {
+      const trimmedCodeRoll = codeRoll?.trim() || undefined;
+      set({
+        invoices: previousInvoices.map((inv) => {
+          if (inv.id !== invoiceId) return inv;
+          const arr = [...(inv.rollReceipts[colorKey] ?? [])];
+          const existing = arr[rollIndex];
+          arr[rollIndex] = {
+            netKg,
+            receivedAt: existing?.receivedAt ?? inv.rollArrivals[colorKey]?.[rollIndex]?.arrivedAt ?? "",
+            codeRoll: trimmedCodeRoll ?? existing?.codeRoll,
+            codeLot: existing?.codeLot,
+            // claimPhotoAt DIBERSIHKAN (jalur non-claim, mirror update.claim_photo_at = null di
+            // receiveRawMaterialRollAction); weighConfirmedAt SELALU direset tiap ditimbang ulang
+            // (item 13, mirror update.weigh_confirmed_at = null yang tanpa syarat di server).
+            claimPhotoAt: undefined,
+            weighConfirmedAt: undefined,
+          };
+          return { ...inv, rollReceipts: { ...inv.rollReceipts, [colorKey]: arr } };
+        }),
+      });
+      const clearClaimRecord = <T extends Record<string, unknown>>(prev: T): T => {
+        const next = { ...prev };
+        delete next[claimKey];
+        return next;
+      };
+      set({
+        materialClaimResolutions: clearClaimRecord(previousClaimResolutions),
+        materialClaimReturRequests: clearClaimRecord(previousClaimReturRequests),
+        materialClaimReturDeliveries: clearClaimRecord(previousClaimReturDeliveries),
+        materialClaimReturReceipts: clearClaimRecord(previousClaimReturReceipts),
+      });
+    }
+    try {
+      await actions.receiveRawMaterialRollAction(invoiceId, warna, lengan, rollIndex, netKg, claim, codeRoll, photo);
+    } catch (err) {
+      if (!claim) {
+        set({
+          invoices: previousInvoices,
+          materialClaimResolutions: previousClaimResolutions,
+          materialClaimReturRequests: previousClaimReturRequests,
+          materialClaimReturDeliveries: previousClaimReturDeliveries,
+          materialClaimReturReceipts: previousClaimReturReceipts,
+        });
+      }
+      window.alert("Gagal menyimpan hasil timbang -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   confirmRollWeigh: async (items) => {
