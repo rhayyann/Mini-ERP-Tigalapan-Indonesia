@@ -217,7 +217,14 @@ export async function rejectPpicMrpAction(mrpId: string, reason: string): Promis
 // PO generation / approval
 // =========================================================================
 
-export async function sendPoToFinanceAction(mrpId: string): Promise<void> {
+// PERFORMA (2026-09-06): return value ditambahkan supaya store.ts bisa patch materialPOs/maklonPOs
+// SEKETIKA dari hasil insert yang sebenarnya (bukan menebak/optimistic -- PO baru ini memang BENAR
+// sudah tersimpan di titik return ini), tanpa perlu menunggu backgroundRefresh (snapshot penuh)
+// juga selesai sebelum baris PO baru kelihatan di layar Procurement. Beda dari action lain yang
+// membuat record baru (bookInvoice dkk) -- di sini SEMUA field yang dibutuhkan MaterialPO/MaklonPO
+// sudah 100% diketahui begitu insert sukses (tidak ada nilai turunan lain yang baru dihitung
+// trigger/RPC di server), jadi aman dikembalikan apa adanya.
+export async function sendPoToFinanceAction(mrpId: string): Promise<{ materialPOs: MaterialPO[]; maklonPOs: MaklonPO[] }> {
   await requireInternalRole(await requireSession(), "procurement");
   const db = supabaseServer();
   // Targeted (bukan getFlowSnapshot() penuh): aduanRows/materialRows di-scope ke mrpId ini saja;
@@ -256,18 +263,6 @@ export async function sendPoToFinanceAction(mrpId: string): Promise<void> {
   const vendorRows = new Map<string, typeof aduanRows>();
   for (const a of aduanRows) vendorRows.set(a.vendor, [...(vendorRows.get(a.vendor) ?? []), a]);
 
-  const maklonPoIds = await Promise.all(Array.from(vendorRows.keys()).map(() => nextReadableId("PO-MKL")));
-  const maklonPOs = Array.from(vendorRows.entries()).map(([vendor, rows], idx) => ({
-    id: maklonPoIds[idx],
-    mrpId,
-    vendorProduksi: vendor,
-    qty: rows.reduce((s, r) => s + r.qty, 0),
-    amount: maklonAmountForVendor(hargaMaklon, vendor, rows),
-    entity: "Tigalapan Indonesia",
-    status: "FULL_WAITING_MATERIAL" as const,
-    approved: false,
-  }));
-
   const pairTotals = new Map<string, { vendor: string; supplier: string; rolls: number; colorMap: Map<string, ColorBreakdown> }>();
   const defaultEntitas = entitasList[0]?.nama ?? ENTITAS_LIST[0];
   for (const a of aduanRows) {
@@ -284,8 +279,34 @@ export async function sendPoToFinanceAction(mrpId: string): Promise<void> {
     pairTotals.set(key, cur);
   }
 
-  const materialPoIds = await Promise.all(Array.from(pairTotals.values()).map(() => nextReadableId("PO-SUP")));
-  const materialPOs = Array.from(pairTotals.values()).map((p, idx) => {
+  // PERFORMA: dulu 2 batch nextReadableId terpisah (Promise.all maklonPoIds, BARU SETELAH itu
+  // selesai, Promise.all materialPoIds) -- 2 round-trip RPC berurutan padahal keduanya sama
+  // sekali tidak saling bergantung (satu dari vendorRows, satu dari pairTotals, keduanya sudah
+  // dihitung murni di atas tanpa I/O). Digabung jadi SATU Promise.all -- aman karena
+  // next_readable_id() pakai nextval() Postgres sequence (atomik, lihat migration
+  // 0003_id_sequence.sql), jadi urutan/pencampuran prefix PO-MKL & PO-SUP dalam satu batch
+  // paralel tidak berisiko tabrakan ID.
+  const vendorEntries = Array.from(vendorRows.entries());
+  const pairEntries = Array.from(pairTotals.values());
+  const [maklonPoIds, materialPoIds] = await Promise.all([
+    Promise.all(vendorEntries.map(() => nextReadableId("PO-MKL"))),
+    Promise.all(pairEntries.map(() => nextReadableId("PO-SUP"))),
+  ]);
+  // Field2 di bawah (cancelledLines/invoicedByColor/availableRolls/invoicedRolls/status/approved/
+  // daysSincePO) sengaja LANGSUNG diisi bentuk final MaklonPO/MaterialPO (bukan cuma kolom yang
+  // dikirim ke database) -- dipakai bareng untuk payload insert MAUPUN return value ke store.ts.
+  const maklonPOs: MaklonPO[] = vendorEntries.map(([vendor, rows], idx) => ({
+    id: maklonPoIds[idx],
+    mrpId,
+    vendorProduksi: vendor,
+    qty: rows.reduce((s, r) => s + r.qty, 0),
+    amount: maklonAmountForVendor(hargaMaklon, vendor, rows),
+    entity: "Tigalapan Indonesia",
+    status: "FULL_WAITING_MATERIAL" as const,
+    approved: false,
+    cancelledLines: [],
+  }));
+  const materialPOs: MaterialPO[] = pairEntries.map((p, idx) => {
     const colorBreakdown = Array.from(p.colorMap.values());
     const entitasCounts = new Map<string, number>();
     for (const c of colorBreakdown) entitasCounts.set(c.entitas ?? defaultEntitas, (entitasCounts.get(c.entitas ?? defaultEntitas) ?? 0) + c.rollCount);
@@ -298,43 +319,61 @@ export async function sendPoToFinanceAction(mrpId: string): Promise<void> {
       warna: colorBreakdown.length === 1 ? colorBreakdown[0].warna : colorBreakdown.map((c) => c.warna).join(", "),
       lengan: colorBreakdown[0].lengan,
       colorBreakdown,
+      invoicedByColor: {},
       rollCount: p.rolls,
+      availableRolls: p.rolls,
+      invoicedRolls: 0,
       amount: materialAmountForPo(harga.hargaKain, harga.hargaKainPks, p.supplier, colorBreakdown),
       entity: majorityEntitas,
+      status: "WAITING_INVOICE",
+      approved: false,
+      daysSincePO: 0,
     };
   });
 
-  if (maklonPOs.length > 0) {
-    await db.from("maklon_pos").insert(
-      maklonPOs.map((p) => ({ id: p.id, mrp_id: p.mrpId, vendor_produksi: p.vendorProduksi, qty: p.qty, amount: p.amount, entity: p.entity, status: p.status, approved: p.approved }))
-    );
-  }
-  if (materialPOs.length > 0) {
-    await db.from("material_pos").insert(
-      materialPOs.map((p) => ({
-        id: p.id,
-        mrp_id: p.mrpId,
-        vendor_produksi: p.vendorProduksi,
-        supplier: p.supplier,
-        warna: p.warna,
-        lengan: p.lengan,
-        roll_count: p.rollCount,
-        available_rolls: p.rollCount,
-        invoiced_rolls: 0,
-        amount: p.amount,
-        entity: p.entity,
-        status: "WAITING_INVOICE",
-        approved: false,
-        days_since_po: 0,
-      }))
-    );
-    await db.from("material_po_color_breakdown").insert(
-      materialPOs.flatMap((p) => p.colorBreakdown.map((c) => ({ material_po_id: p.id, warna: c.warna, lengan: c.lengan, roll_count: c.rollCount, entitas: c.entitas ?? null })))
-    );
-  }
+  // PERFORMA: maklon_pos & material_pos independen satu sama lain (tabel beda, tidak ada FK
+  // antar keduanya) -- dulu ditulis berurutan (await, await), sekarang paralel. Insert
+  // material_po_color_breakdown TETAP menunggu material_pos selesai lebih dulu (FK
+  // material_po_id -- baris breakdown butuh PO induknya sudah ada di database).
+  await Promise.all([
+    maklonPOs.length > 0
+      ? db.from("maklon_pos").insert(
+          maklonPOs.map((p) => ({ id: p.id, mrp_id: p.mrpId, vendor_produksi: p.vendorProduksi, qty: p.qty, amount: p.amount, entity: p.entity, status: p.status, approved: p.approved }))
+        )
+      : Promise.resolve(),
+    (async () => {
+      if (materialPOs.length === 0) return;
+      await db.from("material_pos").insert(
+        materialPOs.map((p) => ({
+          id: p.id,
+          mrp_id: p.mrpId,
+          vendor_produksi: p.vendorProduksi,
+          supplier: p.supplier,
+          warna: p.warna,
+          lengan: p.lengan,
+          roll_count: p.rollCount,
+          available_rolls: p.rollCount,
+          invoiced_rolls: 0,
+          amount: p.amount,
+          entity: p.entity,
+          status: "WAITING_INVOICE",
+          approved: false,
+          days_since_po: 0,
+        }))
+      );
+      await db.from("material_po_color_breakdown").insert(
+        materialPOs.flatMap((p) => p.colorBreakdown.map((c) => ({ material_po_id: p.id, warna: c.warna, lengan: c.lengan, roll_count: c.rollCount, entitas: c.entitas ?? null })))
+      );
+    })(),
+  ]);
 
-  await db.from("mrp").update({ po_sent: true, po_sent_at: today() }).eq("id", mrpId);
-  await insertNotification(notif(`PO untuk ${mrpId} dikirim ke Finance — ${materialPOs.length} PO material, ${maklonPOs.length} PO maklon`, ["finance"]));
+  // PERFORMA: update mrp.po_sent & notifikasi juga independen satu sama lain -- paralel.
+  await Promise.all([
+    db.from("mrp").update({ po_sent: true, po_sent_at: today() }).eq("id", mrpId),
+    insertNotification(notif(`PO untuk ${mrpId} dikirim ke Finance — ${materialPOs.length} PO material, ${maklonPOs.length} PO maklon`, ["finance"])),
+  ]);
+
+  return { materialPOs, maklonPOs };
 }
 
 /** Fetch SATU MaterialPO by id (+colorBreakdown & invoicedByColor-nya) -- targeted 3-tabel query
