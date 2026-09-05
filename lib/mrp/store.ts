@@ -513,8 +513,19 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     }
     backgroundRefresh();
   },
+  // PERFORMA (2026-09-06): patch SEKETIKA dari hasil insert yang BENAR-BENAR sudah tersimpan
+  // (sendPoToFinanceAction sekarang mengembalikan materialPOs/maklonPOs final, lihat komentar
+  // panjang di sana) -- bukan optimistic/tebakan sebelum tulisnya selesai (beda dari
+  // assignMaterialSupplier dkk di atas), tapi TETAP menghindari nunggu backgroundRefresh (snapshot
+  // penuh, ~0.5-1.4 detik) sebelum baris PO baru kelihatan di Procurement. Aman karena PO baru ini
+  // tidak mungkin sudah ada duplikatnya di array (id-nya baru digenerate barusan).
   sendPoToFinance: async (mrpId) => {
-    await actions.sendPoToFinanceAction(mrpId);
+    const result = await actions.sendPoToFinanceAction(mrpId);
+    set({
+      materialPOs: [...get().materialPOs, ...result.materialPOs],
+      maklonPOs: [...get().maklonPOs, ...result.maklonPOs],
+      mrpDetails: get().mrpDetails.map((d) => (d.mrp.id === mrpId ? { ...d, poSent: true, dates: { ...d.dates, poSent: localDateString(new Date()) } } : d)),
+    });
     backgroundRefresh();
   },
   approveMaterialPo: async (id) => {
