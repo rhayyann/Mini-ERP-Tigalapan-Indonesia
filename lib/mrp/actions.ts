@@ -1715,7 +1715,15 @@ export async function submitProductionResultAction(input: { mrpId: string; vendo
  *  berubah sama sekali, cuma sumber datanya yang di-target-kan. `MrpDetail` yang dikembalikan
  *  CUMA benar untuk field `.aduanRows` (satu-satunya yang dibaca fungsi2 di atas lewat
  *  mrpDetailFor) -- field lain (lenganGroups/materialRows/dates/dst) sengaja kosong/dummy, JANGAN
- *  dipakai untuk keperluan lain. */
+ *  dipakai untuk keperluan lain.
+ *
+ *  BUG FIX (2026-09-06): `batches[].sizeQty` WAJIB ikut ter-fetch (lihat query production_batches
+ *  di bawah) -- fungsi ini dulu sengaja tidak mengikutkannya (komentar lama beralasan
+ *  targetSizesForGroup/maklonProductionFullyDone tidak membacanya), tapi cuttingSizesForGroup
+ *  SEJAK item 18 (batch revisi 2026-09-04) SELALU = actualCutSizesForGroup, yang WAJIB baca
+ *  sizeQty. Tanpanya, confirmFgDoneAction SELALU menolak "Selesai Produksi" (baseline dikira
+ *  kosong padahal sudah diisi) dan recomputeAutoRejectForGroup SELALU menghitung reject 0 apapun
+ *  hasil cutting sebenarnya -- lihat detail lengkap di komentar query production_batches. */
 async function fetchProductionScopeForMrp(
   db: SupabaseClient,
   mrpId: string,
@@ -1723,7 +1731,22 @@ async function fetchProductionScopeForMrp(
 ): Promise<{ mrpDetail: MrpDetail; batches: ProductionBatch[]; results: ProductionResult[] }> {
   const [aduanRows, batchRes, resultRes] = await Promise.all([
     fetchAduanRowsForMrp(db, mrpId),
-    db.from("production_batches").select("*").eq("mrp_id", mrpId).eq("vendor_produksi", vendorProduksi),
+    // BUG FIX (2026-09-06): dulu cuma `select("*")` -- TIDAK ikut production_batch_sizes (hasil
+    // aduan aktual per roll). Komentar lama di bawah bilang ini aman karena
+    // targetSizesForGroup/maklonProductionFullyDone tidak baca sizeQty -- BENAR waktu ditulis,
+    // tapi item 18 (batch revisi 2026-09-04) mengubah cuttingSizesForGroup jadi SELALU
+    // actualCutSizesForGroup (lib/mrp/derive.ts), yang WAJIB baca b.sizeQty. Akibatnya SEJAK ITU:
+    // baseline di confirmFgDoneAction SELALU kosong ({}) -- "Selesai Produksi" SELALU menolak
+    // dengan error 'Isi "Input Hasil Cutting"...' walau hasil cutting sudah benar-benar diisi
+    // (errornya tidak pernah kelihatan user karena tombolnya fire-and-forget, lihat fix di
+    // production-result-panel.tsx). DAN recomputeAutoRejectForGroup (dipanggil dari
+    // closeProductionPoAction, yang TIDAK punya guard ini, makanya "Close PO" tetap bisa
+    // "berhasil") SELALU menghitung reject = 0 apapun selisih cutting-vs-FG yang sebenarnya --
+    // reject sisanya diam-diam salah/hilang. Sekarang di-embed persis pola yang sama dengan
+    // production_results+production_result_sizes di baris bawah (dan pola sizeQty yang sudah
+    // benar di lib/mrp/repo/snapshot.ts, dibaca ulang saat menulis fix ini untuk memastikan
+    // pemetaannya identik).
+    db.from("production_batches").select("*, production_batch_sizes(size,qty)").eq("mrp_id", mrpId).eq("vendor_produksi", vendorProduksi),
     db.from("production_results").select("*, production_result_sizes(size,qty)").eq("mrp_id", mrpId).eq("vendor_produksi", vendorProduksi).eq("kind", "FG"),
   ]);
 
@@ -1737,23 +1760,30 @@ async function fetchProductionScopeForMrp(
     ppicApproval: "DRAFT",
   };
 
-  const batches: ProductionBatch[] = (batchRes.data ?? []).map((b) => ({
-    id: b.id,
-    mrpId: b.mrp_id,
-    vendorProduksi: b.vendor_produksi,
-    aduanRowId: b.aduan_row_id,
-    kode: b.kode ?? "",
-    warna: b.warna,
-    lengan: b.lengan,
-    qtyRoll: Number(b.qty_roll),
-    gramasi: b.gramasi == null ? 0 : Number(b.gramasi),
-    restingAt: b.resting_at ?? "",
-    cuttingAt: b.cutting_at ?? undefined,
-    createdAt: b.created_at,
-    codeRoll: b.code_roll ?? undefined,
-    // sizeQty (hasil aduan aktual) sengaja tidak di-fetch -- tidak dibaca oleh
-    // targetSizesForGroup/maklonProductionFullyDone.
-  }));
+  const batches: ProductionBatch[] = (batchRes.data ?? []).map((b) => {
+    const sizeRows = b.production_batch_sizes ?? [];
+    const sizeQty: Record<string, number> = {};
+    for (const s of sizeRows) sizeQty[s.size] = s.qty;
+    return {
+      id: b.id,
+      mrpId: b.mrp_id,
+      vendorProduksi: b.vendor_produksi,
+      aduanRowId: b.aduan_row_id,
+      kode: b.kode ?? "",
+      warna: b.warna,
+      lengan: b.lengan,
+      qtyRoll: Number(b.qty_roll),
+      gramasi: b.gramasi == null ? 0 : Number(b.gramasi),
+      restingAt: b.resting_at ?? "",
+      cuttingAt: b.cutting_at ?? undefined,
+      createdAt: b.created_at,
+      codeRoll: b.code_roll ?? undefined,
+      // Pola sama persis dengan lib/mrp/repo/snapshot.ts -- undefined (bukan {}) kalau belum ada
+      // hasil aduan sama sekali, supaya `!b.sizeQty` di actualCutSizesForGroup (derive.ts) tetap
+      // konsisten membedakan "belum diisi" vs "diisi tapi semua size kebetulan 0".
+      sizeQty: sizeRows.length > 0 ? sizeQty : undefined,
+    };
+  });
 
   const results: ProductionResult[] = (resultRes.data ?? []).map((r) => {
     const sizeQty: Record<string, number> = {};
@@ -2067,6 +2097,27 @@ export async function closeProductionPoAction(maklonPoId: string, reason: string
     notif(`PO Produksi ${maklonPoId} (${po.mrp_id}) ditutup oleh vendor — alasan: ${reason.trim()}. Sisa Finish Good yang belum masuk koli tidak bisa dikirim lagi.`, ["procurement", "finance"])
   );
   await insertNotification(notif(`PO Produksi ${maklonPoId} (${po.mrp_id}) sudah Anda tutup (Close PO) — alasan: ${reason.trim()}.`, ["vendorMaklon"], po.vendor_produksi));
+}
+
+/** Kebalikan closeProductionPoAction (2026-09-06) -- sengaja TIDAK ada sebelumnya (Close PO
+ *  didesain sebagai penutupan yang deliberate/final, lihat komentar closeProductionPoAction).
+ *  Ditambahkan karena bug fetchProductionScopeForMrp (lihat komentar di fungsi itu) sempat bikin
+ *  "Selesai Produksi" biasa selalu gagal diam-diam, jadi vendor terpaksa pakai Close PO sebagai
+ *  jalan pintas -- tanpa ini, PO yang kelanjur ditutup gara-gara bug itu TIDAK PERNAH bisa dikirim
+ *  lagi walau bug-nya sudah diperbaiki. Cuma membuka gerbang Pengiriman lagi (`closed_at`/
+ *  `close_reason` dikosongkan) -- TIDAK menyentuh fg_confirmed_at/done_at per grup warna/lengan
+ *  yang sudah dikunci Close PO; kalau reject grup tertentu perlu dihitung ulang (mis. gara-gara
+ *  bug di atas), buka kunci granular per grup lewat "Buka kunci ↺" di tab Final Produksi/Finish
+ *  Good seperti biasa, baru "Selesai Produksi" lagi. */
+export async function reopenProductionPoAction(maklonPoId: string): Promise<void> {
+  const vendorId = await requireVendorSession();
+  const db = supabaseServer();
+  const { data: po } = await db.from("maklon_pos").select("id,mrp_id,vendor_produksi,closed_at").eq("id", maklonPoId).maybeSingle();
+  if (!po) throw new Error("PO Produksi tidak ditemukan.");
+  if (po.vendor_produksi !== vendorId) throw new Error("PO ini bukan milik vendor Anda.");
+  if (!po.closed_at) return;
+  await db.from("maklon_pos").update({ closed_at: null, close_reason: null }).eq("id", maklonPoId);
+  await insertNotification(notif(`PO Produksi ${maklonPoId} (${po.mrp_id}) dibuka kembali oleh vendor — Pengiriman untuk sisa Finish Good bisa dilanjutkan lagi.`, ["procurement", "finance"]));
 }
 
 // =========================================================================

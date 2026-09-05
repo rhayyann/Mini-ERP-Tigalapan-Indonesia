@@ -270,6 +270,9 @@ type FlowActions = {
   /** Item 21: "Close PO" per PO Produksi (mrpId+vendorProduksi) -- kunci SEMUA warna/lengannya
    *  sekaligus DAN blokir Pengiriman untuk sisa FG yang belum masuk koli (item 22). */
   closeProductionPo: (maklonPoId: string, reason: string) => Promise<void>;
+  /** Kebalikan closeProductionPo -- buka lagi gerbang Pengiriman PO ini (lihat komentar lengkap di
+   *  reopenProductionPoAction, lib/mrp/actions.ts). */
+  reopenProductionPo: (maklonPoId: string) => Promise<void>;
   setRejectRemark: (poId: string, remark: string) => Promise<void>;
   resolveMaterialClaim: (key: string, note: string) => Promise<void>;
   unresolveMaterialClaim: (key: string) => Promise<void>;
@@ -361,6 +364,7 @@ const BUSY_TRACKED_ACTIONS = new Set<string>([
   "createDeliveryKoli",
   "markKoliDelivered",
   "closeProductionPo",
+  "reopenProductionPo",
 ]);
 
 function withBusyTracking<T extends Record<string, unknown>>(set: Setter, obj: T): T {
@@ -763,6 +767,10 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   },
   closeProductionPo: async (maklonPoId, reason) => {
     await actions.closeProductionPoAction(maklonPoId, reason);
+    backgroundRefresh();
+  },
+  reopenProductionPo: async (maklonPoId) => {
+    await actions.reopenProductionPoAction(maklonPoId);
     backgroundRefresh();
   },
   setRejectRemark: async (poId, remark) => {
