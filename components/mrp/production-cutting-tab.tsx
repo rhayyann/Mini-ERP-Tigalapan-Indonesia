@@ -946,7 +946,11 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                   disabled={!canSubmit || submitting}
                   className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {submitting ? "Memproses..." : "Resting"}
+                  {/* Item revisi 2026-09-05: tidak lagi menampilkan status "Memproses..." --
+                     `disabled={!canSubmit || submitting}` di atas tetap mencegah dobel klik, cuma
+                     tidak lagi terlihat user; baris "Material dalam produksi" tampil begitu
+                     backgroundRefresh selesai (lihat store.ts). */}
+                  Resting
                 </button>
                 <button onClick={() => setSelectedGroupKey("")} disabled={submitting} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-2 font-sans text-xs font-semibold text-action-primary disabled:cursor-not-allowed disabled:opacity-50">
                   Batal
