@@ -91,6 +91,16 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
   const [expandedGroupKey, setExpandedGroupKey] = useState("");
   const [sizeDraft, setSizeDraft] = useState<Record<string, number>>({});
   const [expandedPoId, setExpandedPoId] = useState("");
+  // Bug fix (2026-09-06): confirmFgDone/undoFgConfirm dulu dipanggil fire-and-forget (tanpa
+  // .catch) -- kalau server menolak (mis. baseline hasil cutting dikira kosong, lihat fix di
+  // lib/mrp/actions.ts fetchProductionScopeForMrp), promise-nya cuma jadi unhandled rejection di
+  // console browser, TIDAK PERNAH terlihat user -- tombol "Selesai Produksi" tampak seperti tidak
+  // melakukan apa-apa sama sekali. Sekarang errornya ditangkap & ditampilkan di banner.
+  const [actionError, setActionError] = useState<string | null>(null);
+  function runAction(promise: Promise<unknown>) {
+    setActionError(null);
+    promise.catch((err) => setActionError(err instanceof Error ? err.message : String(err)));
+  }
 
   const mrpIds = Array.from(new Set(productionBatches.filter((b) => b.vendorProduksi === vendorId && b.cuttingAt).map((b) => b.mrpId)));
   // warnaLenganGroupsWithFg (bukan cutWarnaLenganGroups) -- ikutkan grup TUJUAN rework lintas
@@ -154,6 +164,15 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
         </select>
         {mrpIds.length === 0 && <div className="mt-2 font-sans text-xs text-text-muted">Belum ada MRP yang sudah dicutting.</div>}
       </div>
+
+      {actionError && (
+        <div className="flex items-start justify-between gap-3 rounded-lg border border-danger bg-danger-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-danger-fg">
+          <span>{actionError}</span>
+          <button onClick={() => setActionError(null)} className="flex-none font-semibold underline">
+            Tutup
+          </button>
+        </div>
+      )}
 
       {kind === "FG" && (
         <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
@@ -270,13 +289,13 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                         {kind === "FG" &&
                           (isFgConfirmed ? (
                             !isFinalDone && (
-                              <button onClick={() => undoFgConfirm(groupKey)} className="font-sans text-[10.5px] font-semibold text-action-primary underline">
+                              <button onClick={() => runAction(undoFgConfirm(groupKey))} className="font-sans text-[10.5px] font-semibold text-action-primary underline">
                                 Buka kunci ↺
                               </button>
                             )
                           ) : (
                             <button
-                              onClick={() => confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan)}
+                              onClick={() => runAction(confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
                               className="flex-none rounded-md bg-action-primary px-2.5 py-[5px] font-sans text-[11px] font-semibold text-white"
                             >
                               Selesai Produksi

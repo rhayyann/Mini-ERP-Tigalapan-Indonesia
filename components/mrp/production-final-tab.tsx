@@ -35,10 +35,19 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
   const markProductionGroupDone = useMrpStore((s) => s.markProductionGroupDone);
   const undoProductionGroupDone = useMrpStore((s) => s.undoProductionGroupDone);
   const closeProductionPo = useMrpStore((s) => s.closeProductionPo);
+  const reopenProductionPo = useMrpStore((s) => s.reopenProductionPo);
 
   const [selectedMrpId, setSelectedMrpId] = useState("");
   const [expandedGroupKey, setExpandedGroupKey] = useState("");
   const [closePoOpen, setClosePoOpen] = useState(false);
+  // Bug fix (2026-09-06): tombol2 di bawah dulu fire-and-forget tanpa .catch -- kalau server
+  // menolak, error-nya cuma jadi unhandled rejection di console, tidak pernah terlihat user (lihat
+  // catatan lebih lengkap di production-result-panel.tsx, gejala yang sama persis di tab ini).
+  const [actionError, setActionError] = useState<string | null>(null);
+  function runAction(promise: Promise<unknown>) {
+    setActionError(null);
+    promise.catch((err) => setActionError(err instanceof Error ? err.message : String(err)));
+  }
 
   const mrpIds = Array.from(new Set(productionBatches.filter((b) => b.vendorProduksi === vendorId && b.cuttingAt).map((b) => b.mrpId)));
   // warnaLenganGroupsWithFg (bukan cutWarnaLenganGroups) -- ikutkan grup TUJUAN rework lintas
@@ -73,8 +82,17 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
           </div>
           {selectedMaklonPo &&
             (isPoClosed ? (
-              <span title={selectedMaklonPo.closeReason}>
-                <StatusPill tone="locked">PO DITUTUP</StatusPill>
+              <span className="flex flex-none items-center gap-2">
+                <span title={selectedMaklonPo.closeReason}>
+                  <StatusPill tone="locked">PO DITUTUP</StatusPill>
+                </span>
+                <button
+                  onClick={() => runAction(reopenProductionPo(selectedMaklonPo.id))}
+                  title="Buka kembali gerbang Pengiriman untuk PO ini -- grup warna/lengan yang sudah terlanjur dikunci Close PO tetap terkunci (buka satu-satu lewat 'Buka kunci ↺' kalau perlu diperbaiki)"
+                  className="rounded-md border border-[#CBD5DF] bg-white px-3 py-[9px] font-sans text-[11.5px] font-semibold text-action-primary"
+                >
+                  Buka kembali PO
+                </button>
               </span>
             ) : (
               <button
@@ -86,6 +104,14 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
             ))}
         </div>
         {mrpIds.length === 0 && <div className="mt-2 font-sans text-xs text-text-muted">Belum ada MRP yang sudah dicutting.</div>}
+        {actionError && (
+          <div className="mt-2.5 flex items-start justify-between gap-3 rounded-md border border-danger bg-danger-bg px-3 py-2 font-sans text-[11.5px] leading-[1.5] text-danger-fg">
+            <span>{actionError}</span>
+            <button onClick={() => setActionError(null)} className="flex-none font-semibold underline">
+              Tutup
+            </button>
+          </div>
+        )}
         <div className="mt-2.5 rounded-md border border-[#CFE0EF] bg-info-bg px-3 py-2 font-sans text-[11px] leading-[1.5] text-info-fg">
           Rekap Finish Good + Reject + Rework per warna/lengan. Finish Good sudah bisa dikirim begitu &quot;Selesai Produksi&quot; di tab{" "}
           <b>Finish Good</b> (tahap 1) — halaman ini (tahap 2) untuk konfirmasi TERAKHIR (mengunci grup, dasar status tepat waktu/telat), bukan gerbang
@@ -99,7 +125,7 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
           maklonPoId={selectedMaklonPo.id}
           onNo={() => setClosePoOpen(false)}
           onYes={(reason) => {
-            closeProductionPo(selectedMaklonPo.id, reason);
+            runAction(closeProductionPo(selectedMaklonPo.id, reason));
             setClosePoOpen(false);
           }}
         />
@@ -178,7 +204,7 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                     </button>
                     {isPoClosed ? null : isDone ? (
                       <button
-                        onClick={() => undoProductionGroupDone(groupKey)}
+                        onClick={() => runAction(undoProductionGroupDone(groupKey))}
                         title="Buka kunci grup ini supaya Finish Good/Reject/Rework bisa dibuka lagi (mulai dari tab Finish Good)"
                         className="rounded-md border border-[#CBD5DF] bg-white px-3 py-[6px] font-sans text-[11px] font-semibold text-action-primary"
                       >
@@ -186,7 +212,7 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                       </button>
                     ) : isFgConfirmed ? (
                       <button
-                        onClick={() => markProductionGroupDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan)}
+                        onClick={() => runAction(markProductionGroupDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
                         className="rounded-md bg-action-primary px-3 py-[6px] font-sans text-[11px] font-semibold text-white"
                       >
                         Selesai Produksi

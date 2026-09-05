@@ -210,6 +210,23 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   // Item 14.2: "Isi semua roll tersedia" di form Resting butuh SATU nilai gramasi yang dipakai
   // buat mengisi semua baris otomatis -- baris tetap bisa diedit satu-satu sesudahnya.
   const [fillGramasi, setFillGramasi] = useState(0);
+  // UX fix (2026-09-06): panel "Timbang roll" & "Sudah ditimbang -- belum dikonfirmasi" dulu
+  // SELALU merender semua baris roll tiap grup warna·lengan sekaligus, tanpa expand/collapse.
+  // Wajar untuk demo (2 warna x 4 roll = 8 baris), tapi di lapangan nyata (mis. 20 warna x 20 roll
+  // = 400 baris) ini bikin daftar tidak terkendali. Sekarang tiap grup warna·lengan
+  // collapsed-by-default (cuma header + tombol "Simpan semua" yang tetap kelihatan tanpa perlu
+  // expand -- itu sudah cukup untuk kasus "semua roll sesuai timbangan default, langsung simpan
+  // semua"), baris roll individual baru dirender begitu grup itu di-expand. Set multi-key (pola
+  // sama dengan expandedSessions di atas) karena beberapa grup warna bisa di-expand bersamaan.
+  const [expandedWeighGroups, setExpandedWeighGroups] = useState<Set<string>>(new Set());
+  function toggleWeighGroupExpanded(key: string) {
+    setExpandedWeighGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
   // Item 5: expand/collapse per SESI RESTING ("Part") di tabel "Material dalam produksi" -- Set
   // multi-key (sama pola dengan expandedKoli di app/vendor-maklon/pengiriman/page.tsx) karena
   // banyak Part bisa di-expand independen sekaligus, beda dari confirmedExpanded di atas yang
@@ -565,16 +582,29 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
           {overWeightNotice && (
             <div className="border-b border-[#F0DFC2] bg-info-bg px-4 py-2 font-sans text-[11px] leading-[1.5] text-info-fg">{overWeightNotice}</div>
           )}
-          {groupByWarnaLengan(pendingRows).map((g) => (
+          {groupByWarnaLengan(pendingRows).map((g) => {
+            // Prefiks "pending:" -- groupByWarnaLengan dipakai bareng untuk pendingRows DAN
+            // unconfirmedRows di bawah dengan key yang sama (warna|lengan), jadi tanpa prefiks
+            // toggle expand satu daftar bisa ikut nge-expand daftar yang lain kalau warna/lengan-nya
+            // sama-sama muncul di kedua daftar.
+            const weighKeyGroup = "pending:" + g.key;
+            const weighExpanded = expandedWeighGroups.has(weighKeyGroup);
+            return (
             <div key={g.key} className="border-b border-[#F0DFC2] last:border-b-0">
               <div className="flex items-center justify-between gap-2 bg-white/50 px-4 py-2">
-                <span className="font-sans text-[12px] font-semibold text-warning-fg">
+                <button
+                  onClick={() => toggleWeighGroupExpanded(weighKeyGroup)}
+                  className="flex items-center gap-1.5 font-sans text-[12px] font-semibold text-warning-fg"
+                >
+                  <span className={"transition-transform " + (weighExpanded ? "rotate-90" : "")}>›</span>
                   {g.warna} · {g.lengan} ({g.rows.length})
-                </span>
+                </button>
                 <Button onClick={() => saveAllInGroup(g.rows)} variant="primary" size="xs">
                   Simpan semua ({g.rows.length})
                 </Button>
               </div>
+              {weighExpanded && (
+              <>
               <div
                 className="grid min-w-[820px] gap-x-3 border-b border-[#F0DFC2] bg-white/40 px-4 py-[7px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
                 style={{ gridTemplateColumns: "minmax(70px,0.6fr) minmax(120px,0.9fr) minmax(110px,0.9fr) minmax(110px,0.9fr) minmax(120px,1fr) minmax(110px,0.8fr) minmax(110px,0.9fr)" }}
@@ -685,8 +715,11 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                   </div>
                 );
               })}
+              </>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -698,16 +731,25 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
           {confirmNotice && (
             <div className="border-b border-[#CFE0EF] bg-white/60 px-4 py-2 font-sans text-[11px] leading-[1.5] text-info-fg">{confirmNotice}</div>
           )}
-          {groupByWarnaLengan(unconfirmedRows).map((g) => (
+          {groupByWarnaLengan(unconfirmedRows).map((g) => {
+            const weighKeyGroup = "unconfirmed:" + g.key;
+            const weighExpanded = expandedWeighGroups.has(weighKeyGroup);
+            return (
             <div key={g.key} className="border-b border-[#CFE0EF] last:border-b-0">
               <div className="flex items-center justify-between gap-2 bg-white/50 px-4 py-2">
-                <span className="font-sans text-[12px] font-semibold text-info-fg">
+                <button
+                  onClick={() => toggleWeighGroupExpanded(weighKeyGroup)}
+                  className="flex items-center gap-1.5 font-sans text-[12px] font-semibold text-info-fg"
+                >
+                  <span className={"transition-transform " + (weighExpanded ? "rotate-90" : "")}>›</span>
                   {g.warna} · {g.lengan} ({g.rows.length})
-                </span>
+                </button>
                 <Button onClick={() => confirmGroup(g.rows)} variant="success" size="xs">
                   Konfirmasi ({g.rows.length}) →
                 </Button>
               </div>
+              {weighExpanded && (
+              <>
               <div
                 className="grid min-w-[760px] gap-x-3 border-b border-[#CFE0EF] bg-white/40 px-4 py-[7px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
                 style={{ gridTemplateColumns: "minmax(70px,0.6fr) minmax(120px,0.9fr) minmax(110px,0.9fr) minmax(110px,0.9fr) minmax(120px,1fr) minmax(110px,0.9fr)" }}
@@ -747,8 +789,11 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                   </div>
                 );
               })}
+              </>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
