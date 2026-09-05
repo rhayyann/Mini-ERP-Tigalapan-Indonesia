@@ -12,18 +12,15 @@ import type { MaterialClaimHistory } from "@/lib/mrp/types";
 // foto sengaja dikeluarkan dari snapshot (material_claim_photos, migration 0014), jadi tidak ada
 // alur store/backgroundRefresh yang relevan di sini, cuma fetch on-demand saat user klik lihat.
 import { getMaterialClaimPhotoAction } from "@/lib/mrp/actions";
+// Revisi 2026-09-06: viewAndDownloadFile sekarang dipakai bareng di semua modul (Procurement/
+// Finance/Vendor Produksi) untuk preview+download file -- fungsi ini sebelumnya dipakai jadi
+// acuan pola-nya (lihat lib/mrp/clientFiles.ts), sekarang ditarik jadi satu fungsi bersama.
+import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
 
-// Item 2.5: "Lihat / Download" -- window.open untuk lihat (sama UX seperti "Lihat bukti" PV di
-// paying-voucher-material-panel.tsx) SEKALIGUS trigger download lewat <a download> sementara
-// (tidak ditaruh di DOM, cukup diklik programatik) supaya file bisa langsung disimpan juga.
 async function viewClaimPhoto(claimKey: string) {
   const photo = await getMaterialClaimPhotoAction(claimKey);
   if (!photo) return;
-  window.open(photo.dataUrl, "_blank");
-  const a = document.createElement("a");
-  a.href = photo.dataUrl;
-  a.download = photo.fileName || `${claimKey}.jpg`;
-  a.click();
+  viewAndDownloadFile(photo.dataUrl, photo.fileName || `${claimKey}.jpg`);
 }
 
 function BuktiFotoCell({ claimKey, hasPhoto }: { claimKey: string; hasPhoto: boolean }) {

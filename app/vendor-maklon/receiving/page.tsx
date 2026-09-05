@@ -6,7 +6,7 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
 import { VendorAuthGuard } from "@/components/mrp/vendor-auth-guard";
 import { useMrpStore } from "@/lib/mrp/store";
-import { addDays, formatDate, formatDecimal, formatPcs, invoiceBadge, materialReceivedForMaklon, rollArrivalProgress, rollArrivalStatus, rollArrivalStatusBadge } from "@/lib/mrp/derive";
+import { addDays, formatDate, formatDecimal, formatPcs, invoiceBadge, materialReceivedForMaklon, rollArrivalProgress, rollArrivalStatus } from "@/lib/mrp/derive";
 import { countGoodReceiveEligibleForMrp, pendingMarker } from "@/lib/shell/badges";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
@@ -217,9 +217,14 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                 <span className="font-mono font-medium">{i.poId}</span>
                 <span>{i.supplier}</span>
                 <span>{i.colorEntries.map((c) => c.warna).join(", ")}</span>
-                <span className="flex items-center gap-1.5">
+                {/* Item revisi 2026-09-06: sebelumnya 2 pill (status invoice + status kedatangan
+                    roll) tampil berdampingan di baris yang sama — dobel & membingungkan menurut
+                    owner ("tidak perlu ada dua statusnya tampil, buat saja jadi satu"). Cukup 1
+                    pill status invoice (DELIVERY/RECEIVING) yang jadi acuan alur PO; progres
+                    kedatangan roll per-warna sudah cukup terwakili kolom "Roll diterima" di
+                    sebelahnya (angka + warna teks). */}
+                <span>
                   <StatusPill tone={invoiceBadge(i.status).tone}>{invoiceBadge(i.status).label}</StatusPill>
-                  <StatusPill tone={rollArrivalStatusBadge(rollArrivalStatus(i)).tone}>{rollArrivalStatusBadge(rollArrivalStatus(i)).label}</StatusPill>
                 </span>
                 <span className={"text-right font-mono " + (progress.arrived < progress.total ? "text-warning-fg" : "text-success-fg")}>
                   {progress.arrived}/{progress.total} roll

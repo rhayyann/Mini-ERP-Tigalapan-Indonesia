@@ -887,9 +887,18 @@ export async function setInvoicePaymentProofAction(invoiceIds: string[], dataUrl
 /** Item 2.5: ambil BYTE bukti pembayaran 1 invoice on-demand -- `invoice_payment_proofs` sengaja
  *  DIKELUARKAN dari get_flow_snapshot_raw() (migration 0017) supaya payloadnya tidak ikut
  *  re-download di setiap refresh snapshot. Dibaca Finance MAUPUN Procurement (Procurement
- *  menyerahkan bukti ini ke vendor material). */
+ *  menyerahkan bukti ini ke vendor material) -- DAN sekarang vendor produksi TUJUAN invoice itu
+ *  sendiri (revisi 2026-09-06, item "preview & download file di semua modul") -- vendor cuma
+ *  boleh lihat bukti invoice yang benar-benar ditujukan ke dia (dicek destination_vendor),
+ *  bukan avainvoice manapun. */
 export async function getInvoicePaymentProofAction(invoiceId: string): Promise<{ dataUrl: string; fileName?: string } | null> {
-  await requireAnyInternalRole(await requireSession(), ["finance", "procurement"]);
+  const session = await requireSession();
+  if (session.vendorId) {
+    const { data: inv } = await supabaseServer().from("raw_material_invoices").select("destination_vendor").eq("id", invoiceId).maybeSingle();
+    if (inv?.destination_vendor !== session.vendorId) throw new Error("Forbidden: invoice ini bukan milik vendor Anda.");
+  } else {
+    requireAnyInternalRole(session, ["finance", "procurement"]);
+  }
   const db = supabaseServer();
   const { data } = await db.from("invoice_payment_proofs").select("data_url,file_name").eq("invoice_id", invoiceId).maybeSingle();
   if (!data) return null;

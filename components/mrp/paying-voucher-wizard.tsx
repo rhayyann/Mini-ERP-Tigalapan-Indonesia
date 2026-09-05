@@ -74,9 +74,14 @@ export function PayingVoucherWizard({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [entries, setEntries] = useState<ColorEntry[]>([]);
-  // Auto-pilih warna pertama yang masih ada sisa roll, supaya field Harga/kg + Qty roll ready
-  // langsung tampil begitu wizard dibuka — tidak perlu klik pilih warna dulu.
-  const [activeKey, setActiveKey] = useState<string | null>(() => remainingByWarna(po, []).find((g) => g.totalRemaining > 0)?.warna ?? null);
+  // Item revisi 2026-09-06: DULU auto-pilih warna pertama yang masih ada sisa roll (dan
+  // auto-lanjut ke "warna berikutnya" begitu 1 warna selesai disimpan, lihat saveColorEntry) --
+  // niatnya supaya user tidak perlu klik "pilih warna" dulu, tapi efek sampingnya PO dengan
+  // beberapa warna (mis. ABU MUDA + BEIGE) jadi TERASA WAJIB berurutan (isi ABU MUDA dulu baru
+  // BEIGE bisa diisi) -- padahal urutannya seharusnya bebas terserah Procurement. Sekarang
+  // `activeKey` SELALU mulai kosong (layar "Pilih warna" selalu muncul dulu) supaya user benar2
+  // bebas klik warna mana saja duluan, kapan saja.
+  const [activeKey, setActiveKey] = useState<string | null>(null);
   const [hargaPerRoll, setHargaPerRoll] = useState(0);
   const [qtyRoll, setQtyRoll] = useState(1);
   const [draftRolls, setDraftRolls] = useState<number[] | null>(null);
@@ -175,10 +180,10 @@ export function PayingVoucherWizard({
     setEntries(updatedEntries);
     setAddBuys((prev) => autoAddRibForWarna(activeGroup.warna, updatedEntries, prev));
 
-    // Auto-lanjut ke warna berikutnya yang masih ada sisa roll (kalau ada), supaya tidak perlu
-    // klik "pilih warna" lagi untuk warna selanjutnya.
-    const nextGroups = remainingByWarna(po, updatedEntries);
-    setActiveKey(nextGroups.find((g) => g.totalRemaining > 0)?.warna ?? null);
+    // Item revisi 2026-09-06: dulu auto-lanjut ke "warna berikutnya" di sini -- sekarang balik ke
+    // layar "Pilih warna" supaya user bebas pilih warna mana pun selanjutnya, bukan dipaksa urutan
+    // tertentu (lihat catatan panjang di deklarasi activeKey di atas).
+    setActiveKey(null);
     setDraftRolls(null);
   }
 
@@ -348,6 +353,16 @@ export function PayingVoucherWizard({
             + Tambah add buy
           </button>
         </div>
+        {addBuys.length > 0 && (
+          // Item revisi 2026-09-06 (bug UI): caption "pakai koma..." ini DULU ditaruh di dalam sel
+          // grid kolom "Berat (kg)" sendiri (di bawah input-nya) -- karena grid barisnya pakai
+          // `items-end` dan cuma kolom Berat yang punya baris caption tambahan, kolom itu jadi
+          // lebih TINGGI dari 6 kolom lain, bikin semua input di baris yang sama tidak sejajar
+          // (Item/Warna/Harga/Subtotal/Remark ikut turun mengikuti tinggi kolom Berat). Dipindah
+          // jadi SATU catatan di atas, di luar grid -- semua kolom sekarang sama-sama cuma
+          // label+input, jadi `items-end` benar-benar sejajar lagi.
+          <div className="mt-1.5 font-sans text-[10px] text-text-muted">Kolom Berat (kg) pakai koma untuk desimal (mis. 25,5).</div>
+        )}
         {addBuys.map((b) => (
           <div key={b.id} className="mt-2 grid grid-cols-7 items-end gap-2 rounded-md border border-border-subtle bg-white p-2.5">
             <div>
@@ -367,7 +382,6 @@ export function PayingVoucherWizard({
             <div>
               <div className="font-sans text-[10px] text-text-muted">Berat (kg)</div>
               <NumberInput value={b.beratKg} decimals={2} commaOnly onChange={(v) => updateAddBuyBerat(b.id, v)} className="input mt-0.5" />
-              <div className="mt-0.5 font-sans text-[9px] text-text-muted">pakai koma untuk desimal (mis. 25,5)</div>
             </div>
             <div>
               <div className="font-sans text-[10px] text-text-muted">Harga/kg</div>
