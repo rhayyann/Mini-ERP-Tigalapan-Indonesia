@@ -456,19 +456,61 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   assignMaterialEntitas: async (mrpId, materialRowId, entitas) => {
-    await actions.assignMaterialEntitasAction(mrpId, materialRowId, entitas);
+    const previous = get().mrpDetails;
+    set({
+      mrpDetails: previous.map((d) =>
+        d.mrp.id !== mrpId ? d : { ...d, materialRows: d.materialRows.map((r) => (r.id === materialRowId ? { ...r, entitas } : r)) }
+      ),
+    });
+    try {
+      await actions.assignMaterialEntitasAction(mrpId, materialRowId, entitas);
+    } catch (err) {
+      set({ mrpDetails: previous });
+      window.alert("Gagal menyimpan entitas material -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   switchAduanVendor: async (mrpId, aduanId, toVendor) => {
-    await actions.switchAduanVendorAction(mrpId, aduanId, toVendor);
+    const previous = get().mrpDetails;
+    set({
+      mrpDetails: previous.map((d) => (d.mrp.id !== mrpId ? d : { ...d, aduanRows: d.aduanRows.map((a) => (a.id === aduanId ? { ...a, vendor: toVendor } : a)) })),
+    });
+    try {
+      await actions.switchAduanVendorAction(mrpId, aduanId, toVendor);
+    } catch (err) {
+      set({ mrpDetails: previous });
+      window.alert("Gagal memindahkan vendor aduan -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   approvePpicMrp: async (mrpId) => {
-    await actions.approvePpicMrpAction(mrpId);
+    const previous = get().mrpDetails;
+    set({
+      mrpDetails: previous.map((d) =>
+        d.mrp.id === mrpId ? { ...d, ppicApproval: "PPIC_APPROVED", dates: { ...d.dates, ppicApproved: localDateString(new Date()) } } : d
+      ),
+    });
+    try {
+      await actions.approvePpicMrpAction(mrpId);
+    } catch (err) {
+      set({ mrpDetails: previous });
+      window.alert("Gagal menyetujui MRP -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   rejectPpicMrp: async (mrpId, reason) => {
-    await actions.rejectPpicMrpAction(mrpId, reason);
+    const previous = get().mrpDetails;
+    set({ mrpDetails: previous.map((d) => (d.mrp.id === mrpId ? { ...d, ppicApproval: "REJECTED", ppicRejectionNote: reason } : d)) });
+    try {
+      await actions.rejectPpicMrpAction(mrpId, reason);
+    } catch (err) {
+      set({ mrpDetails: previous });
+      window.alert("Gagal menolak MRP -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   sendPoToFinance: async (mrpId) => {
@@ -480,15 +522,43 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   approveMaklonPo: async (id) => {
-    await actions.approveMaklonPoAction(id);
+    const previous = get().maklonPOs;
+    set({ maklonPOs: previous.map((p) => (p.id === id ? { ...p, approved: true } : p)) });
+    try {
+      await actions.approveMaklonPoAction(id);
+    } catch (err) {
+      set({ maklonPOs: previous });
+      window.alert("Gagal menyetujui PO Produksi -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   bookInvoice: async (poId, input) => {
     await actions.bookInvoiceAction(poId, input);
     backgroundRefresh();
   },
+  // Patch di-cek dengan guard status yang PERSIS SAMA dengan setInvoicesPaidAction (cuma
+  // transisi INVOICED->PAID / PAID->INVOICED yang valid) -- supaya tidak optimistically
+  // mem-"bayar" invoice yang statusnya sebenarnya tidak akan berubah di server.
   setInvoicesPaid: async (invoiceIds, paid) => {
-    await actions.setInvoicesPaidAction(invoiceIds, paid);
+    const idSet = new Set(invoiceIds);
+    const previous = get().invoices;
+    const now = localDateString(new Date());
+    set({
+      invoices: previous.map((i) => {
+        if (!idSet.has(i.id)) return i;
+        if (paid && i.status === "INVOICED") return { ...i, status: "PAID", paidAt: now };
+        if (!paid && i.status === "PAID") return { ...i, status: "INVOICED", paidAt: undefined };
+        return i;
+      }),
+    });
+    try {
+      await actions.setInvoicesPaidAction(invoiceIds, paid);
+    } catch (err) {
+      set({ invoices: previous });
+      window.alert("Gagal mengubah status pembayaran -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   setInvoicePaymentProof: async (invoiceIds, dataUrl, fileName) => {
@@ -496,7 +566,18 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   setInvoicesDelivery: async (invoiceIds, deliveryDate) => {
-    await actions.setInvoicesDeliveryAction(invoiceIds, deliveryDate);
+    const idSet = new Set(invoiceIds);
+    const previous = get().invoices;
+    set({
+      invoices: previous.map((i) => (idSet.has(i.id) && i.status === "PAID" ? { ...i, status: "DELIVERY", deliveredAt: deliveryDate } : i)),
+    });
+    try {
+      await actions.setInvoicesDeliveryAction(invoiceIds, deliveryDate);
+    } catch (err) {
+      set({ invoices: previous });
+      window.alert("Gagal mengatur tanggal delivery -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   // Optimistic PATCH sebelum tulisnya selesai (sama seperti assignMaterialSupplier di atas) --
@@ -552,9 +633,21 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   setKoliWeight: async (koliId, beratKoli) => {
-    await actions.setKoliWeightAction(koliId, beratKoli);
+    const previous = get().deliveryKolis;
+    set({ deliveryKolis: previous.map((k) => (k.id === koliId ? { ...k, beratKoli } : k)) });
+    try {
+      await actions.setKoliWeightAction(koliId, beratKoli);
+    } catch (err) {
+      set({ deliveryKolis: previous });
+      window.alert("Gagal menyimpan berat koli -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
+  // TIDAK dibuat optimistic -- markKoliDeliveredAction diam-diam no-op (tidak set delivered_at,
+  // TIDAK throw) kalau berat_koli belum tersimpan di server saat itu (lihat lib/mrp/actions.ts).
+  // Kalau di-optimistic, UI bisa terlanjur bilang "terkirim" padahal server sebenarnya menolak
+  // tanpa error yang bisa ditangkap untuk rollback.
   markKoliDelivered: async (koliId) => {
     await actions.markKoliDeliveredAction(koliId);
     backgroundRefresh();
@@ -564,27 +657,83 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   setVendorInvoiceStatus: async (invoiceId, status) => {
-    await actions.setVendorInvoiceStatusAction(invoiceId, status);
+    const previous = get().vendorInvoices;
+    const now = localDateString(new Date());
+    set({
+      vendorInvoices: previous.map((i) =>
+        i.id === invoiceId ? { ...i, status, approvedAt: status === "APPROVED" ? now : i.approvedAt, paidAt: status === "PAID" ? now : i.paidAt } : i
+      ),
+    });
+    try {
+      await actions.setVendorInvoiceStatusAction(invoiceId, status);
+    } catch (err) {
+      set({ vendorInvoices: previous });
+      window.alert("Gagal mengubah status invoice vendor -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
+  // TIDAK dibuat optimistic -- adjustment baru butuh id baru dari server (nextReadableId), tidak
+  // bisa dipastikan dari argumen saja tanpa risiko id sementara yang harus direkonsiliasi.
   addVendorInvoiceAdjustment: async (invoiceId, input) => {
     await actions.addVendorInvoiceAdjustmentAction(invoiceId, input);
     backgroundRefresh();
   },
   payVendorInvoice: async (invoiceId) => {
-    await actions.payVendorInvoiceAction(invoiceId);
+    const previous = get().vendorInvoices;
+    set({ vendorInvoices: previous.map((i) => (i.id === invoiceId && i.status !== "PAID" ? { ...i, status: "PAID", paidAt: localDateString(new Date()) } : i)) });
+    try {
+      await actions.payVendorInvoiceAction(invoiceId);
+    } catch (err) {
+      set({ vendorInvoices: previous });
+      window.alert("Gagal membayar invoice vendor -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
+  // PERFORMA (revisi 2026-09-06): "semua tombol aksi harus terasa instan, jangan sampai user
+  // menunggu beberapa detik baru lihat hasilnya" -- diterapkan ke semua action DI BAWAH INI yang
+  // hasil akhirnya bisa dipastikan 100% dari argumen yang dioper (bukan nilai yang baru diketahui
+  // SETELAH server selesai memprosesnya, mis. reject otomatis di confirmFgDone). Pola PERSIS sama
+  // dengan assignMaterialSupplier/markRollArrived di atas: patch dulu SEBELUM tulisnya selesai,
+  // kalau tulisnya gagal di-ROLLBACK + alert. Action yang perhitungan hasilnya baru pasti setelah
+  // server selesai (reject, split PO per entitas, dst.) SENGAJA TIDAK diubah -- optimistic di situ
+  // berisiko menampilkan angka yang salah/sementara untuk data yang justru paling sensitif.
   markNotificationRead: async (id) => {
-    await actions.markNotificationReadAction(id);
+    const previous = get().notifications;
+    set({ notifications: previous.map((n) => (n.id === id ? { ...n, read: true } : n)) });
+    try {
+      await actions.markNotificationReadAction(id);
+    } catch (err) {
+      set({ notifications: previous });
+      window.alert("Gagal menandai notifikasi dibaca -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   markAllNotificationsRead: async (ids) => {
-    await actions.markAllNotificationsReadAction(ids);
+    const idSet = new Set(ids);
+    const previous = get().notifications;
+    set({ notifications: previous.map((n) => (idSet.has(n.id) ? { ...n, read: true } : n)) });
+    try {
+      await actions.markAllNotificationsReadAction(ids);
+    } catch (err) {
+      set({ notifications: previous });
+      window.alert("Gagal menandai semua notifikasi dibaca -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   dismissNotification: async (id) => {
-    await actions.dismissNotificationAction(id);
+    const previous = get().notifications;
+    set({ notifications: previous.filter((n) => n.id !== id) });
+    try {
+      await actions.dismissNotificationAction(id);
+    } catch (err) {
+      set({ notifications: previous });
+      window.alert("Gagal menghapus notifikasi -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
 
@@ -593,11 +742,27 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   updateHargaMaklonRow: async (id, patch) => {
-    await actions.updateHargaMaklonRowAction(id, patch);
+    const previous = get().hargaMaklon;
+    set({ hargaMaklon: previous.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
+    try {
+      await actions.updateHargaMaklonRowAction(id, patch);
+    } catch (err) {
+      set({ hargaMaklon: previous });
+      window.alert("Gagal menyimpan harga maklon -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   deleteHargaMaklonRow: async (id) => {
-    await actions.deleteHargaMaklonRowAction(id);
+    const previous = get().hargaMaklon;
+    set({ hargaMaklon: previous.filter((r) => r.id !== id) });
+    try {
+      await actions.deleteHargaMaklonRowAction(id);
+    } catch (err) {
+      set({ hargaMaklon: previous });
+      window.alert("Gagal menghapus baris harga maklon -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   replaceHargaMaklon: async (rows) => {
@@ -609,11 +774,27 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   updateHargaKainRow: async (id, patch) => {
-    await actions.updateHargaKainRowAction(id, patch);
+    const previous = get().hargaKain;
+    set({ hargaKain: previous.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
+    try {
+      await actions.updateHargaKainRowAction(id, patch);
+    } catch (err) {
+      set({ hargaKain: previous });
+      window.alert("Gagal menyimpan harga kain -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   deleteHargaKainRow: async (id) => {
-    await actions.deleteHargaKainRowAction(id);
+    const previous = get().hargaKain;
+    set({ hargaKain: previous.filter((r) => r.id !== id) });
+    try {
+      await actions.deleteHargaKainRowAction(id);
+    } catch (err) {
+      set({ hargaKain: previous });
+      window.alert("Gagal menghapus baris harga kain -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   replaceHargaKain: async (rows) => {
@@ -625,11 +806,27 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   updateHargaKainPksRow: async (id, patch) => {
-    await actions.updateHargaKainPksRowAction(id, patch);
+    const previous = get().hargaKainPks;
+    set({ hargaKainPks: previous.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
+    try {
+      await actions.updateHargaKainPksRowAction(id, patch);
+    } catch (err) {
+      set({ hargaKainPks: previous });
+      window.alert("Gagal menyimpan harga kain PKS -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   deleteHargaKainPksRow: async (id) => {
-    await actions.deleteHargaKainPksRowAction(id);
+    const previous = get().hargaKainPks;
+    set({ hargaKainPks: previous.filter((r) => r.id !== id) });
+    try {
+      await actions.deleteHargaKainPksRowAction(id);
+    } catch (err) {
+      set({ hargaKainPks: previous });
+      window.alert("Gagal menghapus baris harga kain PKS -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   replaceHargaKainPks: async (rows) => {
@@ -641,11 +838,27 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   updateEntitas: async (id, nama) => {
-    await actions.updateEntitasAction(id, nama);
+    const previous = get().entitasList;
+    set({ entitasList: previous.map((r) => (r.id === id ? { ...r, nama } : r)) });
+    try {
+      await actions.updateEntitasAction(id, nama);
+    } catch (err) {
+      set({ entitasList: previous });
+      window.alert("Gagal menyimpan nama entitas -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   deleteEntitas: async (id) => {
-    await actions.deleteEntitasAction(id);
+    const previous = get().entitasList;
+    set({ entitasList: previous.filter((r) => r.id !== id) });
+    try {
+      await actions.deleteEntitasAction(id);
+    } catch (err) {
+      set({ entitasList: previous });
+      window.alert("Gagal menghapus entitas -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   replaceEntitas: async (rows) => {
@@ -657,11 +870,27 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   updateSupplier: async (id, nama) => {
-    await actions.updateSupplierAction(id, nama);
+    const previous = get().supplierList;
+    set({ supplierList: previous.map((r) => (r.id === id ? { ...r, nama } : r)) });
+    try {
+      await actions.updateSupplierAction(id, nama);
+    } catch (err) {
+      set({ supplierList: previous });
+      window.alert("Gagal menyimpan nama supplier -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   deleteSupplier: async (id) => {
-    await actions.deleteSupplierAction(id);
+    const previous = get().supplierList;
+    set({ supplierList: previous.filter((r) => r.id !== id) });
+    try {
+      await actions.deleteSupplierAction(id);
+    } catch (err) {
+      set({ supplierList: previous });
+      window.alert("Gagal menghapus supplier -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   replaceSupplier: async (rows) => {
@@ -670,11 +899,33 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   },
 
   setMaterialPoEntity: async (poId, entitas) => {
-    await actions.setMaterialPoEntityAction(poId, entitas);
+    const previous = get().materialPOs;
+    set({
+      materialPOs: previous.map((p) => (p.id === poId ? { ...p, entity: entitas, colorBreakdown: p.colorBreakdown.map((c) => ({ ...c, entitas })) } : p)),
+    });
+    try {
+      await actions.setMaterialPoEntityAction(poId, entitas);
+    } catch (err) {
+      set({ materialPOs: previous });
+      window.alert("Gagal menyimpan entitas -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   setMaterialPoColorEntity: async (poId, warna, lengan, entitas) => {
-    await actions.setMaterialPoColorEntityAction(poId, warna, lengan, entitas);
+    const previous = get().materialPOs;
+    set({
+      materialPOs: previous.map((p) =>
+        p.id === poId ? { ...p, colorBreakdown: p.colorBreakdown.map((c) => (c.warna === warna && c.lengan === lengan ? { ...c, entitas } : c)) } : p
+      ),
+    });
+    try {
+      await actions.setMaterialPoColorEntityAction(poId, warna, lengan, entitas);
+    } catch (err) {
+      set({ materialPOs: previous });
+      window.alert("Gagal menyimpan entitas warna -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   approveAllMaterialPos: async () => {
@@ -698,20 +949,76 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   advanceMaklonProduction: async (id) => {
-    await actions.advanceMaklonProductionAction(id);
+    const previous = get().maklonPOs;
+    set({
+      maklonPOs: previous.map((p) => {
+        if (p.id !== id) return p;
+        if (p.status === "FULL_WAITING_MATERIAL" || p.status === "PARTIAL_WAITING_MATERIAL") return { ...p, status: "PRODUCTION" };
+        if (p.status === "PRODUCTION") return { ...p, status: "DELIVERY" };
+        return p;
+      }),
+    });
+    try {
+      await actions.advanceMaklonProductionAction(id);
+    } catch (err) {
+      set({ maklonPOs: previous });
+      window.alert("Gagal memajukan status PO Produksi -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   submitMaklonInvoice: async () => {}, // sudah no-op sejak sebelum migrasi (jalur ditutup, lihat lib/mrp/actions.ts)
   approveMaklonInvoice: async (invoiceId) => {
-    await actions.approveMaklonInvoiceAction(invoiceId);
+    const previous = get().maklonInvoices;
+    set({ maklonInvoices: previous.map((i) => (i.id === invoiceId ? { ...i, status: "APPROVED", approvedAt: localDateString(new Date()) } : i)) });
+    try {
+      await actions.approveMaklonInvoiceAction(invoiceId);
+    } catch (err) {
+      set({ maklonInvoices: previous });
+      window.alert("Gagal menyetujui invoice maklon -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   payMaklonInvoice: async (invoiceId) => {
-    await actions.payMaklonInvoiceAction(invoiceId);
+    const previousInvoices = get().maklonInvoices;
+    const previousPOs = get().maklonPOs;
+    const target = previousInvoices.find((i) => i.id === invoiceId);
+    set({
+      maklonInvoices: previousInvoices.map((i) => (i.id === invoiceId ? { ...i, status: "PAID", paidAt: localDateString(new Date()) } : i)),
+      maklonPOs: target ? previousPOs.map((p) => (p.id === target.maklonPoId ? { ...p, status: "FULLY_PAID" } : p)) : previousPOs,
+    });
+    try {
+      await actions.payMaklonInvoiceAction(invoiceId);
+    } catch (err) {
+      set({ maklonInvoices: previousInvoices, maklonPOs: previousPOs });
+      window.alert("Gagal membayar invoice maklon -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   receiveRawMaterialAddBuy: async (invoiceId, addBuyId) => {
-    await actions.receiveRawMaterialAddBuyAction(invoiceId, addBuyId);
+    const previous = get().invoices;
+    const receivedAt = localDateString(new Date());
+    set({
+      invoices: previous.map((i) =>
+        i.id === invoiceId
+          ? {
+              ...i,
+              addBuyReceipts: { ...i.addBuyReceipts, [addBuyId]: { receivedAt } },
+              status: i.status === "DELIVERY" ? "RECEIVING" : i.status,
+              receivedAt: i.receivedAt ?? receivedAt,
+            }
+          : i
+      ),
+    });
+    try {
+      await actions.receiveRawMaterialAddBuyAction(invoiceId, addBuyId);
+    } catch (err) {
+      set({ invoices: previous });
+      window.alert("Gagal menandai add buy diterima -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   updateBatchToCutting: async (batchId, cuttingAt, sizeQty) => {
@@ -726,27 +1033,75 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   resolveProductionYield: async (batchId, note) => {
-    await actions.resolveProductionYieldAction(batchId, note);
+    const previous = get().productionYieldResolutions;
+    set({ productionYieldResolutions: { ...previous, [batchId]: { note, resolvedAt: localDateString(new Date()) } } });
+    try {
+      await actions.resolveProductionYieldAction(batchId, note);
+    } catch (err) {
+      set({ productionYieldResolutions: previous });
+      window.alert("Gagal menandai alert yield -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   unresolveProductionYield: async (batchId) => {
-    await actions.unresolveProductionYieldAction(batchId);
+    const previous = get().productionYieldResolutions;
+    const next = { ...previous };
+    delete next[batchId];
+    set({ productionYieldResolutions: next });
+    try {
+      await actions.unresolveProductionYieldAction(batchId);
+    } catch (err) {
+      set({ productionYieldResolutions: previous });
+      window.alert("Gagal membuka lagi alert yield -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   reworkRejectSize: async (input) => {
     await actions.reworkRejectSizeAction(input);
     backgroundRefresh();
   },
+  // Guard "sudah delivered_at -> no-op" di updateDeliveryKoliAction ditiru di sini juga (mirip
+  // markKoliDelivered) supaya tidak optimistically menampilkan perubahan yang sebenarnya ditolak
+  // server tanpa error.
   updateDeliveryKoli: async (koliId, patch) => {
-    await actions.updateDeliveryKoliAction(koliId, patch);
+    const previous = get().deliveryKolis;
+    set({
+      deliveryKolis: previous.map((k) => (k.id === koliId && !k.deliveredAt ? { ...k, ekspedisi: patch.ekspedisi, noKoli: patch.noKoli, items: patch.items } : k)),
+    });
+    try {
+      await actions.updateDeliveryKoliAction(koliId, patch);
+    } catch (err) {
+      set({ deliveryKolis: previous });
+      window.alert("Gagal menyimpan koli -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   setVendorInvoiceDueDate: async (invoiceId, dueDate) => {
-    await actions.setVendorInvoiceDueDateAction(invoiceId, dueDate);
+    const previous = get().vendorInvoices;
+    set({ vendorInvoices: previous.map((i) => (i.id === invoiceId ? { ...i, dueDate } : i)) });
+    try {
+      await actions.setVendorInvoiceDueDateAction(invoiceId, dueDate);
+    } catch (err) {
+      set({ vendorInvoices: previous });
+      window.alert("Gagal menyimpan jatuh tempo -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   setVendorInvoiceOngkir: async (invoiceId, ongkirTotal) => {
-    await actions.setVendorInvoiceOngkirAction(invoiceId, ongkirTotal);
+    const previous = get().vendorInvoices;
+    const clamped = Math.max(0, ongkirTotal);
+    set({ vendorInvoices: previous.map((i) => (i.id === invoiceId ? { ...i, ongkirTotal: clamped } : i)) });
+    try {
+      await actions.setVendorInvoiceOngkirAction(invoiceId, ongkirTotal);
+    } catch (err) {
+      set({ vendorInvoices: previous });
+      window.alert("Gagal menyimpan ongkir -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   confirmFgDone: async (groupKey, mrpId, vendorProduksi, warna, lengan) => {
@@ -762,43 +1117,131 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     backgroundRefresh();
   },
   undoProductionGroupDone: async (groupKey) => {
-    await actions.undoProductionGroupDoneAction(groupKey);
+    const previous = get().productionGroupMeta;
+    set({ productionGroupMeta: previous.map((m) => (m.groupKey === groupKey ? { ...m, doneAt: undefined } : m)) });
+    try {
+      await actions.undoProductionGroupDoneAction(groupKey);
+    } catch (err) {
+      set({ productionGroupMeta: previous });
+      window.alert("Gagal membuka kunci -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
+  // closeProductionPo TIDAK dibuat optimistic -- server-nya menghitung reject otomatis untuk
+  // grup yang belum fg_confirmed DAN mengunci banyak grup warna/lengan sekaligus (lihat
+  // closeProductionPoAction), bukan sekadar 1 field deterministik dari argumen.
   closeProductionPo: async (maklonPoId, reason) => {
     await actions.closeProductionPoAction(maklonPoId, reason);
     backgroundRefresh();
   },
   reopenProductionPo: async (maklonPoId) => {
-    await actions.reopenProductionPoAction(maklonPoId);
+    const previous = get().maklonPOs;
+    set({ maklonPOs: previous.map((p) => (p.id === maklonPoId ? { ...p, closedAt: undefined, closeReason: undefined } : p)) });
+    try {
+      await actions.reopenProductionPoAction(maklonPoId);
+    } catch (err) {
+      set({ maklonPOs: previous });
+      window.alert("Gagal membuka kembali PO -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   setRejectRemark: async (poId, remark) => {
-    await actions.setRejectRemarkAction(poId, remark);
+    const previous = get().rejectRemarks;
+    set({ rejectRemarks: { ...previous, [poId]: remark } });
+    try {
+      await actions.setRejectRemarkAction(poId, remark);
+    } catch (err) {
+      set({ rejectRemarks: previous });
+      window.alert("Gagal menyimpan catatan -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   resolveMaterialClaim: async (key, note) => {
-    await actions.resolveMaterialClaimAction(key, note);
+    const previous = get().materialClaimResolutions;
+    set({ materialClaimResolutions: { ...previous, [key]: { note, resolvedAt: localDateString(new Date()) } } });
+    try {
+      await actions.resolveMaterialClaimAction(key, note);
+    } catch (err) {
+      set({ materialClaimResolutions: previous });
+      window.alert("Gagal menandai klaim selesai -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   unresolveMaterialClaim: async (key) => {
-    await actions.unresolveMaterialClaimAction(key);
+    const previous = get().materialClaimResolutions;
+    const next = { ...previous };
+    delete next[key];
+    set({ materialClaimResolutions: next });
+    try {
+      await actions.unresolveMaterialClaimAction(key);
+    } catch (err) {
+      set({ materialClaimResolutions: previous });
+      window.alert("Gagal membuka lagi klaim -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   requestMaterialClaimRetur: async (key, note) => {
-    await actions.requestMaterialClaimReturAction(key, note);
+    const previous = get().materialClaimReturRequests;
+    set({ materialClaimReturRequests: { ...previous, [key]: { note, requestedAt: localDateString(new Date()) } } });
+    try {
+      await actions.requestMaterialClaimReturAction(key, note);
+    } catch (err) {
+      set({ materialClaimReturRequests: previous });
+      window.alert("Gagal meminta retur -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
+  // Batalkan mereset SELURUH progres retur (diminta -> dikirim -> diterima) -- lihat komentar
+  // sama di cancelMaterialClaimReturRequestAction -- jadi optimistic-nya juga harus menghapus
+  // key ini dari KETIGA record sekaligus, bukan cuma materialClaimReturRequests.
   cancelMaterialClaimReturRequest: async (key) => {
-    await actions.cancelMaterialClaimReturRequestAction(key);
+    const previousRequests = get().materialClaimReturRequests;
+    const previousDeliveries = get().materialClaimReturDeliveries;
+    const previousReceipts = get().materialClaimReturReceipts;
+    const nextRequests = { ...previousRequests };
+    delete nextRequests[key];
+    const nextDeliveries = { ...previousDeliveries };
+    delete nextDeliveries[key];
+    const nextReceipts = { ...previousReceipts };
+    delete nextReceipts[key];
+    set({ materialClaimReturRequests: nextRequests, materialClaimReturDeliveries: nextDeliveries, materialClaimReturReceipts: nextReceipts });
+    try {
+      await actions.cancelMaterialClaimReturRequestAction(key);
+    } catch (err) {
+      set({ materialClaimReturRequests: previousRequests, materialClaimReturDeliveries: previousDeliveries, materialClaimReturReceipts: previousReceipts });
+      window.alert("Gagal membatalkan retur -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   markMaterialClaimReturDelivered: async (key, note) => {
-    await actions.markMaterialClaimReturDeliveredAction(key, note);
+    const previous = get().materialClaimReturDeliveries;
+    set({ materialClaimReturDeliveries: { ...previous, [key]: { note: note ?? "", deliveredAt: localDateString(new Date()) } } });
+    try {
+      await actions.markMaterialClaimReturDeliveredAction(key, note);
+    } catch (err) {
+      set({ materialClaimReturDeliveries: previous });
+      window.alert("Gagal menandai retur terkirim -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   confirmMaterialClaimReturReceived: async (key) => {
-    await actions.confirmMaterialClaimReturReceivedAction(key);
+    const previous = get().materialClaimReturReceipts;
+    set({ materialClaimReturReceipts: { ...previous, [key]: { receivedAt: localDateString(new Date()) } } });
+    try {
+      await actions.confirmMaterialClaimReturReceivedAction(key);
+    } catch (err) {
+      set({ materialClaimReturReceipts: previous });
+      window.alert("Gagal menandai retur diterima -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
   resetAll: async () => {
