@@ -2615,10 +2615,13 @@ export function hppRowsForInvoice(
  *  mengalokasikan ulang ke size lewat heuristik yield), fungsi ini menelusuri biaya SAMPAI KE ROLL
  *  SPESIFIK (ProductionBatch yang sudah "Tutup Roll" & masuk 1 koli) -- harga bahan roll itu
  *  (findRawMaterialRollForBatch) dibagi rata ke KEDUA size hasil aduan-pola roll itu (blended,
- *  formula sama persis Excel: R = harga roll / SUM(fg kedua size)), lalu ongkir diambil dari
- *  DeliveryKoli.ongkirBatch (di-set vendor per BATCH pengiriman) dibagi rata pcs koli itu. Denda/
- *  reward vendor SENGAJA TIDAK masuk (dikeluarkan dari HPP sesuai keputusan user, ikut Excel yang
- *  juga tidak punya kolom ini) -- beda dari hppRowsForInvoice lama yang masih memotongkannya.
+ *  formula sama persis Excel: R = harga roll / SUM(fg kedua size)), lalu ongkir dibagi rata pcs
+ *  koli itu -- diambil dari DeliveryKoli.ongkirBatch KALAU diisi manual (nilai riil dari invoice
+ *  ekspedisi), kalau tidak fallback ke ekspedisiPrice(ekspedisi, beratKoli) (tarif standar x berat,
+ *  formula sama seperti hppRowsForInvoice lama -- ekspedisi/beratKoli sudah wajib diisi vendor
+ *  sebelum koli "Delivery", jadi TIDAK PERNAH butuh input manual tambahan). Denda/reward vendor
+ *  SENGAJA TIDAK masuk (dikeluarkan dari HPP sesuai keputusan user, ikut Excel yang juga tidak
+ *  punya kolom ini) -- beda dari hppRowsForInvoice lama yang masih memotongkannya.
  *
  *  Baris invoice yang GRUP warna+lengannya belum py roll ber-`closedAt` & terkirim (MRP lama,
  *  sebelum fitur "Tutup Roll" ada) di-fallback ke hppRowsForInvoice lama (pool, TERMASUK denda/
@@ -2673,7 +2676,15 @@ export function hppRowsForInvoicePerRoll(
 
       const koli = deliveryKolis.find((k) => (k.sourceBatchIds ?? []).includes(roll.id));
       const totalPcsInKoli = koli ? koli.items.reduce((s, it) => s + it.qty, 0) : 0;
-      const ongkirPerPc = koli && totalPcsInKoli > 0 ? (koli.ongkirBatch ?? 0) / totalPcsInKoli : 0;
+      // Revisi 2026-09-07: ongkir batch koli ini SENGAJA tidak wajib diinput manual -- `ongkirBatch`
+      // (field "Ongkir batch ini" di Pengiriman) cuma dipakai kalau memang diisi (override, mis.
+      // ada nilai RIIL dari invoice ekspedisi yang beda dari tarif standar). Kalau kosong, fallback
+      // ke tarif ekspedisi x berat koli (ekspedisiPrice, formula sama seperti sebelum fitur roll
+      // ini ada) -- ekspedisi & berat koli SUDAH WAJIB diisi vendor sebelum koli bisa "Delivery"
+      // (lihat doDelivery di app/vendor-maklon/pengiriman/page.tsx), jadi selalu ada nilainya tanpa
+      // perlu input tambahan.
+      const koliOngkirTotal = koli ? koli.ongkirBatch ?? ekspedisiPrice(koli.ekspedisi, koli.beratKoli ?? 0) : 0;
+      const ongkirPerPc = totalPcsInKoli > 0 ? koliOngkirTotal / totalPcsInKoli : 0;
 
       // Denda/reward TIDAK masuk HPP di jalur baru ini (keputusan user, ikut Excel) -- biaya
       // produksi per pc murni tarif maklon, tanpa pemotonganDenda seperti hppRowsForInvoice lama.
