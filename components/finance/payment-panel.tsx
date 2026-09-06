@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Checkbox } from "@/components/ui/checkbox";
+import { NumberInput } from "@/components/mrp/number-input";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatRupiah, invoiceBadge } from "@/lib/mrp/derive";
+import { formatDate, formatRupiah, invoiceBadge, vendorDepositBalance, vendorDepositEntriesFor } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { RawMaterialInvoice } from "@/lib/mrp/types";
 // Item 2.7: getInvoicePaymentProofAction DIPANGGIL LANGSUNG dari komponen ini (bukan lewat store)
@@ -59,6 +60,11 @@ export function PaymentPanel() {
   // di-expand (lihat renderExpanded di bawah) -- Finance minta lihat "detail maklon" juga, bukan
   // cuma rincian material invoice-nya sendiri.
   const maklonPOs = useMrpStore((s) => s.maklonPOs);
+  // Revisi 2026-09-06: saldo deposit vendor (dari klaim yang diselesaikan lewat "retur + pesan
+  // ulang", lihat material-claims/page.tsx) -- fungible per supplier, dipakai manual di sini untuk
+  // mengurangi pembayaran invoice APA PUN ke supplier yang sama.
+  const vendorDeposits = useMrpStore((s) => s.vendorDeposits);
+  const applyVendorDeposit = useMrpStore((s) => s.applyVendorDeposit);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Bukti pembayaran opsional yang dipilih SEBELUM klik "Bayar" — dipasangkan ke semua invoice
@@ -71,11 +77,27 @@ export function PaymentPanel() {
   const [uploadingFor, setUploadingFor] = useState<string | null>(null);
   const [rowProofError, setRowProofError] = useState("");
 
+  // Revisi 2026-09-06: jumlah saldo deposit yang mau dipakai untuk pembayaran ini -- SELALU
+  // kosong/0 di awal (harus diisi manual oleh Finance, tidak pernah auto-terisi dari saldo yang
+  // tersedia) & di-reset lagi setiap ganti seleksi invoice, supaya tidak kebawa nyangkut ke
+  // seleksi berikutnya yang beda supplier/tagihan.
+  const [depositAmount, setDepositAmount] = useState(0);
+  const [showDepositDetail, setShowDepositDetail] = useState(false);
+
   if (!mounted) return null;
 
   const selectedList = invoices.filter((i) => selected.has(i.id));
   const selectableToPay = selectedList.filter((i) => i.status === "INVOICED");
   const selectableToUnpay = selectedList.filter((i) => i.status === "PAID");
+  // Saldo deposit cuma relevan kalau SEMUA invoice yang mau dibayar berasal dari supplier yang
+  // SAMA (ledger-nya per supplier, lihat vendor_deposits) -- kalau campur, sembunyikan kotaknya
+  // dengan catatan, jangan tebak-tebak alokasi ke supplier mana.
+  const paySuppliers = new Set(selectableToPay.map((i) => i.supplier));
+  const depositSupplier = paySuppliers.size === 1 ? selectableToPay[0]?.supplier : undefined;
+  const depositBalance = depositSupplier ? vendorDepositBalance(depositSupplier, vendorDeposits) : 0;
+  const totalTagihan = selectableToPay.reduce((a, i) => a + i.totalBiaya, 0);
+  const depositCap = Math.max(0, Math.min(depositBalance, totalTagihan));
+  const depositEntries = depositSupplier ? vendorDepositEntriesFor(depositSupplier, vendorDeposits) : [];
 
   function toggle(id: string) {
     setSelected((prev) => {
@@ -84,6 +106,9 @@ export function PaymentPanel() {
       else next.add(id);
       return next;
     });
+    // Ganti seleksi -- reset jumlah saldo deposit yang mau dipakai, supaya tidak kebawa nyangkut
+    // ke tagihan/supplier baru (bisa jadi cap-nya sudah beda).
+    setDepositAmount(0);
   }
 
   // Validasi sama seperti handleBuktiPvChange di paying-voucher-wizard.tsx (PDF only). Batas
@@ -129,10 +154,19 @@ export function PaymentPanel() {
     const ids = selectableToPay.map((i) => i.id);
     await setInvoicesPaid(ids, true);
     await setInvoicePaymentProof(ids, proofDataUrl, proofFileName);
+    // Revisi 2026-09-06: pakai saldo deposit HANYA kalau Finance benar-benar mengisi jumlahnya
+    // (default 0, tidak pernah auto) -- di-clamp lagi ke depositCap di sini sebagai jaring
+    // pengaman terakhir sebelum dikirim (server sendiri tetap validasi ulang, lihat
+    // applyVendorDepositAction), untuk jaga-jaga kalau cap sempat berubah antara input & klik.
+    const amountToApply = Math.min(depositAmount, depositCap);
+    if (depositSupplier && amountToApply > 0) {
+      await applyVendorDeposit(depositSupplier, amountToApply, ids);
+    }
     setSelected(new Set());
     setProofDataUrl(undefined);
     setProofFileName(undefined);
     setProofError("");
+    setDepositAmount(0);
   }
 
   // Round-3 fix (Reviewer should-fix #2): "Ganti"/"Upload" dulu langsung setUploadingFor(i.id)
@@ -177,6 +211,15 @@ export function PaymentPanel() {
     { key: "kodeTransaksi", label: "Kode Transaksi", default: true, render: (i) => <span className="font-mono font-medium">{i.kodeTransaksi}</span> },
     { key: "supplier", label: "Supplier / Vendor", default: true, render: (i) => `${i.supplier} → ${VENDOR_PRODUKSI[i.destinationVendor]?.name ?? i.destinationVendor}` },
     { key: "noInvVendor", label: "No Invoice Supplier", default: false, render: (i) => i.noInvoiceVendor || "—" },
+    // Revisi 2026-09-06: default:false (toggle "Kolom") -- flag "invoice ini PV pengganti hasil
+    // klaim" (lihat sourceClaimId di types.ts), supaya kelihatan beda dari invoice biasa kalau
+    // memang perlu ditelusuri, tanpa mengambil tempat di 8 kolom default untuk kasus yang jarang.
+    {
+      key: "sumber",
+      label: "Sumber",
+      default: false,
+      render: (i) => (i.sourceClaimId ? <StatusPill tone="info">Reorder klaim</StatusPill> : <span className="font-sans text-[11px] text-text-muted">PO biasa</span>),
+    },
     // default:false — dipindah ke toggle "Kolom" (detail rekonsiliasi, bukan info inti buat
     // memutuskan bayar/tidak); nilai & status tetap jadi info inti.
     { key: "roll", label: "Roll", default: false, align: "right", render: (i) => i.qtyReady },
@@ -277,6 +320,51 @@ export function PaymentPanel() {
                 {!proofFileName && !proofError && <span className="font-sans text-[10.5px] text-text-muted">Belum ada file dipilih.</span>}
                 {proofError && <span className="font-sans text-[10.5px] font-medium text-danger-fg">{proofError}</span>}
               </div>
+
+              {/* Revisi 2026-09-06: saldo deposit vendor (dari klaim yang diselesaikan lewat
+                 "retur + pesan ulang") -- SELALU kosong di awal & dipilih manual (bukan auto
+                 mengurangi tagihan), dengan rincian asal saldo yang bisa dibuka supaya tidak
+                 jadi angka blackbox. Kotak ini cuma muncul kalau seluruh invoice terpilih dari
+                 SATU supplier yang sama & supplier itu punya saldo > 0. */}
+              {depositSupplier && depositBalance > 0 && (
+                <div className="flex flex-col gap-1 rounded-md border border-dashed border-[#B7DFC5] bg-white px-3 py-2">
+                  <div className="flex items-center gap-1.5">
+                    <label className="font-sans text-[10.5px] font-semibold uppercase tracking-wider text-success-fg">Saldo Deposit {depositSupplier}</label>
+                    <button type="button" onClick={() => setShowDepositDetail((v) => !v)} className="font-sans text-[10px] font-semibold text-action-primary underline">
+                      {showDepositDetail ? "Sembunyikan" : "Lihat rincian"}
+                    </button>
+                  </div>
+                  <div className="font-sans text-[11px] text-text-muted">
+                    Tersedia: <span className="font-mono font-semibold text-success-fg">{formatRupiah(depositBalance)}</span>
+                  </div>
+                  {showDepositDetail && (
+                    <div className="max-h-28 overflow-y-auto rounded border border-[#E4E8EE] bg-[#FAFBFC] px-2 py-1.5">
+                      {depositEntries.length === 0 ? (
+                        <div className="font-sans text-[10.5px] text-text-muted">Belum ada riwayat.</div>
+                      ) : (
+                        depositEntries.map((e) => (
+                          <div key={e.id} className="flex items-center justify-between gap-2 border-b border-[#F1F4F7] py-1 font-sans text-[10.5px] text-[#31414F] last:border-b-0">
+                            <span>
+                              {formatDate(e.createdAt)} — {e.kind === "CREDIT" ? `kredit dari klaim ${e.sourceClaimId ?? "—"}` : `dipakai bayar ${e.sourceInvoiceId ?? "—"}`}
+                            </span>
+                            <span className={"flex-none font-mono font-medium " + (e.kind === "CREDIT" ? "text-success-fg" : "text-danger-fg")}>
+                              {e.kind === "CREDIT" ? "+" : "−"}
+                              {formatRupiah(e.amount)}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                  <label className="mt-1 font-sans text-[10.5px] font-medium text-text-muted">Pakai untuk pembayaran ini (isi manual, opsional)</label>
+                  <NumberInput value={depositAmount} onChange={(v) => setDepositAmount(Math.max(0, Math.min(v, depositCap)))} currency placeholder="Rp 0" className="input w-44 text-[11px]" />
+                  <div className="font-sans text-[10px] text-text-muted">Maks {formatRupiah(depositCap)} untuk {selectableToPay.length} invoice terpilih ini.</div>
+                </div>
+              )}
+              {paySuppliers.size > 1 && (
+                <div className="font-sans text-[10.5px] text-text-muted">Pilih invoice dari 1 supplier yang sama untuk bisa pakai saldo deposit.</div>
+              )}
+
               <button
                 onClick={handlePay}
                 disabled={!canPay}
@@ -284,6 +372,7 @@ export function PaymentPanel() {
                 className="rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11.5px] font-semibold text-success-fg disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Bayar ({selectableToPay.length})
+                {depositAmount > 0 && <span className="ml-1 font-normal text-text-muted">· net {formatRupiah(Math.max(0, totalTagihan - depositAmount))}</span>}
               </button>
             </>
           )}

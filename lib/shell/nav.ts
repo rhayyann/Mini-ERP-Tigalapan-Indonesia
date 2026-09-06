@@ -36,6 +36,11 @@ export const NAV: Record<RoleKey, RoleNav> = {
       { label: "Dashboard", href: "/dashboard/finance" },
       { label: "PO Approval", href: "/finance/po-approval" },
       { label: "Payment", href: "/finance/payment" },
+      // Revisi 2026-09-06: saldo deposit vendor (dari klaim yang diselesaikan lewat "retur +
+      // pesan ulang", lihat material-claims/page.tsx) -- halaman transparansi read-only, dipakai
+      // manual dari Payment tapi juga perlu terlihat sendiri (saldo bisa nyangkut tanpa transaksi
+      // baru hari itu).
+      { label: "Saldo Deposit Vendor", href: "/finance/vendor-deposit" },
       // Item revisi 2026-09-06: disembunyikan dari nav atas permintaan owner ("mungkin comment
       // saja biar tidak tampil, saya siapa tau perlu nanti") -- SENGAJA cuma dikomentari, BUKAN
       // dihapus. Halaman /finance/ledger sendiri TIDAK disentuh (masih ada, tetap bisa diakses

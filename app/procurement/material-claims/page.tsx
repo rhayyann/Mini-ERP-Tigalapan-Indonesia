@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/shell/app-shell";
 import { StatusPill } from "@/components/ui/status-pill";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
+import { ClaimReplacementModal } from "@/components/mrp/claim-replacement-modal";
 import { useMrpStore } from "@/lib/mrp/store";
 import { formatDate, formatDecimal, materialClaimsList, materialClaimStage, type MaterialClaimRow, type MaterialClaimStage } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
@@ -32,6 +33,21 @@ function BuktiFotoCell({ claimKey, hasPhoto }: { claimKey: string; hasPhoto: boo
   );
 }
 
+/** Revisi 2026-09-06: tombol "Buat PV Pengganti" -- muncul di 3 stage retur (DIMINTA/DIKIRIM/
+ *  DITERIMA), begitu keputusan retur sudah diambil (minimal "Minta Retur" sudah diklik). Dipisah
+ *  jadi komponen kecil karena dipakai identik di 3 branch stage berbeda di bawah. */
+function BuatPvPenggantiButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Pesan ulang bahan yang diretur dengan rate & berat terkini -- selesaikan klaim ini sekaligus catat kreditnya ke saldo deposit vendor."
+      className="flex-none rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11px] font-semibold text-info-fg"
+    >
+      Buat PV Pengganti
+    </button>
+  );
+}
+
 type ViewTab = "AKTIF" | "RIWAYAT";
 
 export default function MaterialClaimsPage() {
@@ -49,9 +65,14 @@ export default function MaterialClaimsPage() {
   const requestMaterialClaimRetur = useMrpStore((s) => s.requestMaterialClaimRetur);
   const cancelMaterialClaimReturRequest = useMrpStore((s) => s.cancelMaterialClaimReturRequest);
   const markMaterialClaimReturDelivered = useMrpStore((s) => s.markMaterialClaimReturDelivered);
+  const createClaimReplacementInvoice = useMrpStore((s) => s.createClaimReplacementInvoice);
+  const hargaKain = useMrpStore((s) => s.hargaKain);
+  const hargaKainPks = useMrpStore((s) => s.hargaKainPks);
 
   const [noteDraft, setNoteDraft] = useState<Record<string, string>>({});
   const [tab, setTab] = useState<ViewTab>("AKTIF");
+  // Revisi 2026-09-06: key klaim yang sedang buka modal "Buat PV Pengganti" -- null = tidak ada.
+  const [replacingKey, setReplacingKey] = useState<string | null>(null);
 
   if (!mounted) return null;
 
@@ -156,21 +177,24 @@ export default function MaterialClaimsPage() {
         if (s === "RETUR_DITERIMA") {
           const receipt = materialClaimReturReceipts[r.key];
           return (
-            <div className="flex min-w-[240px] items-start justify-between gap-2">
+            <div className="flex min-w-[260px] flex-col gap-1.5">
               <span className="font-sans text-[11.5px] text-info-fg">
                 Vendor sudah terima roll pengganti — menunggu ditimbang ulang di Cutting.
                 <span className="block font-mono text-[10px] text-text-muted">Diterima {formatDate(receipt.receivedAt)}</span>
               </span>
-              <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="flex-none font-sans text-[11px] font-semibold text-action-primary underline">
-                Batalkan
-              </button>
+              <div className="flex items-center justify-between gap-2">
+                <BuatPvPenggantiButton onClick={() => setReplacingKey(r.key)} />
+                <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="flex-none font-sans text-[11px] font-semibold text-action-primary underline">
+                  Batalkan
+                </button>
+              </div>
             </div>
           );
         }
         if (s === "RETUR_DIKIRIM") {
           const delivery = materialClaimReturDeliveries[r.key];
           return (
-            <div className="flex min-w-[240px] items-start justify-between gap-2">
+            <div className="flex min-w-[260px] flex-col gap-1.5">
               <span className="font-sans text-[11.5px] text-info-fg">
                 Roll pengganti sudah dikirim — menunggu konfirmasi diterima dari vendor.
                 <span className="block text-text-muted">
@@ -178,9 +202,12 @@ export default function MaterialClaimsPage() {
                   <span className="font-mono text-[10px]">{formatDate(delivery.deliveredAt)}</span>
                 </span>
               </span>
-              <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="flex-none font-sans text-[11px] font-semibold text-action-primary underline">
-                Batalkan
-              </button>
+              <div className="flex items-center justify-between gap-2">
+                <BuatPvPenggantiButton onClick={() => setReplacingKey(r.key)} />
+                <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="flex-none font-sans text-[11px] font-semibold text-action-primary underline">
+                  Batalkan
+                </button>
+              </div>
             </div>
           );
         }
@@ -200,7 +227,7 @@ export default function MaterialClaimsPage() {
                 placeholder="Catatan (opsional, mis. resi/estimasi tiba)…"
                 className="input text-[11.5px]"
               />
-              <div className="flex gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   onClick={() => submitDelivered(r.key)}
                   title="Tandai roll pengganti sudah dikirim ke vendor — vendor akan diberi tahu untuk konfirmasi setelah diterima."
@@ -208,6 +235,7 @@ export default function MaterialClaimsPage() {
                 >
                   Tandai Sudah Dikirim
                 </button>
+                <BuatPvPenggantiButton onClick={() => setReplacingKey(r.key)} />
                 <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="flex-none font-sans text-[11px] font-semibold text-action-primary underline">
                   Batalkan
                 </button>
@@ -281,7 +309,9 @@ export default function MaterialClaimsPage() {
       label: "Cara selesai",
       default: true,
       render: (h) => (
-        <StatusPill tone="success">{h.resolutionKind === "AUTO_REWEIGH" ? "Timbang ulang sesuai" : "Ditutup manual"}</StatusPill>
+        <StatusPill tone="success">
+          {h.resolutionKind === "AUTO_REWEIGH" ? "Timbang ulang sesuai" : h.resolutionKind === "RETUR_REORDER" ? "Retur + pesan ulang" : "Ditutup manual"}
+        </StatusPill>
       ),
     },
     { key: "resolvedAt", label: "Tanggal selesai", default: true, render: (h) => formatDate(h.resolvedAt) },
@@ -300,10 +330,28 @@ export default function MaterialClaimsPage() {
             </span>
           )}
           {h.resolutionKind === "MANUAL" && h.resolvedNote && <span>Catatan: {h.resolvedNote}</span>}
+          {h.resolutionKind === "RETUR_REORDER" && h.replacementInvoiceId && (
+            <span>
+              PV pengganti: <span className="font-mono font-medium text-text-primary">{h.replacementInvoiceId}</span> (lihat di Paying Voucher)
+              {h.resolvedNote ? ` — ${h.resolvedNote}` : ""}
+            </span>
+          )}
         </div>
       ),
     },
   ];
+
+  /** Rate (Rp/kg) yang berlaku di PV LAMA untuk klaim ini -- dicari dari colorEntries invoice
+   *  asalnya, cuma dipakai untuk PREVIEW di modal (server menghitung ulang sendiri dari DB, lihat
+   *  createClaimReplacementInvoiceAction). 0 kalau entah kenapa tidak ketemu (invoice hilang) --
+   *  modal tetap bisa dipakai, preview kreditnya cuma jadi Rp 0. */
+  function rateLamaFor(claim: MaterialClaimRow): number {
+    const inv = invoices.find((i) => i.id === claim.invoiceId);
+    const entry = inv?.colorEntries.find((c) => c.warna === claim.warna && c.lengan === claim.lengan);
+    return entry?.hargaPerRoll ?? 0;
+  }
+
+  const replacingClaim = replacingKey ? rows.find((r) => r.key === replacingKey) ?? null : null;
 
   return (
     <AppShell
@@ -341,7 +389,9 @@ export default function MaterialClaimsPage() {
             dikirim sebagai claim saat Cutting menimbang, disertai foto bukti). Alur: hubungi supplier untuk retur roll tsb → klik <b>Minta Retur</b> (vendor diberi tahu) → begitu supplier sudah kirim roll pengganti (mis.
             dikabari lewat WA), klik <b>Tandai Sudah Dikirim</b> → vendor konfirmasi terima di halaman Produksi (Cutting) → begitu vendor timbang ulang dengan hasil
             sesuai toleransi, klaim ini <b>otomatis tertutup sendiri</b> (tidak perlu ditandai manual, dan otomatis pindah ke tab Riwayat/Arsip). Kalau ternyata tidak
-            jadi retur (mis. diterima apa adanya), pakai <b>Selesai</b> langsung — atau <b>Batalkan</b> dulu di tahap manapun untuk balik ke awal.
+            jadi retur (mis. diterima apa adanya), pakai <b>Selesai</b> langsung — atau <b>Batalkan</b> dulu di tahap manapun untuk balik ke awal. Kalau bahan yang
+            diretur mau benar-benar dipesan ulang (bukan cuma tukar roll), pakai <b>Buat PV Pengganti</b> — bisa dengan rate & berat terkini, selisihnya otomatis
+            tercatat sebagai saldo deposit di supplier itu (lihat halaman Payment di Finance).
           </div>
 
           <DataTable
@@ -393,13 +443,28 @@ export default function MaterialClaimsPage() {
               },
               {
                 label: "Cara selesai",
-                options: ["Timbang ulang sesuai", "Ditutup manual"],
-                test: (h, v) => (h.resolutionKind === "AUTO_REWEIGH" ? "Timbang ulang sesuai" : "Ditutup manual") === v,
+                options: ["Timbang ulang sesuai", "Retur + pesan ulang", "Ditutup manual"],
+                test: (h, v) =>
+                  (h.resolutionKind === "AUTO_REWEIGH" ? "Timbang ulang sesuai" : h.resolutionKind === "RETUR_REORDER" ? "Retur + pesan ulang" : "Ditutup manual") === v,
               },
             ]}
             emptyText="Belum ada klaim yang selesai/diarsipkan."
           />
         </>
+      )}
+
+      {replacingClaim && (
+        <ClaimReplacementModal
+          claim={replacingClaim}
+          rateLama={rateLamaFor(replacingClaim)}
+          hargaKain={hargaKain}
+          hargaKainPks={hargaKainPks}
+          onCancel={() => setReplacingKey(null)}
+          onSubmit={async (rateBaru, beratBaruKg, note) => {
+            await createClaimReplacementInvoice(replacingClaim.key, rateBaru, beratBaruKg, note || undefined);
+            setReplacingKey(null);
+          }}
+        />
       )}
     </AppShell>
   );

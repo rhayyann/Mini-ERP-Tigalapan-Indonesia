@@ -20,6 +20,7 @@ import type {
   ProductionYieldResolution,
   RawMaterialInvoice,
   Usia,
+  VendorDepositEntry,
   VendorInvoice,
   VendorInvoiceAdjustmentKind,
 } from "./types";
@@ -149,6 +150,9 @@ export type FlowState = {
    *  ditimbang ulang, kolom-kolom itu di-null-kan lagi (supaya roll_index yang sama bisa mulai
    *  bersih kalau kena klaim lagi), jadi tidak ada jejak historis di sana. */
   materialClaimHistory: MaterialClaimHistory[];
+  /** Ledger saldo deposit vendor (per supplier, fungible) -- lihat VendorDepositEntry di types.ts
+   *  & vendorDepositBalance/vendorDepositEntriesFor di derive.ts. */
+  vendorDeposits: VendorDepositEntry[];
   /** Keyed by ProductionBatch.id — resolusi alert yield <99% (lihat productionYieldAlertsList di
    *  derive.ts), ditindaklanjuti dari portal internal Produksi (bukan Procurement). */
   productionYieldResolutions: Record<string, ProductionYieldResolution>;
@@ -300,6 +304,15 @@ type FlowActions = {
   cancelMaterialClaimReturRequest: (key: string) => Promise<void>;
   markMaterialClaimReturDelivered: (key: string, note?: string) => Promise<void>;
   confirmMaterialClaimReturReceived: (key: string) => Promise<void>;
+  /** Revisi 2026-09-06: selesaikan klaim lewat "retur + pesan ulang" -- buat PV pengganti baru
+   *  (rate & berat TERKINI, bebas beda dari PV lama) DAN catat kredit ke saldo deposit vendor
+   *  (supplier) itu kalau nilainya lebih kecil dari yang sudah dibayar untuk roll yang diretur.
+   *  Lihat createClaimReplacementInvoiceAction & claim-replacement-modal.tsx. */
+  createClaimReplacementInvoice: (key: string, rateBaru: number, beratBaruKg: number, note?: string) => Promise<string>;
+  /** Pakai sebagian/semua saldo deposit vendor (supplier) untuk mengurangi pembayaran invoice yang
+   *  dipilih -- SELALU dipilih manual oleh Finance (lihat payment-panel.tsx), tidak pernah
+   *  otomatis. Validasi `amount <= saldo tersedia` diulang di server (applyVendorDepositAction). */
+  applyVendorDeposit: (supplier: string, amount: number, invoiceIds: string[], note?: string) => Promise<void>;
   /** Dulu menghapus semua data LOKAL (localStorage browser sendiri) + reload -- sekarang benar2
    *  menghapus data BERSAMA di Supabase (semua modul & vendor). Confirm dialog WAJIB ditampilkan
    *  di caller SEBELUM memanggil ini -- lihat components/shell/reset-data-button.tsx. */
@@ -325,6 +338,7 @@ const emptyState: FlowState = {
   materialClaimReturDeliveries: {},
   materialClaimReturReceipts: {},
   materialClaimHistory: [],
+  vendorDeposits: [],
   productionYieldResolutions: {},
   hargaMaklon: [],
   hargaKain: [],
@@ -1361,6 +1375,21 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
       window.alert("Gagal menandai retur diterima -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
       throw err;
     }
+    backgroundRefresh();
+  },
+  // Revisi 2026-09-06: TIDAK optimistic -- action ini membuat record baru (id invoice pengganti
+  // digenerate server, nilai kredit dihitung dari rate invoice ASLI yang cuma diketahui server)
+  // yang tidak punya representasi 1-baris sederhana untuk di-patch di client sebelum server
+  // selesai, beda dari action klaim lain di atas (yang cuma menimpa 1 key di record status). Klik
+  // ini juga jarang & disengaja (submit modal, bukan klik berulang di sebuah list), jadi menunggu
+  // 1 round-trip di sini bukan trade-off yang terasa.
+  createClaimReplacementInvoice: async (key, rateBaru, beratBaruKg, note) => {
+    const newInvoiceId = await actions.createClaimReplacementInvoiceAction(key, rateBaru, beratBaruKg, note);
+    backgroundRefresh();
+    return newInvoiceId;
+  },
+  applyVendorDeposit: async (supplier, amount, invoiceIds, note) => {
+    await actions.applyVendorDepositAction(supplier, amount, invoiceIds, note);
     backgroundRefresh();
   },
   resetAll: async () => {

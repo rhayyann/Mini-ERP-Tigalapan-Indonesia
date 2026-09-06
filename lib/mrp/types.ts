@@ -166,12 +166,38 @@ export type MaterialClaimHistory = {
   returReceivedAt?: string;
   resolvedAt?: string;
   resolvedNote?: string;
-  resolutionKind?: "AUTO_REWEIGH" | "MANUAL";
+  resolutionKind?: "AUTO_REWEIGH" | "MANUAL" | "RETUR_REORDER";
   resolvedNetKg?: number;
   resolvedCodeRoll?: string;
   /** Sama seperti RollReceipt.claimPhotoAt -- flag ada/tidaknya foto bukti berat bersih yang
    *  disimpan waktu klaim ini diajukan (item 2/3, migration 0014). */
   claimPhotoAt?: string;
+  /** Revisi 2026-09-06: terisi kalau `resolutionKind === "RETUR_REORDER"` -- id RawMaterialInvoice
+   *  PV pengganti yang dibuat untuk menyelesaikan klaim ini (lihat
+   *  createClaimReplacementInvoiceAction, RawMaterialInvoice.sourceClaimId). */
+  replacementInvoiceId?: string;
+};
+
+/** Revisi 2026-09-06: 1 baris ledger saldo deposit vendor (per SUPPLIER, bukan per PO/invoice) --
+ *  CREDIT masuk begitu klaim selisih berat diselesaikan lewat "retur + pesan ulang" dengan nilai
+ *  pesanan baru LEBIH KECIL dari nilai yang sudah dibayar di invoice lama untuk roll yang diretur;
+ *  DEBIT masuk begitu Finance memilih pakai sebagian/semua saldo saat membayar invoice APA PUN ke
+ *  supplier yang sama (lihat applyVendorDepositAction, payment-panel.tsx). Saldo berjalan = SUM
+ *  amount CREDIT dikurangi SUM amount DEBIT (lihat vendorDepositBalance di derive.ts) -- SENGAJA
+ *  dihitung live dari seluruh baris ini, bukan disimpan sebagai 1 angka running-total terpisah,
+ *  supaya tidak ada 2 sumber kebenaran saldo yang bisa selisih. */
+export type VendorDepositEntry = {
+  id: string;
+  supplier: string;
+  kind: "CREDIT" | "DEBIT";
+  /** Selalu POSITIF -- arah efeknya ke saldo ditentukan oleh `kind`. */
+  amount: number;
+  /** Diisi untuk CREDIT: claim key asal ("invoiceId|warna|lengan|rollIndex"). */
+  sourceClaimId?: string;
+  /** Diisi untuk DEBIT: invoice yang pembayarannya memakai sebagian saldo ini. */
+  sourceInvoiceId?: string;
+  note?: string;
+  createdAt: string;
 };
 
 export type RawMaterialInvoice = {
@@ -203,6 +229,16 @@ export type RawMaterialInvoice = {
    *  cuma flag `bukti_bayar_at` yang ikut. */
   buktiBayarAt?: string;
   buktiBayarFileName?: string;
+  /** Revisi 2026-09-06: terisi kalau invoice ini adalah PV PENGGANTI hasil klaim selisih berat
+   *  yang diselesaikan lewat "retur + pesan ulang" (lihat createClaimReplacementInvoiceAction &
+   *  MaterialClaimHistory.replacementInvoiceId) -- nilainya claim key asal ("invoiceId|warna|
+   *  lengan|rollIndex", format sama seperti materialClaimsList). Dipakai untuk: (1) exclude dari
+   *  demand planning MRP (kebutuhan roll/pcs-nya sudah terhitung di invoice ASLI yang diretur,
+   *  ini cuma re-sourcing bukan demand baru), (2) badge "Reorder klaim" di UI supaya invoice ini
+   *  kelihatan beda dari invoice biasa. TIDAK ada hubungannya dengan saldo deposit (VendorDepositEntry)
+   *  -- itu ledger fungible terpisah per supplier, tidak terikat ke invoice pengganti manapun.
+   */
+  sourceClaimId?: string;
   paidAt?: string;
   deliveredAt?: string;
   receivedAt?: string;

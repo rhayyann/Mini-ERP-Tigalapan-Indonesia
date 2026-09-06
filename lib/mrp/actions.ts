@@ -1524,6 +1524,146 @@ export async function confirmMaterialClaimReturReceivedAction(key: string): Prom
   void vendorId;
 }
 
+/** Revisi 2026-09-06: selesaikan klaim selisih berat lewat "retur + pesan ulang" -- BEDA dari
+ *  resolveMaterialClaimAction (manual, tanpa retur) & AUTO_REWEIGH (timbang ulang sesuai
+ *  toleransi): di sini procurement benar-benar memesan ulang bahan yang diretur dengan RATE &
+ *  BERAT TERKINI (bisa beda dari PV lama), membuat invoice baru (PV pengganti) yang dibayar PENUH
+ *  lewat alur Payment normal seperti invoice lain manapun (lihat payment-panel.tsx) -- bukan
+ *  otomatis dipotong di sini.
+ *
+ *  Nilai retur (rate LAMA x berat LAMA yang sudah dibayar Finance untuk roll yang diretur) SELALU
+ *  dicatat penuh sebagai 1 baris CREDIT ke ledger vendor_deposits milik supplier itu -- TIDAK
+ *  dikurangi/dinetkan otomatis terhadap PV pengganti ini, baik PV pengganti ini lebih mahal ATAUPUN
+ *  lebih murah dari nilai retur. Kredit ini FUNGIBLE (lihat migration
+ *  0018_claim_reorder_vendor_deposit.sql & VendorDepositEntry di types.ts): baru benar-benar
+ *  "dipakai" (jadi baris DEBIT) kapan pun & untuk invoice APA PUN ke supplier itu, begitu Finance
+ *  memilihnya secara manual saat membayar (lihat applyVendorDepositAction di bawah). Ini keputusan
+ *  eksplisit dari diskusi konsep dengan owner (saldo deposit wajib dipilih manual, tidak pernah
+ *  otomatis), bukan penyederhanaan teknis.
+ *
+ *  Precondition: klaim ini harus sudah minimal "retur diminta" (retur_requested_at terisi) --
+ *  memastikan keputusan retur memang sudah diambil, bukan pesan-ulang diam-diam dari klaim yang
+ *  belum ditindak sama sekali. */
+export async function createClaimReplacementInvoiceAction(key: string, rateBaru: number, beratBaruKg: number, note?: string): Promise<string> {
+  await requireInternalRole(await requireSession(), "procurement");
+  const parsed = parseClaimKey(key);
+  if (!parsed) throw new Error("Klaim tidak valid.");
+  if (!(rateBaru > 0) || !(beratBaruKg > 0)) throw new Error("Rate & berat roll pengganti harus lebih dari 0.");
+  const db = supabaseServer();
+
+  const openId = await findOpenClaimHistoryId(db, parsed.invoiceId, parsed.warna, parsed.lengan, parsed.rollIndex);
+  if (!openId) throw new Error("Klaim ini tidak ditemukan di arsip atau sudah selesai -- tidak bisa dibuat PV pengganti.");
+  const { data: claimRow, error: claimErr } = await db.from("material_claim_history").select("*").eq("id", openId).single();
+  if (claimErr || !claimRow) throw new Error("Gagal membaca arsip klaim.");
+  if (!claimRow.retur_requested_at) throw new Error("Ajukan \"Minta Retur\" dulu sebelum membuat PV pengganti.");
+
+  // Rate invoice ASLI diambil dari DB (bukan dari input user) -- nilai kredit HARUS berdasarkan
+  // yang benar-benar sudah dibayar di invoice lama, bukan angka yang bisa diketik ulang dari
+  // client. `entity` juga ikut invoice asal supaya PV pengganti konsisten entitasnya.
+  const [{ data: origInv }, { data: origColor }] = await Promise.all([
+    db.from("raw_material_invoices").select("entity").eq("id", parsed.invoiceId).single(),
+    db.from("raw_material_invoice_colors").select("harga_per_roll").eq("id", parsed.invoiceColorId).single(),
+  ]);
+  if (!origInv || !origColor) throw new Error("Invoice asal klaim tidak ditemukan.");
+  const rateLama = Number(origColor.harga_per_roll);
+  const beratLamaKg = Number(claimRow.gross_kg);
+  const kredit = rateLama * beratLamaKg;
+  const nilaiBaru = rateBaru * beratBaruKg;
+
+  // PV pengganti = invoice biasa (1 warna/lengan, 1 roll) -- REUSE bentuk row bookInvoiceAction
+  // tapi TANPA menyentuh material_pos.invoiced_rolls/rollCount atau aduan_pola_rows.rib_allocated_roll
+  // PO asal (ini bukan kuantitas kontrak baru, cuma re-sourcing roll yang sudah diretur -- kalau
+  // ikut menambah invoicedRolls/alokasi, kebutuhan MRP akan kehitung dobel).
+  const invoiceId = await nextReadableId("INV");
+  const colorId = `${invoiceId}-${claimRow.warna}-${claimRow.lengan}`;
+  const { error: insErr } = await db.from("raw_material_invoices").insert({
+    id: invoiceId,
+    po_id: claimRow.po_id,
+    mrp_id: claimRow.mrp_id,
+    vendor_produksi: claimRow.vendor_produksi,
+    supplier: claimRow.supplier,
+    qty_ready: 1,
+    diskon: 0,
+    total_biaya: nilaiBaru,
+    kode_transaksi: `KLAIM-${openId}`,
+    no_invoice_vendor: "",
+    entity: origInv.entity,
+    status: "INVOICED",
+    destination_vendor: claimRow.vendor_produksi,
+    booked_at: today(),
+    source_claim_id: key,
+  });
+  if (insErr) throw new Error(`Gagal membuat PV pengganti: ${insErr.message}`);
+  await db.from("raw_material_invoice_colors").insert({ id: colorId, invoice_id: invoiceId, warna: claimRow.warna, lengan: claimRow.lengan, harga_per_roll: rateBaru });
+  await db.from("raw_material_invoice_rolls").insert({ invoice_color_id: colorId, roll_index: 0, gross_kg: beratBaruKg });
+
+  const depositId = await nextReadableId("VDP");
+  const { error: depErr } = await db.from("vendor_deposits").insert({
+    id: depositId,
+    supplier: claimRow.supplier,
+    kind: "CREDIT",
+    amount: kredit,
+    source_claim_id: key,
+    note: note || `Kredit retur roll #${claimRow.roll_index + 1} (${claimRow.warna} · ${claimRow.lengan}, invoice ${parsed.invoiceId}) -- diganti PV ${invoiceId}.`,
+  });
+  if (depErr) throw new Error(`PV pengganti terbuat tapi gagal mencatat kredit deposit: ${depErr.message}`);
+
+  await db.from("material_claim_history").update({ resolution_kind: "RETUR_REORDER", resolved_at: today(), replacement_invoice_id: invoiceId }).eq("id", openId);
+
+  await insertNotification(
+    notif(
+      `Klaim retur roll #${claimRow.roll_index + 1} (${claimRow.warna} · ${claimRow.lengan}, invoice ${parsed.invoiceId}) diselesaikan lewat pesan ulang -- PV pengganti ${invoiceId} (Rp ${Math.round(nilaiBaru).toLocaleString("id-ID")}) dibuat, kredit Rp ${Math.round(kredit).toLocaleString("id-ID")} tercatat di saldo deposit ${claimRow.supplier}.`,
+      ["finance"]
+    )
+  );
+
+  return invoiceId;
+}
+
+/** Pakai sebagian/semua saldo deposit vendor (supplier) untuk mengurangi pembayaran invoice yang
+ *  dipilih -- SELALU dipilih manual oleh Finance (lihat payment-panel.tsx "Saldo Deposit
+ *  Tersedia"), server memvalidasi ULANG `amount <= saldo tersedia` (jangan percaya angka dari
+ *  client) dengan menghitung ulang seluruh ledger existing untuk supplier itu. TIDAK mengubah
+ *  raw_material_invoices.total_biaya -- jumlah yang benar-benar ditransfer (net) itu murni hasil
+ *  kalkulasi UI (total tagihan - saldo dipakai), bukan field tersimpan baru di invoice, supaya
+ *  histori "invoice ini nilainya segini" tetap konsisten dengan PV aslinya.
+ *
+ *  1 baris DEBIT per invoice yang dipilih (bukan 1 baris gabungan), dialokasikan PROPORSIONAL ke
+ *  total_biaya masing-masing invoice -- supaya breakdown-nya tetap rapi & bisa ditelusuri per
+ *  invoice dari halaman Saldo Deposit Vendor, walau `amount` yang dipilih user itu 1 angka
+ *  gabungan untuk semua invoice terpilih sekaligus. */
+export async function applyVendorDepositAction(supplier: string, amount: number, invoiceIds: string[], note?: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "finance");
+  if (!(amount > 0)) throw new Error("Jumlah saldo yang dipakai harus lebih dari 0.");
+  if (invoiceIds.length === 0) throw new Error("Pilih minimal 1 invoice.");
+  const db = supabaseServer();
+
+  const [{ data: ledgerRows, error: ledgerErr }, { data: invRows, error: invErr }] = await Promise.all([
+    db.from("vendor_deposits").select("kind,amount").eq("supplier", supplier),
+    db.from("raw_material_invoices").select("id,total_biaya").in("id", invoiceIds),
+  ]);
+  if (ledgerErr) throw new Error(ledgerErr.message);
+  if (invErr) throw new Error(invErr.message);
+  const balance = (ledgerRows ?? []).reduce((a, r) => a + (r.kind === "CREDIT" ? Number(r.amount) : -Number(r.amount)), 0);
+  // Toleransi kecil (Rp 0.5) untuk pembulatan floating point, bukan celah bisnis.
+  if (amount > balance + 0.5) throw new Error(`Saldo deposit ${supplier} tidak cukup (tersedia Rp ${Math.round(balance).toLocaleString("id-ID")}).`);
+  const totalTagihan = (invRows ?? []).reduce((a, r) => a + Number(r.total_biaya), 0);
+  if (totalTagihan <= 0) throw new Error("Invoice tidak ditemukan.");
+
+  const rows = await Promise.all(
+    (invRows ?? []).map(async (r) => ({
+      id: await nextReadableId("VDP"),
+      supplier,
+      kind: "DEBIT",
+      amount: amount * (Number(r.total_biaya) / totalTagihan),
+      source_invoice_id: r.id,
+      note: note || `Dipakai untuk bayar invoice ${r.id}.`,
+    }))
+  );
+  const { error: insErr } = await db.from("vendor_deposits").insert(rows);
+  if (insErr) throw new Error(`Gagal mencatat pemakaian saldo deposit: ${insErr.message}`);
+}
+
 /** Fetch aduan_pola_rows (+sizes) untuk SATU mrpId -- targeted, dipakai
  *  fetchProductionScopeForMrp maupun closePoWithReasonAction/reassignMaterialToSupplierAction di
  *  bawah (dua-duanya cuma butuh potongan .aduanRows ini, bukan MrpDetail penuh). */

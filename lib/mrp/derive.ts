@@ -1,7 +1,7 @@
 import { EKSPEDISI_RATES, MATERIAL_RATE_PER_ROLL, ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "./seed";
 import type { MrpDetail, PpicApprovalStatus } from "./store";
 import type { HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow } from "./masterData";
-import type { AduanPolaRow, ColorBreakdown, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, Usia, VendorInvoice } from "./types";
+import type { AduanPolaRow, ColorBreakdown, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, Usia, VendorDepositEntry, VendorInvoice } from "./types";
 
 export function formatRupiah(n: number) {
   return "Rp " + Math.round(n).toLocaleString("id-ID");
@@ -935,6 +935,42 @@ export function materialClaimsList(invoices: RawMaterialInvoice[]): MaterialClai
     }
   }
   return out.sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+}
+
+/** Revisi 2026-09-06: saldo deposit VENDOR (supplier) berjalan -- SUM(amount CREDIT) dikurangi
+ *  SUM(amount DEBIT) untuk supplier itu. Sengaja dihitung LIVE dari seluruh baris ledger (bukan 1
+ *  kolom running-total tersendiri) supaya tidak ada 2 sumber kebenaran saldo yang bisa selisih --
+ *  lihat VendorDepositEntry di types.ts. */
+export function vendorDepositBalance(supplier: string, entries: VendorDepositEntry[]): number {
+  let balance = 0;
+  for (const e of entries) {
+    if (e.supplier !== supplier) continue;
+    balance += e.kind === "CREDIT" ? e.amount : -e.amount;
+  }
+  return balance;
+}
+
+/** Rincian ledger saldo deposit 1 supplier, terurut TERBARU DULU -- dipakai untuk "Lihat rincian"
+ *  di Payment (asal-usul saldo, bukan angka blackbox) & halaman Saldo Deposit Vendor. */
+export function vendorDepositEntriesFor(supplier: string, entries: VendorDepositEntry[]): VendorDepositEntry[] {
+  return entries.filter((e) => e.supplier === supplier).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
+
+/** Semua supplier yang punya minimal 1 baris ledger (aktif maupun saldo sudah 0 lagi karena habis
+ *  dipakai) -- dipakai untuk daftar baris di halaman Saldo Deposit Vendor. */
+export function vendorDepositSuppliers(entries: VendorDepositEntry[]): string[] {
+  return Array.from(new Set(entries.map((e) => e.supplier)));
+}
+
+/** Aritmatika "retur + pesan ulang" (lihat createClaimReplacementInvoiceAction) -- helper kecil
+ *  murni, dipakai untuk preview live di modal "Buat PV Pengganti" SEBELUM submit, supaya user
+ *  paham konsekuensinya (kekurangan bayar vs jadi saldo deposit) sebelum klik. `kredit` = nilai
+ *  retur (rate lama x berat lama, per warna/lengan/roll yang diretur -- BUKAN total PV lama).
+ *  `selisih` positif berarti kekurangan yang ditagih, negatif berarti jadi saldo deposit. */
+export function claimReplacementValue(rateBaru: number, beratBaruKg: number, rateLama: number, beratLamaKg: number): { nilaiBaru: number; kredit: number; selisih: number } {
+  const nilaiBaru = rateBaru * beratBaruKg;
+  const kredit = rateLama * beratLamaKg;
+  return { nilaiBaru, kredit, selisih: nilaiBaru - kredit };
 }
 
 export function receivedRollCountForColor(mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan, invoices: RawMaterialInvoice[]): number {
