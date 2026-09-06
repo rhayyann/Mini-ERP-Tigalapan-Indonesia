@@ -289,6 +289,8 @@ type FlowActions = {
   closePoWithReason: (poId: string, reason: string, warna: string, lengan: Lengan, closeQty: number) => Promise<void>;
   reassignMaterialToSupplier: (poId: string, warna: string, lengan: Lengan, moveQty: number, newSupplier: string, reason: string) => Promise<void>;
   transferMaterial: (items: { invoiceId: string; qty: number }[], toVendor: string, deliveryDate: string) => Promise<void>;
+  /** Vendor produksi berhenti mid-produksi -- lihat withdrawVendorProductionAction di actions.ts. */
+  withdrawVendorProduction: (mrpId: string, fromVendor: string, toVendor: string) => Promise<void>;
   advanceMaklonProduction: (id: string) => Promise<void>;
   submitMaklonInvoice: (maklonPoId: string, input: { penalty: number; bonus: number; retentionPct: number; note: string }) => Promise<void>;
   approveMaklonInvoice: (invoiceId: string) => Promise<void>;
@@ -410,6 +412,7 @@ const BUSY_TRACKED_ACTIONS = new Set<string>([
   "setVendorInvoiceStatus",
   "payVendorInvoice",
   "transferMaterial",
+  "withdrawVendorProduction",
   "closePoWithReason",
   "reassignMaterialToSupplier",
   "createDeliveryKoli",
@@ -1100,6 +1103,10 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   },
   transferMaterial: async (items, toVendor, deliveryDate) => {
     await actions.transferMaterialAction(items, toVendor, deliveryDate);
+    backgroundRefresh();
+  },
+  withdrawVendorProduction: async (mrpId, fromVendor, toVendor) => {
+    await actions.withdrawVendorProductionAction(mrpId, fromVendor, toVendor);
     backgroundRefresh();
   },
   advanceMaklonProduction: async (id) => {

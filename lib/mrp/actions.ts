@@ -840,6 +840,152 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
   }
 }
 
+const MAKLON_PO_ACTIVE_STATUSES: MaklonPO["status"][] = ["FULL_WAITING_MATERIAL", "PARTIAL_WAITING_MATERIAL", "PRODUCTION", "PARTIAL_PRODUCTION"];
+
+/** Vendor produksi tiba-tiba berhenti mid-produksi (kasus jarang tapi nyata) -- pindahkan SISA
+ *  pekerjaan 1 PO Produksi (mrpId+fromVendor) penuh ke vendor lain: bahan mentah yang belum
+ *  disentuh produksi (lewat transferMaterialAction yang sudah ada, TIDAK ditulis ulang) DAN roll
+ *  yang sudah di-Resting/Cutting tapi belum jadi Finish Good (reassign
+ *  ProductionBatch.vendorProduksi -- lihat plan "Vendor Produksi berhenti mid-produksi").
+ *
+ *  Finish Good yang SUDAH ada (roll sudah "Tutup Roll", atau grup sudah fgConfirmedAt) TETAP di
+ *  vendor lama -- tidak disentuh sama sekali, tetap bisa dikirim/ditagih seperti biasa lewat
+ *  sistem. Vendor lama otomatis jadi "read-only" untuk produksi BARU begitu ProductionBatch/
+ *  aduan_pola_rows-nya pindah, karena SEMUA query tab Cutting/Finish Good vendor (cutWarnaLenganGroups
+ *  dkk, lib/mrp/derive.ts) selalu difilter by vendorProduksi -- TIDAK perlu flag "locked" baru sama
+ *  sekali. Reject/yield/FG per grup (groupKey = mrpId|warna|lengan, TANPA vendor) juga otomatis
+ *  tetap benar menjumlah kontribusi vendor lama (yang sudah closed) + vendor baru.
+ *
+ *  Vendor B (penerima) dapat tarif maklon PENUH untuk pcs yang dia selesaikan (keputusan user) --
+ *  vendor A TIDAK dapat kompensasi apa pun dari sistem untuk roll yang sudah sempat dia potong. */
+export async function withdrawVendorProductionAction(mrpId: string, fromVendor: string, toVendor: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "procurement");
+  if (fromVendor === toVendor) throw new Error("Vendor tujuan harus berbeda dari vendor asal.");
+  const db = supabaseServer();
+
+  const snapshot1 = await getFlowSnapshot();
+  const maklonPO = snapshot1.maklonPOs.find((p) => p.mrpId === mrpId && p.vendorProduksi === fromVendor);
+  if (!maklonPO) throw new Error("PO Produksi tidak ditemukan.");
+  if (!maklonPO.approved) throw new Error("PO Produksi ini belum di-approve Finance.");
+  if (maklonPO.closedAt) throw new Error("PO Produksi ini sudah ditutup (Close PO) -- tidak ada lagi yang bisa dipindahkan.");
+  if (!MAKLON_PO_ACTIVE_STATUSES.includes(maklonPO.status)) {
+    throw new Error("PO Produksi ini sudah tidak dalam tahap produksi aktif (sudah masuk Delivery/Invoice/Payment) -- tidak ada lagi yang bisa dipindahkan.");
+  }
+
+  // 1) Bahan mentah yang belum disentuh produksi -- pakai transferMaterialAction yang sudah ada
+  // APA ADANYA (bukan ditulis ulang). qty diisi qtyReady (coba pindah SEMUA) -- fungsi itu sendiri
+  // yang clamp ke movableRollCountForInvoice, jadi roll yang sudah dipakai ProductionBatch OTOMATIS
+  // tidak ikut (persis yang dibutuhkan di sini, sisanya ditangani langkah 2 di bawah).
+  const rawItems = snapshot1.invoices.filter((i) => i.mrpId === mrpId && i.destinationVendor === fromVendor && i.qtyReady > 0).map((i) => ({ invoiceId: i.id, qty: i.qtyReady }));
+  if (rawItems.length > 0) {
+    await transferMaterialAction(rawItems, toVendor, today());
+  }
+
+  // 2) Roll yang SUDAH di-Resting/Cutting (ProductionBatch ada) tapi BELUM ditutup/di-FG-kan --
+  // fetch snapshot BARU (setelah langkah 1) supaya lihat state ter-update. Grup yang sudah
+  // fgConfirmedAt dianggap "sudah selesai" (bukan WIP lagi) -- tidak diutak-atik, sama seperti guard
+  // di confirmFgDoneAction/closeProductionBatchAction.
+  const snapshot2 = await getFlowSnapshot();
+  const groupConfirmed = new Set(snapshot2.productionGroupMeta.filter((g) => g.mrpId === mrpId && g.fgConfirmedAt).map((g) => g.warna + "|" + g.lengan));
+  const wipBatches = snapshot2.productionBatches.filter(
+    (b) => b.mrpId === mrpId && b.vendorProduksi === fromVendor && !b.closedAt && !groupConfirmed.has(b.warna + "|" + b.lengan)
+  );
+
+  if (wipBatches.length > 0) {
+    const { error: batchErr } = await db
+      .from("production_batches")
+      .update({ vendor_produksi: toVendor })
+      .in(
+        "id",
+        wipBatches.map((b) => b.id)
+      );
+    if (batchErr) throw new Error(batchErr.message);
+
+    // 3) Sinkronkan aduan pola -- blanket, aman dipanggil walau sebagian baris sudah kena
+    // reassign oleh transferMaterialAction di langkah 1 (no-op untuk baris yang sudah toVendor).
+    await db.from("aduan_pola_rows").update({ vendor: toVendor }).eq("mrp_id", mrpId).eq("vendor", fromVendor);
+
+    // 4) Sesuaikan billing PO Produksi untuk porsi WIP ini (porsi bahan mentah sudah disesuaikan
+    // sendiri oleh transferMaterialAction di langkah 1) -- pola SAMA seperti akhir
+    // transferMaterialAction (proporsional untuk fromMaklon, insert-atau-update untuk toMaklon).
+    const detail = snapshot2.mrpDetails.find((d) => d.mrp.id === mrpId);
+    let pcsMoved = 0;
+    const pcsMovedByLengan = new Map<Lengan, number>();
+    for (const b of wipBatches) {
+      const sizeSource = (b.fgSizeQty && Object.keys(b.fgSizeQty).length > 0 ? b.fgSizeQty : b.sizeQty) ?? {};
+      let pcsForBatch = Object.values(sizeSource).reduce((a, c) => a + c, 0);
+      if (pcsForBatch <= 0) {
+        // Roll baru Resting, belum py hasil cutting -- estimasi dari rasio qty/qtyRoll baris aduan
+        // pola asalnya (semangat sama dengan estimasi pcsMoved di transferMaterialAction).
+        const row = detail?.aduanRows.find((a) => a.id === b.aduanRowId);
+        pcsForBatch = row && row.qtyRoll > 0 ? Math.round(row.qty / row.qtyRoll) : 0;
+      }
+      pcsMoved += pcsForBatch;
+      pcsMovedByLengan.set(b.lengan, (pcsMovedByLengan.get(b.lengan) ?? 0) + pcsForBatch);
+    }
+
+    if (pcsMoved > 0) {
+      const snapshot3 = await getFlowSnapshot();
+      const lenganBuckets = Array.from(pcsMovedByLengan.entries()).map(([lengan, qty]) => ({ lengan, qty }));
+      const fromMaklon = snapshot3.maklonPOs.find((m) => m.mrpId === mrpId && m.vendorProduksi === fromVendor);
+      if (fromMaklon) {
+        const newQty = Math.max(0, fromMaklon.qty - pcsMoved);
+        await db.from("maklon_pos").update({ qty: newQty, amount: fromMaklon.qty > 0 ? Math.round((fromMaklon.amount / fromMaklon.qty) * newQty) : 0 }).eq("id", fromMaklon.id);
+        await db.from("maklon_po_cancelled_lines").insert({
+          maklon_po_id: fromMaklon.id,
+          note: `Vendor berhenti produksi — WIP (${pcsMoved} pcs) dipindahkan ke ${toVendor}`,
+          rolls: wipBatches.length,
+          pcs: pcsMoved,
+          from_vendor: "Procurement",
+          time: nowClock(),
+        });
+      }
+      const toMaklon = snapshot3.maklonPOs.find((m) => m.mrpId === mrpId && m.vendorProduksi === toVendor);
+      if (toMaklon) {
+        const newQty = toMaklon.qty + pcsMoved;
+        await db
+          .from("maklon_pos")
+          .update({ qty: newQty, amount: toMaklon.qty > 0 ? Math.round((toMaklon.amount / toMaklon.qty) * newQty) : maklonAmountForLenganBuckets(snapshot3.hargaMaklon, toVendor, lenganBuckets) })
+          .eq("id", toMaklon.id);
+        await db.from("maklon_po_cancelled_lines").insert({
+          maklon_po_id: toMaklon.id,
+          note: `Menerima WIP (${pcsMoved} pcs) dari vendor lain (${fromVendor} berhenti produksi)`,
+          rolls: wipBatches.length,
+          pcs: pcsMoved,
+          from_vendor: "Procurement",
+          time: nowClock(),
+        });
+      } else {
+        const newMaklonId = await nextReadableId("PO-MKL");
+        await db.from("maklon_pos").insert({
+          id: newMaklonId,
+          mrp_id: mrpId,
+          vendor_produksi: toVendor,
+          qty: pcsMoved,
+          amount: maklonAmountForLenganBuckets(snapshot3.hargaMaklon, toVendor, lenganBuckets),
+          entity: fromMaklon?.entity ?? "Tigalapan Indonesia",
+          status: "PARTIAL_WAITING_MATERIAL",
+          approved: true,
+        });
+        await db.from("maklon_po_cancelled_lines").insert({
+          maklon_po_id: newMaklonId,
+          note: `Menerima WIP (${pcsMoved} pcs) dari vendor lain (${fromVendor} berhenti produksi)`,
+          rolls: wipBatches.length,
+          pcs: pcsMoved,
+          from_vendor: "Procurement",
+          time: nowClock(),
+        });
+      }
+    }
+  }
+
+  await insertNotification(notif(`Vendor ${fromVendor} berhenti produksi untuk ${mrpId} — sisa pekerjaan dipindahkan ke ${toVendor}.`, ["procurement", "finance"]));
+  await insertNotification(
+    notif(`PO Produksi ${mrpId} Anda dihentikan — sisa bahan/WIP dipindahkan ke vendor lain. Finish Good yang sudah ada tetap bisa Anda kirim & tagih.`, ["vendorMaklon"], fromVendor)
+  );
+  await insertNotification(notif(`Anda menerima tambahan produksi untuk ${mrpId} (vendor sebelumnya berhenti produksi) — cek tab Cutting/Finish Good.`, ["vendorMaklon"], toVendor));
+}
+
 export async function setInvoicesPaidAction(invoiceIds: string[], paid: boolean): Promise<void> {
   await requireInternalRole(await requireSession(), "finance");
   const db = supabaseServer();
