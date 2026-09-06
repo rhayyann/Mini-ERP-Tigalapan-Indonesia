@@ -1,7 +1,7 @@
 import { EKSPEDISI_RATES, MATERIAL_RATE_PER_ROLL, ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "./seed";
 import type { MrpDetail, PpicApprovalStatus } from "./store";
 import type { HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
-import type { AduanPolaRow, ColorBreakdown, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, Usia, VendorDepositEntry, VendorInvoice } from "./types";
+import type { AduanPolaRow, ColorBreakdown, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, Usia, VendorDepositEntry, VendorInvoice, VendorInvoiceLine } from "./types";
 
 export function formatRupiah(n: number) {
   return "Rp " + Math.round(n).toLocaleString("id-ID");
@@ -1927,6 +1927,27 @@ export function availableFgToShip(
   return out;
 }
 
+/** Roll (ProductionBatch) yang sudah "Tutup Roll" (`closedAt` terisi) tapi BELUM masuk koli
+ *  manapun -- dipakai Pengiriman (app/vendor-maklon/pengiriman/page.tsx) sebagai daftar roll FG
+ *  yang bisa dipilih vendor untuk mengisi koli baru. 1 roll SELALU dikirim UTUH (dikonfirmasi
+ *  user) -- begitu masuk 1 koli (DeliveryKoli.sourceBatchIds), tidak muncul lagi di sini. Rework
+ *  TETAP pakai availableFgToShip pool lama di atas (tidak py roll asal, lihat plan HPP per roll).
+ *  `excludeKoliId` sama polanya dengan availableFgToShip -- supaya saat EDIT 1 koli, roll yang
+ *  SUDAH ada di koli itu sendiri tetap kelihatan (bukan dianggap "sudah terkirim di koli lain"). */
+export function closedUnshippedRollsForMrp(
+  mrpId: string,
+  vendorProduksi: string,
+  batches: ProductionBatch[],
+  deliveryKolis: DeliveryKoli[],
+  maklonPOs: MaklonPO[],
+  excludeKoliId?: string
+): ProductionBatch[] {
+  const maklonPO = maklonPOs.find((p) => p.mrpId === mrpId && p.vendorProduksi === vendorProduksi);
+  if (maklonPO?.closedAt) return [];
+  const shippedElsewhere = new Set(deliveryKolis.filter((k) => k.id !== excludeKoliId).flatMap((k) => k.sourceBatchIds ?? []));
+  return batches.filter((b) => b.mrpId === mrpId && b.vendorProduksi === vendorProduksi && b.closedAt && !shippedElsewhere.has(b.id));
+}
+
 export function mrpIdsWithUnpackedFg(
   vendorProduksi: string,
   results: ProductionResult[],
@@ -2369,6 +2390,29 @@ function materialCostForWarna(warna: string, vendorProduksi: string, rawInvoices
   return { rollCount, totalNetWeight, hargaBahanTotal };
 }
 
+/** Cari roll bahan baku ASAL 1 roll produksi (ProductionBatch) lewat pencocokan `codeRoll` ke
+ *  `RollReceipt.codeRoll` (diisi Good Receive/Cutting) -- dipakai hppRowsForInvoicePerRoll untuk
+ *  mengambil harga & berat bersih ROLL INI SPESIFIK (bisa beda dari roll lain kalau ini roll
+ *  pengganti klaim retur, lihat createClaimReplacementInvoiceAction), persis pendekatan "Detail
+ *  HPP" di Template Excel Finance -- beda dari materialCostForWarna di atas yang MENGUMPULKAN
+ *  semua roll 1 warna+lengan jadi satu pool. Return null kalau tidak ketemu (roll belum py
+ *  codeRoll, atau data lama sebelum fitur pencocokan ini ada) -- caller fallback ke rata-rata
+ *  pool (materialCostForWarna). */
+function findRawMaterialRollForBatch(batch: ProductionBatch, rawInvoices: RawMaterialInvoice[]): { hargaPerRoll: number; netKg: number } | null {
+  if (!batch.codeRoll) return null;
+  for (const rawInv of rawInvoices) {
+    if (rawInv.destinationVendor !== batch.vendorProduksi) continue;
+    for (const c of rawInv.colorEntries) {
+      if (c.warna !== batch.warna || c.lengan !== batch.lengan) continue;
+      const receipts = rawInv.rollReceipts[c.warna + "|" + c.lengan] ?? [];
+      const idx = receipts.findIndex((r) => r?.codeRoll === batch.codeRoll);
+      if (idx === -1) continue;
+      return { hargaPerRoll: c.hargaPerRoll, netKg: receipts[idx]?.netKg ?? c.rolls[idx] ?? 0 };
+    }
+  }
+  return null;
+}
+
 export type HppRow = {
   invoiceId: string;
   mrpId: string;
@@ -2563,4 +2607,127 @@ export function hppRowsForInvoice(
       hppPerItem,
     };
   });
+}
+
+/** HPP per ROLL (Revisi 2026-09-07, sesuai Template HPP.xlsx Finance & plan "HPP per roll") --
+ *  menggantikan pemakaian hppRowsForInvoice lama di app/finance/laporan-hpp/page.tsx. Beda dari
+ *  hppRowsForInvoice (yang MENGUMPULKAN semua roll 1 warna+lengan jadi satu pool lalu
+ *  mengalokasikan ulang ke size lewat heuristik yield), fungsi ini menelusuri biaya SAMPAI KE ROLL
+ *  SPESIFIK (ProductionBatch yang sudah "Tutup Roll" & masuk 1 koli) -- harga bahan roll itu
+ *  (findRawMaterialRollForBatch) dibagi rata ke KEDUA size hasil aduan-pola roll itu (blended,
+ *  formula sama persis Excel: R = harga roll / SUM(fg kedua size)), lalu ongkir diambil dari
+ *  DeliveryKoli.ongkirBatch (di-set vendor per BATCH pengiriman) dibagi rata pcs koli itu. Denda/
+ *  reward vendor SENGAJA TIDAK masuk (dikeluarkan dari HPP sesuai keputusan user, ikut Excel yang
+ *  juga tidak punya kolom ini) -- beda dari hppRowsForInvoice lama yang masih memotongkannya.
+ *
+ *  Baris invoice yang GRUP warna+lengannya belum py roll ber-`closedAt` & terkirim (MRP lama,
+ *  sebelum fitur "Tutup Roll" ada) di-fallback ke hppRowsForInvoice lama (pool, TERMASUK denda/
+ *  reward seperti sebelumnya) supaya histori HPP MRP lama tidak hilang/kosong -- lihat plan. */
+export function hppRowsForInvoicePerRoll(
+  inv: VendorInvoice,
+  mrpDetails: MrpDetail[],
+  staticMrps: Mrp[],
+  productionBatches: ProductionBatch[],
+  productionResults: ProductionResult[],
+  productionGroupMeta: ProductionGroupMeta[],
+  rawInvoices: RawMaterialInvoice[],
+  deliveryKolis: DeliveryKoli[]
+): HppRow[] {
+  const rows: HppRow[] = [];
+  const legacyLines: VendorInvoiceLine[] = [];
+
+  for (const line of inv.lines) {
+    const groupKey = line.mrpId + "|" + line.warna + "|" + line.lengan;
+    const shippedRolls = productionBatches.filter(
+      (b) =>
+        b.mrpId === line.mrpId &&
+        b.vendorProduksi === inv.vendorProduksi &&
+        b.warna === line.warna &&
+        b.lengan === line.lengan &&
+        b.closedAt &&
+        b.fgSizeQty &&
+        deliveryKolis.some((k) => (k.sourceBatchIds ?? []).includes(b.id))
+    );
+    if (shippedRolls.length === 0) {
+      legacyLines.push(line);
+      continue;
+    }
+
+    const mrp = mrpMetaFor(line.mrpId, mrpDetails, staticMrps);
+    const meta = productionGroupMetaFor(groupKey, productionGroupMeta);
+    const target = targetDoneProduksiForGroup(line.mrpId, inv.vendorProduksi, line.warna, rawInvoices);
+    const status = productionStatusFromDates(target, meta?.doneAt);
+    const statusLabel = status ? (status.label === "DELAY" ? "Delay" : status.label === "ONTIME" ? "Ontime" : "Lebih Cepat") : "—";
+    const jumlahRoll = productionBatches.filter((b) => b.mrpId === line.mrpId && b.warna === line.warna && b.lengan === line.lengan).reduce((s, b) => s + b.qtyRoll, 0);
+
+    for (const roll of shippedRolls) {
+      const fgSizeQty = roll.fgSizeQty ?? {};
+      const totalFgRoll = Object.values(fgSizeQty).reduce((a, b) => a + b, 0);
+      if (totalFgRoll <= 0) continue;
+
+      const rawRoll = findRawMaterialRollForBatch(roll, rawInvoices);
+      const pool = rawRoll ? null : materialCostForWarna(line.warna, inv.vendorProduksi, rawInvoices);
+      const hargaPerRoll = rawRoll ? rawRoll.hargaPerRoll : pool && pool.rollCount > 0 ? pool.hargaBahanTotal / pool.rollCount : 0;
+      const netKg = rawRoll ? rawRoll.netKg : pool && pool.rollCount > 0 ? pool.totalNetWeight / pool.rollCount : 0;
+      const materialCostPerPcRoll = hargaPerRoll / totalFgRoll;
+
+      const koli = deliveryKolis.find((k) => (k.sourceBatchIds ?? []).includes(roll.id));
+      const totalPcsInKoli = koli ? koli.items.reduce((s, it) => s + it.qty, 0) : 0;
+      const ongkirPerPc = koli && totalPcsInKoli > 0 ? (koli.ongkirBatch ?? 0) / totalPcsInKoli : 0;
+
+      // Denda/reward TIDAK masuk HPP di jalur baru ini (keputusan user, ikut Excel) -- biaya
+      // produksi per pc murni tarif maklon, tanpa pemotonganDenda seperti hppRowsForInvoice lama.
+      const biayaProduksiPerItem = line.ratePerPc;
+      const hppPerItem = materialCostPerPcRoll + biayaProduksiPerItem + ongkirPerPc;
+      const targetSizes = roll.sizeQty ?? {};
+
+      for (const [size, fgQtyRaw] of Object.entries(fgSizeQty)) {
+        if (fgQtyRaw <= 0) continue;
+        const fgQty = fgQtyRaw;
+        const cuttingQty = targetSizes[size] ?? fgQty;
+        const rejectQty = Math.max(0, cuttingQty - fgQty);
+        rows.push({
+          invoiceId: inv.id,
+          mrpId: line.mrpId,
+          mrpLabel: `${line.mrpId} ${mrp?.kategori ?? ""}`.trim(),
+          warna: line.warna,
+          lengan: line.lengan,
+          item: `${line.warna} ${HPP_LENGAN_ABBR[line.lengan]} ${size} · roll ${roll.codeRoll ?? roll.id}`,
+          jenis: `${line.lengan} ${size}`,
+          qtyPo: cuttingQty,
+          cutting: cuttingQty,
+          fg: fgQty,
+          reject: rejectQty,
+          rework: 0,
+          statusLabel,
+          yieldPct: cuttingQty > 0 ? (fgQty / cuttingQty) * 100 : 0,
+          maklonRate: line.ratePerPc,
+          jumlahRoll,
+          totalBeratBahan: netKg,
+          faktorProduksi: cuttingQty > 0 ? fgQty / cuttingQty : 0,
+          aktualBeratTerpakai: netKg * (fgQty / totalFgRoll),
+          persentase: fgQty / totalFgRoll,
+          hargaBahanTotal: hargaPerRoll,
+          cogsBahan: materialCostPerPcRoll * fgQty,
+          cogsBahanPerItem: materialCostPerPcRoll,
+          pemotonganDenda: 0,
+          biayaProduksiTotal: biayaProduksiPerItem * fgQty,
+          biayaProduksiPerItem,
+          ongkirPerItem: ongkirPerPc,
+          totalOngkirRow: ongkirPerPc * fgQty,
+          hppPerItem,
+        });
+      }
+    }
+  }
+
+  // Baris yang grup warna+lengannya belum py roll ber-closedAt & terkirim (MRP lama) -- fallback
+  // ke jalur pool lama APA ADANYA (termasuk denda/reward), supaya histori tidak kosong/salah.
+  if (legacyLines.length > 0) {
+    const legacyInv: VendorInvoice = { ...inv, lines: legacyLines };
+    const ongkirTotal = autoOngkirForInvoice(legacyInv, deliveryKolis);
+    rows.push(...hppRowsForInvoice(legacyInv, ongkirTotal, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis));
+  }
+
+  return rows;
 }

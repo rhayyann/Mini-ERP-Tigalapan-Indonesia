@@ -1261,7 +1261,10 @@ export async function unresolveProductionYieldAction(batchId: string): Promise<v
   await supabaseServer().from("production_yield_resolutions").delete().eq("production_batch_id", batchId);
 }
 
-export async function updateDeliveryKoliAction(koliId: string, patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }): Promise<void> {
+export async function updateDeliveryKoliAction(
+  koliId: string,
+  patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[]; sourceBatchIds?: string[]; ongkirBatch?: number }
+): Promise<void> {
   await requireVendorSession();
   const db = supabaseServer();
   const { data: koli } = await db.from("delivery_kolis").select("delivered_at").eq("id", koliId).maybeSingle();
@@ -1270,6 +1273,16 @@ export async function updateDeliveryKoliAction(koliId: string, patch: { ekspedis
   await db.from("delivery_koli_items").delete().eq("delivery_koli_id", koliId);
   if (patch.items.length > 0) {
     await db.from("delivery_koli_items").insert(patch.items.map((it) => ({ delivery_koli_id: koliId, warna: it.warna, lengan: it.lengan, size: it.size, qty: it.qty, kind: it.kind, usia: it.usia ?? null })));
+  }
+  await trySetOngkirBatch(db, koliId, patch.ongkirBatch);
+  // Revisi 2026-09-07 (HPP per roll) -- roll (ProductionBatch) FG yang mengisi koli ini, DIGANTI
+  // seluruhnya (delete+insert, pola sama dengan delivery_koli_items di atas) supaya edit koli bisa
+  // menambah/mengurangi roll. Constraint unique(production_batch_id) di migration 0020 mencegah 1
+  // roll masuk 2 koli sekaligus.
+  await db.from("delivery_koli_batches").delete().eq("delivery_koli_id", koliId);
+  if (patch.sourceBatchIds && patch.sourceBatchIds.length > 0) {
+    const { error: batchErr } = await db.from("delivery_koli_batches").insert(patch.sourceBatchIds.map((batchId) => ({ delivery_koli_id: koliId, production_batch_id: batchId })));
+    if (batchErr) throw new Error(batchErr.message);
   }
 }
 
@@ -1897,6 +1910,51 @@ export async function startProductionBatchAction(input: { mrpId: string; aduanRo
   if (error) throw new Error(error.message);
 }
 
+/** "Tutup Roll" (HPP per roll, migration 0020) -- kunci hasil Finish Good AKTUAL 1 roll SPESIFIK
+ *  (fgSizeQty, tabel baru production_batch_fg_sizes -- beda dari production_batch_sizes yang itu
+ *  TARGET cutting), lalu DUAL-WRITE 1 ProductionResult kind FG (groupKey warna+lengan, note "Roll
+ *  {codeRoll}") persis pola submitProductionResultAction di bawah -- supaya semua alur lama yang
+ *  baca pool production_results (tab Reject/Rework, badge, "Selesai Produksi" tahap 1/2, Pengiriman
+ *  Rework) tetap jalan tanpa disentuh sama sekali. Lihat plan HPP per roll untuk desain lengkap. */
+export async function closeProductionBatchAction(batchId: string, fgSizeQty: Record<string, number>): Promise<void> {
+  await requireVendorSession();
+  const db = supabaseServer();
+  const { data: batch } = await db.from("production_batches").select("id,mrp_id,vendor_produksi,warna,lengan,code_roll,cutting_at,closed_at").eq("id", batchId).single();
+  if (!batch) throw new Error("Roll tidak ditemukan.");
+  if (!batch.cutting_at) throw new Error("Roll ini belum dicutting — isi Hasil Cutting dulu di tab Cutting.");
+  if (batch.closed_at) return;
+  const groupKey = `${batch.mrp_id}|${batch.warna}|${batch.lengan}`;
+  const { data: meta } = await db.from("production_group_meta").select("fg_confirmed_at").eq("group_key", groupKey).maybeSingle();
+  if (meta?.fg_confirmed_at) throw new Error(`Grup ${batch.warna} · ${batch.lengan} sudah "Selesai Produksi" — tidak bisa menutup roll baru di grup ini.`);
+
+  const rows = Object.entries(fgSizeQty).filter(([, qty]) => qty > 0);
+  if (rows.length > 0) {
+    const { error: sizeErr } = await db.from("production_batch_fg_sizes").insert(rows.map(([size, qty]) => ({ production_batch_id: batchId, size, qty })));
+    if (sizeErr) throw new Error(sizeErr.message);
+  }
+  const { error } = await db.from("production_batches").update({ closed_at: today() }).eq("id", batchId);
+  if (error) throw new Error(error.message);
+
+  const { data: maklon } = await db.from("maklon_pos").select("id").eq("mrp_id", batch.mrp_id).eq("vendor_produksi", batch.vendor_produksi).maybeSingle();
+  const resultId = await nextReadableId("PR");
+  const { error: resultErr } = await db.from("production_results").insert({
+    id: resultId,
+    group_key: groupKey,
+    mrp_id: batch.mrp_id,
+    vendor_produksi: batch.vendor_produksi,
+    po_id: maklon?.id ?? "",
+    warna: batch.warna,
+    lengan: batch.lengan,
+    kind: "FG",
+    recorded_at: nowIso(),
+    note: `Roll ${batch.code_roll ?? batchId}`,
+  });
+  if (resultErr) throw new Error(resultErr.message);
+  if (rows.length > 0) await db.from("production_result_sizes").insert(rows.map(([size, qty]) => ({ production_result_id: resultId, size, qty })));
+
+  await maybeAdvanceMaklonToDelivery(batch.mrp_id, batch.vendor_produksi);
+}
+
 export async function submitProductionResultAction(input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; kind: "FG" | "REJECT"; sizeQty: Record<string, number>; note?: string }): Promise<void> {
   await requireVendorSession();
   const db = supabaseServer();
@@ -2348,7 +2406,26 @@ export async function reopenProductionPoAction(maklonPoId: string): Promise<void
 // Delivery
 // =========================================================================
 
-export async function createDeliveryKoliAction(input: { mrpId: string; vendorProduksi: string; ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }): Promise<void> {
+/** Ongkir batch (migration 0020) -- SENGAJA ditulis lewat query TERPISAH (soft-fail, tidak throw)
+ *  dari insert/update utama delivery_kolis, supaya "Simpan koli"/"Update koli" (dipakai vendor
+ *  SETIAP hari) tidak ikut gagal total kalau migration 0020 belum sempat di-apply saat kode ini
+ *  ter-deploy -- kolomnya jadi cuma "belum kesimpan", bukan mem-break alur Pengiriman yang sudah
+ *  ada. Pola sama dengan production_batch_sizes di updateBatchToCuttingAction. */
+async function trySetOngkirBatch(db: SupabaseClient, koliId: string, ongkirBatch: number | undefined): Promise<void> {
+  if (ongkirBatch === undefined) return;
+  const { error } = await db.from("delivery_kolis").update({ ongkir_batch: ongkirBatch }).eq("id", koliId);
+  if (error) console.error("trySetOngkirBatch: gagal simpan ongkir_batch (migration 0020 sudah jalan?)", error.message);
+}
+
+export async function createDeliveryKoliAction(input: {
+  mrpId: string;
+  vendorProduksi: string;
+  ekspedisi: string;
+  noKoli: string;
+  items: DeliveryKoliItem[];
+  sourceBatchIds?: string[];
+  ongkirBatch?: number;
+}): Promise<void> {
   await requireVendorSession();
   const db = supabaseServer();
   const id = await nextReadableId("KOLI");
@@ -2356,6 +2433,13 @@ export async function createDeliveryKoliAction(input: { mrpId: string; vendorPro
   if (error) throw new Error(error.message);
   if (input.items.length > 0) {
     await db.from("delivery_koli_items").insert(input.items.map((it) => ({ delivery_koli_id: id, warna: it.warna, lengan: it.lengan, size: it.size, qty: it.qty, kind: it.kind, usia: it.usia ?? null })));
+  }
+  await trySetOngkirBatch(db, id, input.ongkirBatch);
+  // Revisi 2026-09-07 (HPP per roll) -- roll (ProductionBatch) FG yang mengisi koli ini, SELALU
+  // utuh (dikonfirmasi user, roll tidak pernah dicicil lintas koli).
+  if (input.sourceBatchIds && input.sourceBatchIds.length > 0) {
+    const { error: batchErr } = await db.from("delivery_koli_batches").insert(input.sourceBatchIds.map((batchId) => ({ delivery_koli_id: id, production_batch_id: batchId })));
+    if (batchErr) throw new Error(batchErr.message);
   }
 }
 

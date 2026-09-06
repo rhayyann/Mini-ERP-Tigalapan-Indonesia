@@ -240,7 +240,17 @@ type FlowActions = {
   // "WASTE" SENGAJA tidak termasuk di sini -- item 19: "Buang ke Sisa" (satu-satunya jalur dulu
   // bikin entri WASTE) sudah dihapus, jadi kind di sini praktis selalu "FG"/"REJECT" saja.
   submitProductionResult: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; kind: "FG" | "REJECT"; sizeQty: Record<string, number>; note?: string }) => Promise<void>;
-  createDeliveryKoli: (input: { mrpId: string; vendorProduksi: string; ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }) => Promise<void>;
+  /** "Tutup Roll" (HPP per roll) -- lihat closeProductionBatchAction di lib/mrp/actions.ts. */
+  closeProductionBatch: (batchId: string, fgSizeQty: Record<string, number>) => Promise<void>;
+  createDeliveryKoli: (input: {
+    mrpId: string;
+    vendorProduksi: string;
+    ekspedisi: string;
+    noKoli: string;
+    items: DeliveryKoliItem[];
+    sourceBatchIds?: string[];
+    ongkirBatch?: number;
+  }) => Promise<void>;
   setKoliWeight: (koliId: string, beratKoli: number) => Promise<void>;
   markKoliDelivered: (koliId: string) => Promise<void>;
   createVendorInvoice: (input: { vendorProduksi: string; lines: { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; qty: number; ratePerPc: number }[]; note?: string }) => Promise<void>;
@@ -288,7 +298,7 @@ type FlowActions = {
   resolveProductionYield: (batchId: string, note: string) => Promise<void>;
   unresolveProductionYield: (batchId: string) => Promise<void>;
   reworkRejectSize: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; fromSize: string; qty: number; toLengan: Lengan; toSize: string; usia: Usia }) => Promise<void>;
-  updateDeliveryKoli: (koliId: string, patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }) => Promise<void>;
+  updateDeliveryKoli: (koliId: string, patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[]; sourceBatchIds?: string[]; ongkirBatch?: number }) => Promise<void>;
   setVendorInvoiceDueDate: (invoiceId: string, dueDate: string) => Promise<void>;
   setVendorInvoiceOngkir: (invoiceId: string, ongkirTotal: number) => Promise<void>;
   /** TAHAP 1 -- "Selesai Produksi" di tab Finish Good (hitung reject, tidak mengunci rework). */
@@ -768,6 +778,10 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     await actions.submitProductionResultAction(input);
     backgroundRefresh();
   },
+  closeProductionBatch: async (batchId, fgSizeQty) => {
+    await actions.closeProductionBatchAction(batchId, fgSizeQty);
+    backgroundRefresh();
+  },
   createDeliveryKoli: async (input) => {
     await actions.createDeliveryKoliAction(input);
     backgroundRefresh();
@@ -1208,7 +1222,11 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   updateDeliveryKoli: async (koliId, patch) => {
     const previous = get().deliveryKolis;
     set({
-      deliveryKolis: previous.map((k) => (k.id === koliId && !k.deliveredAt ? { ...k, ekspedisi: patch.ekspedisi, noKoli: patch.noKoli, items: patch.items } : k)),
+      deliveryKolis: previous.map((k) =>
+        k.id === koliId && !k.deliveredAt
+          ? { ...k, ekspedisi: patch.ekspedisi, noKoli: patch.noKoli, items: patch.items, sourceBatchIds: patch.sourceBatchIds, ongkirBatch: patch.ongkirBatch }
+          : k
+      ),
     });
     try {
       await actions.updateDeliveryKoliAction(koliId, patch);

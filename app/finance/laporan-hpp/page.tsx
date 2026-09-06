@@ -5,7 +5,7 @@ import { AppShell } from "@/components/shell/app-shell";
 import { KpiCard } from "@/components/ui/kpi-card";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { autoOngkirForInvoice, formatPcs, formatRupiah, hppRowsForInvoice, type HppRow } from "@/lib/mrp/derive";
+import { formatPcs, formatRupiah, hppRowsForInvoicePerRoll, type HppRow } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
 type HppTableRow = HppRow & { rowId: string };
@@ -84,15 +84,18 @@ export default function FinanceLaporanHppPage() {
   // Invoice REVISION belum final (masih diperbaiki vendor) jadi tidak diikutkan hitung HPP.
   const relevantInvoices = vendorInvoices.filter((i) => i.status !== "REVISION");
 
-  const rows: HppTableRow[] = relevantInvoices.flatMap((inv) => {
-    // Ongkir SELALU dihitung live dari data delivery terbaru (bukan angka yang disimpan) — lihat
-    // autoOngkirForInvoice di lib/mrp/derive.ts. Sebelumnya field ini diisi manual oleh Finance
-    // padahal datanya (berat koli + ekspedisi) sudah ada dari halaman Pengiriman vendor.
-    const ongkirTotal = autoOngkirForInvoice(inv, deliveryKolis);
-    return hppRowsForInvoice(inv, ongkirTotal, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis).map(
-      (r, i) => ({ ...r, rowId: inv.id + "-" + i })
-    );
-  });
+  // Revisi 2026-09-07 (HPP per roll) -- hppRowsForInvoicePerRoll menelusuri biaya sampai ke roll
+  // fisik spesifik (harga bahan roll itu sendiri + ongkir per BATCH pengiriman dari portal Vendor
+  // Produksi, lihat DeliveryKoli.ongkirBatch) untuk grup warna/lengan yang sudah pakai "Tutup
+  // Roll" -- lalu fallback OTOMATIS ke perhitungan pool lama (dengan ongkir auto-hitung tarif
+  // ekspedisi seperti sebelumnya) per baris invoice yang grupnya belum py roll ber-closedAt (MRP
+  // lama, sebelum fitur ini ada), jadi histori tidak hilang/kosong.
+  const rows: HppTableRow[] = relevantInvoices.flatMap((inv) =>
+    hppRowsForInvoicePerRoll(inv, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis).map((r, i) => ({
+      ...r,
+      rowId: inv.id + "-" + i,
+    }))
+  );
 
   const totalFg = rows.reduce((s, r) => s + r.fg, 0);
   const totalBiayaProduksi = rows.reduce((s, r) => s + r.biayaProduksiTotal, 0);
