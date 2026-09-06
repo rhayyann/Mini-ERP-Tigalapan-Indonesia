@@ -64,12 +64,14 @@ type RawTables = Record<
   | "maklonInvoiceRows"
   | "productionBatchRows"
   | "productionBatchSizeRows"
+  | "productionBatchFgSizeRows"
   | "productionYieldResolutionRows"
   | "productionResultRows"
   | "productionResultSizeRows"
   | "productionGroupMetaRows"
   | "deliveryKoliRows"
   | "deliveryKoliItemRows"
+  | "deliveryKoliBatchRows"
   | "vendorInvoiceRows"
   | "vendorInvoiceLineRows"
   | "vendorInvoiceAdjustmentRows"
@@ -109,12 +111,14 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     maklonInvoiceRows,
     productionBatchRows,
     productionBatchSizeRows,
+    productionBatchFgSizeRows,
     productionYieldResolutionRows,
     productionResultRows,
     productionResultSizeRows,
     productionGroupMetaRows,
     deliveryKoliRows,
     deliveryKoliItemRows,
+    deliveryKoliBatchRows,
     vendorInvoiceRows,
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
@@ -146,12 +150,14 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     db.from("maklon_invoices").select("*"),
     db.from("production_batches").select("*"),
     db.from("production_batch_sizes").select("*"),
+    db.from("production_batch_fg_sizes").select("*"),
     db.from("production_yield_resolutions").select("*"),
     db.from("production_results").select("*"),
     db.from("production_result_sizes").select("*"),
     db.from("production_group_meta").select("*"),
     db.from("delivery_kolis").select("*"),
     db.from("delivery_koli_items").select("*"),
+    db.from("delivery_koli_batches").select("*"),
     db.from("vendor_invoices").select("*"),
     db.from("vendor_invoice_lines").select("*"),
     db.from("vendor_invoice_adjustments").select("*"),
@@ -187,12 +193,14 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     maklonInvoiceRows,
     productionBatchRows,
     productionBatchSizeRows,
+    productionBatchFgSizeRows,
     productionYieldResolutionRows,
     productionResultRows,
     productionResultSizeRows,
     productionGroupMetaRows,
     deliveryKoliRows,
     deliveryKoliItemRows,
+    deliveryKoliBatchRows,
     vendorInvoiceRows,
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
@@ -238,12 +246,14 @@ async function fetchFlowRowsFast(db: SupabaseClient): Promise<RawTables> {
     maklonInvoiceRows: wrap("maklon_invoices"),
     productionBatchRows: wrap("production_batches"),
     productionBatchSizeRows: wrap("production_batch_sizes"),
+    productionBatchFgSizeRows: wrap("production_batch_fg_sizes"),
     productionYieldResolutionRows: wrap("production_yield_resolutions"),
     productionResultRows: wrap("production_results"),
     productionResultSizeRows: wrap("production_result_sizes"),
     productionGroupMetaRows: wrap("production_group_meta"),
     deliveryKoliRows: wrap("delivery_kolis"),
     deliveryKoliItemRows: wrap("delivery_koli_items"),
+    deliveryKoliBatchRows: wrap("delivery_koli_batches"),
     vendorInvoiceRows: wrap("vendor_invoices"),
     vendorInvoiceLineRows: wrap("vendor_invoice_lines"),
     vendorInvoiceAdjustmentRows: wrap("vendor_invoice_adjustments"),
@@ -292,12 +302,14 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     maklonInvoiceRows,
     productionBatchRows,
     productionBatchSizeRows,
+    productionBatchFgSizeRows,
     productionYieldResolutionRows,
     productionResultRows,
     productionResultSizeRows,
     productionGroupMetaRows,
     deliveryKoliRows,
     deliveryKoliItemRows,
+    deliveryKoliBatchRows,
     vendorInvoiceRows,
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
@@ -579,10 +591,17 @@ export async function getFlowSnapshot(): Promise<FlowState> {
   // tabelnya belum ada, jadi TIDAK ditambahkan ke daftar error-check di atas (lihat komentar
   // serupa di query lain yang juga tidak wajib ada).
   const batchSizesByBatch = groupBy(productionBatchSizeRows.data ?? [], (r) => r.production_batch_id);
+  // Revisi 2026-09-07 (HPP per roll, migration 0020) -- hasil FG AKTUAL per roll, paralel persis
+  // batchSizesByBatch di atas (yang itu TARGET cutting). Tabel belum tentu ada di environment yang
+  // belum di-migrate, sama seperti production_batch_sizes -- `.data ?? []` gracefully jadi kosong.
+  const fgSizesByBatch = groupBy(productionBatchFgSizeRows.data ?? [], (r) => r.production_batch_id);
   const productionBatches: ProductionBatch[] = (productionBatchRows.data ?? []).map((b) => {
     const sizeRows = batchSizesByBatch[b.id] ?? [];
     const sizeQty: Record<string, number> = {};
     for (const s of sizeRows) sizeQty[s.size] = s.qty;
+    const fgSizeRows = fgSizesByBatch[b.id] ?? [];
+    const fgSizeQty: Record<string, number> = {};
+    for (const s of fgSizeRows) fgSizeQty[s.size] = s.qty;
     return {
       id: b.id,
       mrpId: b.mrp_id,
@@ -598,6 +617,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
       createdAt: b.created_at,
       codeRoll: b.code_roll ?? undefined,
       sizeQty: sizeRows.length > 0 ? sizeQty : undefined,
+      fgSizeQty: fgSizeRows.length > 0 ? fgSizeQty : undefined,
+      closedAt: b.closed_at ?? undefined,
     };
   });
   const productionYieldResolutions: Record<string, ProductionYieldResolution> = {};
@@ -638,6 +659,10 @@ export async function getFlowSnapshot(): Promise<FlowState> {
 
   // ---- Delivery ----
   const itemsByKoli = groupBy(deliveryKoliItemRows.data ?? [], (r) => r.delivery_koli_id);
+  // Revisi 2026-09-07 (HPP per roll, migration 0020) -- roll (ProductionBatch) mana saja yang
+  // masuk koli ini. Tabel belum tentu ada di environment yang belum di-migrate, `.data ?? []`
+  // gracefully jadi kosong sama seperti tabel opsional lain di file ini.
+  const batchIdsByKoli = groupBy(deliveryKoliBatchRows.data ?? [], (r) => r.delivery_koli_id);
   const deliveryKolis: DeliveryKoli[] = (deliveryKoliRows.data ?? []).map((k) => ({
     id: k.id,
     mrpId: k.mrp_id,
@@ -648,6 +673,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     beratKoli: k.berat_koli == null ? undefined : Number(k.berat_koli),
     deliveredAt: k.delivered_at ?? undefined,
     createdAt: k.created_at,
+    sourceBatchIds: (batchIdsByKoli[k.id] ?? []).map((r) => r.production_batch_id),
+    ongkirBatch: k.ongkir_batch == null ? undefined : Number(k.ongkir_batch),
   }));
 
   // ---- Vendor invoice ----

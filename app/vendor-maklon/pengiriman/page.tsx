@@ -7,11 +7,11 @@ import { NumberInput } from "@/components/mrp/number-input";
 import { Button } from "@/components/ui/button";
 import { VendorAuthGuard } from "@/components/mrp/vendor-auth-guard";
 import { useMrpStore } from "@/lib/mrp/store";
-import { availableFgToShip, ekspedisiPrice, formatDate, formatDecimal, formatRupiah, mrpIdsWithUnpackedFg } from "@/lib/mrp/derive";
+import { availableFgToShip, closedUnshippedRollsForMrp, ekspedisiPrice, formatDate, formatDecimal, formatRupiah, mrpIdsWithUnpackedFg } from "@/lib/mrp/derive";
 import { countPengirimanPendingForMrp, pendingMarker } from "@/lib/shell/badges";
 import { EKSPEDISI_LIST, VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { AvailableFgRow } from "@/lib/mrp/derive";
-import type { DeliveryKoliItem, ShippableKind, Usia } from "@/lib/mrp/types";
+import type { DeliveryKoliItem, ProductionBatch, ShippableKind, Usia } from "@/lib/mrp/types";
 
 const USIA_LABEL: Record<Usia, string> = { KIDS: "Kids", DEWASA: "Dewasa" };
 
@@ -73,8 +73,13 @@ function ItemsDetailPanel({ items }: { items: DeliveryKoliItem[] }) {
   );
 }
 
+function rollTotalFg(b: ProductionBatch): number {
+  return Object.values(b.fgSizeQty ?? {}).reduce((a, c) => a + c, 0);
+}
+
 function PengirimanContent({ vendorId }: { vendorId: string }) {
   const productionResults = useMrpStore((s) => s.productionResults);
+  const productionBatches = useMrpStore((s) => s.productionBatches);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const maklonPOs = useMrpStore((s) => s.maklonPOs);
@@ -87,10 +92,24 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
 
   const [mrpId, setMrpId] = useState("");
   const [noKoli, setNoKoli] = useState("");
-  // Qty per baris "Isi koli", keyed by rowKey(kind, warna|lengan|size|usia) — lihat rowKey().
+  // Qty per baris "Isi koli" (Rework & sisa FG lama sebelum fitur roll), keyed by
+  // rowKey(kind, warna|lengan|size|usia) — lihat rowKey().
   const [qtyDraft, setQtyDraft] = useState<Record<string, number>>({});
   const [weightDraft, setWeightDraft] = useState<Record<string, number>>({});
   const [editingKoliId, setEditingKoliId] = useState<string | null>(null);
+  // Revisi 2026-09-07 (HPP per roll) -- roll (ProductionBatch) FG yang dipilih vendor untuk
+  // mengisi koli ini (dikirim UTUH, lihat closedUnshippedRollsForMrp) + ongkir yang di-set vendor
+  // untuk batch pengiriman ini (sumber HPP baru, lihat DeliveryKoli.ongkirBatch).
+  const [selectedRollIds, setSelectedRollIds] = useState<Set<string>>(new Set());
+  const [ongkirBatchDraft, setOngkirBatchDraft] = useState(0);
+  function toggleRollSelected(id: string) {
+    setSelectedRollIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
   // Klik baris "Koli belum dikirim"/"Riwayat pengiriman" untuk expand/collapse rincian isi koli
   // per item — id koli unik lintas kedua tabel jadi aman pakai 1 Set gabungan.
   const [expandedKoli, setExpandedKoli] = useState<Set<string>>(new Set());
@@ -141,6 +160,8 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   function pickMrp(id: string) {
     setMrpId(id);
     setQtyDraft({});
+    setSelectedRollIds(new Set());
+    setOngkirBatchDraft(0);
   }
 
   function editKoli(k: (typeof deliveryKolis)[number]) {
@@ -148,6 +169,8 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
     setMrpId(k.mrpId);
     setNoKoli(k.noKoli);
     setQtyDraft(Object.fromEntries(k.items.map((it) => [rowKey(it.kind ?? "FG", it), it.qty])));
+    setSelectedRollIds(new Set(k.sourceBatchIds ?? []));
+    setOngkirBatchDraft(k.ongkirBatch ?? 0);
   }
 
   function cancelEdit() {
@@ -155,30 +178,49 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
     setMrpId("");
     setNoKoli("");
     setQtyDraft({});
+    setSelectedRollIds(new Set());
+    setOngkirBatchDraft(0);
   }
+
+  // Revisi 2026-09-07 (HPP per roll) -- roll (ProductionBatch) FG yang sudah "Tutup Roll" & belum
+  // masuk koli manapun, untuk MRP yang lagi dipilih di form ini. `editingKoliId` diteruskan supaya
+  // roll yang SUDAH ada di koli yang sedang di-edit tetap kelihatan/bisa dipilih.
+  const closedRolls = mrpId ? closedUnshippedRollsForMrp(mrpId, vendorId, productionBatches, deliveryKolis, maklonPOs, editingKoliId ?? undefined) : [];
 
   function submit() {
     if (!mrpId || !noKoli.trim()) return;
     const validItems: DeliveryKoliItem[] = rows
       .filter((r) => (qtyDraft[r.key] ?? 0) > 0)
       .map((r) => ({ warna: r.warna, lengan: r.lengan, size: r.size, usia: r.usia, qty: Math.min(qtyDraft[r.key] ?? 0, r.available), kind: r.kind }));
-    if (validItems.length === 0) return;
+    // Roll FG terpilih -- diledakkan jadi baris per size (kind FG), dikirim UTUH.
+    const selectedRolls = productionBatches.filter((b) => selectedRollIds.has(b.id));
+    const rollItems: DeliveryKoliItem[] = selectedRolls.flatMap((b) =>
+      Object.entries(b.fgSizeQty ?? {})
+        .filter(([, qty]) => qty > 0)
+        .map(([size, qty]) => ({ warna: b.warna, lengan: b.lengan, size, qty, kind: "FG" as const }))
+    );
+    const allItems = [...validItems, ...rollItems];
+    if (allItems.length === 0) return;
+    const sourceBatchIds = Array.from(selectedRollIds);
+    const ongkirBatch = ongkirBatchDraft > 0 ? ongkirBatchDraft : undefined;
     if (editingKoliId) {
       const existing = deliveryKolis.find((k) => k.id === editingKoliId);
-      updateDeliveryKoli(editingKoliId, { ekspedisi: existing?.ekspedisi ?? "", noKoli: noKoli.trim(), items: validItems });
+      updateDeliveryKoli(editingKoliId, { ekspedisi: existing?.ekspedisi ?? "", noKoli: noKoli.trim(), items: allItems, sourceBatchIds, ongkirBatch });
       cancelEdit();
     } else {
       // Ekspedisi belum dipilih di sini — dipilih belakangan langsung di tabel "Koli belum dikirim".
-      createDeliveryKoli({ mrpId, vendorProduksi: vendorId, ekspedisi: "", noKoli: noKoli.trim(), items: validItems });
+      createDeliveryKoli({ mrpId, vendorProduksi: vendorId, ekspedisi: "", noKoli: noKoli.trim(), items: allItems, sourceBatchIds, ongkirBatch });
       setNoKoli("");
       setQtyDraft({});
+      setSelectedRollIds(new Set());
+      setOngkirBatchDraft(0);
     }
   }
 
   function setKoliEkspedisi(koliId: string, ekspedisi: string) {
     const k = deliveryKolis.find((d) => d.id === koliId);
     if (!k) return;
-    updateDeliveryKoli(koliId, { ekspedisi, noKoli: k.noKoli, items: k.items });
+    updateDeliveryKoli(koliId, { ekspedisi, noKoli: k.noKoli, items: k.items, sourceBatchIds: k.sourceBatchIds, ongkirBatch: k.ongkirBatch });
   }
 
   const myKolis = deliveryKolis.filter((k) => k.vendorProduksi === vendorId);
@@ -241,10 +283,57 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
 
         {mrpId && (
           <div className="mt-4">
-            <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">
-              Isi koli — pilih apa yang mau dimasukkan, isi qty-nya (sisanya biarkan 0)
+            {/* Revisi 2026-09-07 (HPP per roll) -- Finish Good sekarang dipilih PER ROLL (dikirim
+                utuh, tidak bisa sebagian) supaya HPP bisa ditelusuri sampai ke roll bahan baku yang
+                tepat. "Isi koli" di bawah (pool lama) sekarang cuma untuk Rework & sisa FG sebelum
+                fitur ini ada. */}
+            <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">Pilih roll Finish Good (dikirim utuh)</div>
+            {closedRolls.length === 0 && (
+              <div className="mt-2 font-sans text-xs text-text-muted">Belum ada roll yang &quot;Tutup Roll&quot;-nya selesai untuk MRP ini (tab Finish Good).</div>
+            )}
+            {closedRolls.length > 0 && (
+              <div className="mt-2 overflow-hidden rounded-md border border-border-subtle bg-white">
+                <div className="grid grid-cols-5 gap-x-2 border-b border-[#F1F4F7] bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                  <span />
+                  <span>Roll</span>
+                  <span>Warna / lengan</span>
+                  <span>Size</span>
+                  <span className="text-right">Qty FG</span>
+                </div>
+                {closedRolls.map((b) => {
+                  const total = rollTotalFg(b);
+                  const sizeSummary = Object.entries(b.fgSizeQty ?? {})
+                    .filter(([, q]) => q > 0)
+                    .map(([size, q]) => `${size} ${q}`)
+                    .join(", ");
+                  return (
+                    <label key={b.id} className="grid cursor-pointer grid-cols-5 items-center gap-x-2 border-b border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F] last:border-b-0 hover:bg-[#FAFBFC]">
+                      <input type="checkbox" checked={selectedRollIds.has(b.id)} onChange={() => toggleRollSelected(b.id)} className="h-3.5 w-3.5" />
+                      <span className="font-mono text-[11px]">{b.codeRoll || b.id}</span>
+                      <span>
+                        {b.warna} · {b.lengan}
+                      </span>
+                      <span className="font-mono text-[11px] text-text-muted">{sizeSummary || "—"}</span>
+                      <span className="text-right font-mono font-semibold">{total} pcs</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            <div className="mt-3 max-w-[260px]">
+              <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Ongkir batch ini (Rp)</div>
+              <NumberInput value={ongkirBatchDraft} decimals={0} onChange={setOngkirBatchDraft} className="input mt-1 text-right" />
+              <div className="mt-1 font-sans text-[10px] text-text-muted">Dipakai Finance untuk hitung HPP ongkir per pc batch ini — bisa diisi belakangan.</div>
             </div>
-            {!anyAvailable && <div className="mt-2 font-sans text-xs text-text-muted">Tidak ada hasil produksi (FG/Rework) tersedia untuk MRP ini.</div>}
+          </div>
+        )}
+
+        {mrpId && (
+          <div className="mt-4">
+            <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">
+              Isi koli (Rework &amp; sisa FG lama) — pilih apa yang mau dimasukkan, isi qty-nya (sisanya biarkan 0)
+            </div>
+            {!anyAvailable && <div className="mt-2 font-sans text-xs text-text-muted">Tidak ada Rework/sisa FG lama tersedia untuk MRP ini.</div>}
             {anyAvailable && (
               <div className="mt-2 overflow-hidden rounded-md border border-border-subtle bg-white">
                 <div className="grid grid-cols-6 gap-x-2 border-b border-[#F1F4F7] bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">

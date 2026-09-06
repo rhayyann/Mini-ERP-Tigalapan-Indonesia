@@ -301,6 +301,16 @@ export type ProductionBatch = {
    *  Dipakai untuk target/yield per roll (lihat productionYieldAlertsList di derive.ts), BUKAN
    *  estimasi rasio seperti targetSizesForGroup. */
   sizeQty?: Record<string, number>;
+  /** Revisi 2026-09-07 (HPP per roll, migration 0020): hasil Finish Good AKTUAL per size untuk
+   *  roll ini SENDIRI — beda dari `sizeQty` di atas (itu TARGET hasil cutting). Diisi vendor lewat
+   *  "Tutup Roll" (closeProductionBatchAction), yang JUGA dual-write 1 ProductionResult kind FG
+   *  (groupKey warna+lengan, note "Roll {codeRoll}") supaya semua alur lama (Reject/Rework, badge,
+   *  Selesai Produksi tahap 1/2, Pengiriman Rework) tetap jalan tanpa berubah — lihat plan HPP per
+   *  roll. Kosong = roll ini belum ditutup. */
+  fgSizeQty?: Record<string, number>;
+  /** Revisi 2026-09-07: roll ini sudah "Tutup Roll" — FG-nya final & siap masuk Pengiriman (per
+   *  roll, lihat DeliveryKoli.sourceBatchIds), tidak bisa diedit lagi lewat form Finish Good. */
+  closedAt?: string;
 };
 
 /** Catatan resolusi alert yield (<99%) per roll — dilempar ke portal internal Produksi, bukan ke
@@ -348,6 +358,17 @@ export type DeliveryKoli = {
   beratKoli?: number;
   deliveredAt?: string;
   createdAt: string;
+  /** Revisi 2026-09-07 (HPP per roll, migration 0020): id ProductionBatch (roll) yang mengisi koli
+   *  ini — cuma untuk item Finish Good (Rework tetap pool lama tanpa roll asal, lihat plan). 1 roll
+   *  SELALU dikirim UTUH dalam 1 koli (dikonfirmasi user), jadi tidak ada qty parsial per roll di
+   *  sini. Kosong untuk koli lama (sebelum migration ini) — HPP-nya fallback ke jalur pool lama. */
+  sourceBatchIds?: string[];
+  /** Revisi 2026-09-07: ongkir yang di-set VENDOR PRODUKSI untuk batch pengiriman ini — sumber HPP
+   *  ongkir yang baru (menggantikan autoOngkirForInvoice/VendorInvoice.ongkirTotal untuk roll yang
+   *  lewat jalur baru), dibagi rata per pc isi koli ini (lihat hppRowsForInvoicePerRoll di
+   *  derive.ts), lalu dijumlah lintas koli jadi total ongkir per MRP. `ekspedisi`/`beratKoli` di
+   *  atas TETAP ada untuk histori/tampilan, bukan lagi sumber angka HPP. */
+  ongkirBatch?: number;
 };
 
 export type VendorInvoiceLine = { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; qty: number; ratePerPc: number; amount: number };

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { NumberInput } from "@/components/mrp/number-input";
 import { StatusPill } from "@/components/ui/status-pill";
 import { ProgressBar } from "@/components/ui/progress-bar";
+import { Button } from "@/components/ui/button";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
   cumulativeSizeQtyForGroup,
@@ -82,14 +83,18 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const rawInvoices = useMrpStore((s) => s.invoices);
   const rejectRemarks = useMrpStore((s) => s.rejectRemarks);
-  const submitProductionResult = useMrpStore((s) => s.submitProductionResult);
   const setRejectRemark = useMrpStore((s) => s.setRejectRemark);
   const confirmFgDone = useMrpStore((s) => s.confirmFgDone);
   const undoFgConfirm = useMrpStore((s) => s.undoFgConfirm);
+  // Revisi 2026-09-07 (HPP per roll) -- "Tutup Roll" per ProductionBatch (roll), lihat
+  // closeProductionBatchAction. Menggantikan input size bebas per grup untuk kind="FG".
+  const closeProductionBatch = useMrpStore((s) => s.closeProductionBatch);
 
   const [selectedMrpId, setSelectedMrpId] = useState("");
   const [expandedGroupKey, setExpandedGroupKey] = useState("");
-  const [sizeDraft, setSizeDraft] = useState<Record<string, number>>({});
+  // Qty FG aktual per roll, keyed by ProductionBatch id -> { size: qty } -- prefill dari
+  // batch.sizeQty (hasil cutting AKTUAL roll itu) begitu grup di-expand, lihat toggleGroup.
+  const [fgSizeDraft, setFgSizeDraft] = useState<Record<string, Record<string, number>>>({});
   const [expandedPoId, setExpandedPoId] = useState("");
   // Bug fix (2026-09-06): confirmFgDone/undoFgConfirm dulu dipanggil fire-and-forget (tanpa
   // .catch) -- kalau server menolak (mis. baseline hasil cutting dikira kosong, lihat fix di
@@ -115,19 +120,8 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
       setExpandedGroupKey("");
     } else {
       setExpandedGroupKey(key);
-      setSizeDraft({});
+      setFgSizeDraft({});
     }
-  }
-
-  function submitGroup(warna: string, lengan: "PENDEK" | "PANJANG") {
-    const sizeQty: Record<string, number> = {};
-    for (const [size, qty] of Object.entries(sizeDraft)) {
-      if (qty) sizeQty[size] = qty;
-    }
-    if (Object.keys(sizeQty).length === 0) return;
-    submitProductionResult({ mrpId: selectedMrpId, vendorProduksi: vendorId, warna, lengan, kind, sizeQty });
-    setExpandedGroupKey("");
-    setSizeDraft({});
   }
 
   const myResults = productionResults.filter((r) => r.vendorProduksi === vendorId && r.kind === kind);
@@ -239,6 +233,13 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                 // jadi baju) -- contoh: murni 100, dirework 3, totalnya tampil 103 (100 murni + 3
                 // rework), diminta supaya kelihatan jelas asalnya masing-masing.
                 const fgSplit = kind === "FG" ? fgMurniAndReworkForGroup(groupKey, productionResults) : null;
+                // Revisi 2026-09-07 (HPP per roll) -- roll (ProductionBatch) tercutting grup ini,
+                // dipakai buat daftar "Tutup Roll" DAN gate tombol "Selesai Produksi" (cuma boleh
+                // begitu SEMUA roll grup ini sudah ditutup). Grup tanpa roll cutting sama sekali
+                // (murni tujuan rework lintas lengan, lihat warnaLenganGroupsWithFg) tetap boleh
+                // confirm tanpa gate -- sama seperti guard di confirmFgDoneAction.
+                const groupBatches = kind === "FG" ? productionBatches.filter((b) => b.mrpId === selectedMrpId && b.warna === g.warna && b.lengan === g.lengan && b.cuttingAt) : [];
+                const allRollsClosed = groupBatches.length === 0 || groupBatches.every((b) => b.closedAt);
                 return (
                   <div key={groupKey}>
                     <div
@@ -295,8 +296,13 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                             )
                           ) : (
                             <button
-                              onClick={() => runAction(confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
-                              className="flex-none rounded-md bg-action-primary px-2.5 py-[5px] font-sans text-[11px] font-semibold text-white"
+                              onClick={() => allRollsClosed && runAction(confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
+                              disabled={!allRollsClosed}
+                              title={allRollsClosed ? undefined : "Tutup semua roll grup ini dulu (\"Lihat by size\" → Tutup Roll)"}
+                              className={
+                                "flex-none rounded-md px-2.5 py-[5px] font-sans text-[11px] font-semibold text-white " +
+                                (allRollsClosed ? "bg-action-primary" : "cursor-not-allowed bg-[#B8C2CC]")
+                              }
                             >
                               Selesai Produksi
                             </button>
@@ -339,43 +345,62 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                     )}
                     {expanded && !isFgConfirmed && kind === "FG" && (
                       <div className="border-b border-[#CFE0EF] bg-info-bg p-4">
-                        <div className="overflow-hidden rounded-md border border-[#CFE0EF] bg-white">
-                          <div className="grid grid-cols-5 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
-                            <span>Size</span>
-                            <span className="text-right">Target</span>
-                            <span className="text-right">Qty sudah diinput</span>
-                            <span className="text-right">Selisih</span>
-                            <span className="text-right">Input</span>
+                        <div className="mb-2.5 font-sans text-[11px] leading-[1.5] text-info-fg">
+                          Revisi 2026-09-07: Finish Good sekarang dicatat PER ROLL (bukan lagi total bebas per warna/lengan) — supaya HPP bisa ditelusuri sampai ke
+                          roll bahan baku yang tepat. Isi qty FG aktual tiap roll (default = hasil cutting roll itu sendiri), lalu <b>Tutup Roll</b> begitu final.
+                          &quot;Selesai Produksi&quot; grup ini baru aktif setelah SEMUA roll ditutup.
+                        </div>
+                        {groupBatches.length === 0 && (
+                          <div className="rounded-md border border-[#CFE0EF] bg-white px-3 py-3 text-center font-sans text-[11.5px] text-text-muted">
+                            Belum ada roll tercutting untuk grup ini.
                           </div>
-                          {sizes.map((size) => {
-                            // Selisih = qty sudah diinput - target -- merah + tanda "-" kalau
-                            // masih kurang dari target, hijau + tanda "+" kalau sudah pas/lebih.
-                            const selisih = (recorded[size] ?? 0) - (target[size] ?? 0);
+                        )}
+                        <div className="flex flex-col gap-2.5">
+                          {groupBatches.map((b) => {
+                            const rollTarget = b.sizeQty ?? {};
+                            const isClosed = !!b.closedAt;
+                            const draft = fgSizeDraft[b.id] ?? rollTarget;
+                            const totalTarget = Object.values(rollTarget).reduce((a, c) => a + c, 0);
+                            const totalDraft = Object.values(draft).reduce((a, c) => a + (c || 0), 0);
                             return (
-                              <div key={size} className="grid grid-cols-5 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
-                                <span className="font-mono font-medium">{size}</span>
-                                <span className="text-right font-mono">{target[size] ?? 0}</span>
-                                <span className="text-right font-mono text-text-muted">{recorded[size] ?? 0}</span>
-                                <span className={"text-right font-mono font-semibold " + (selisih < 0 ? "text-danger-fg" : "text-success-fg")}>
-                                  {selisih >= 0 ? "+" : ""}
-                                  {selisih}
-                                </span>
-                                <span className="flex justify-end">
-                                  <NumberInput
-                                    value={sizeDraft[size] ?? 0}
-                                    decimals={0}
-                                    onChange={(v) => setSizeDraft((prev) => ({ ...prev, [size]: v }))}
-                                    className="input w-[90px] text-right"
-                                  />
-                                </span>
+                              <div key={b.id} className="overflow-hidden rounded-md border border-[#CFE0EF] bg-white">
+                                <div className="flex items-center justify-between gap-2 border-b border-[#EEF1F4] bg-[#F7F9FB] px-3 py-1.5">
+                                  <span className="font-sans text-[11.5px] font-medium text-[#31414F]">
+                                    Roll {b.codeRoll || b.id} <span className="font-mono text-[10.5px] text-text-muted">({totalTarget} pcs hasil cutting)</span>
+                                  </span>
+                                  {isClosed ? (
+                                    <StatusPill tone="success">Roll ditutup</StatusPill>
+                                  ) : (
+                                    <Button onClick={() => runAction(closeProductionBatch(b.id, draft))} variant="primary" size="xs">
+                                      Tutup Roll ({totalDraft})
+                                    </Button>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-3 gap-x-3 gap-y-1.5 px-3 py-2">
+                                  {Object.keys(rollTarget).length === 0 && (
+                                    <span className="col-span-3 font-sans text-[11px] text-text-muted">Roll ini belum punya hasil cutting.</span>
+                                  )}
+                                  {Object.entries(rollTarget).map(([size, tQty]) => (
+                                    <div key={size} className="flex items-center justify-between gap-2 font-sans text-[11.5px] text-[#31414F]">
+                                      <span className="font-mono font-medium">{size}</span>
+                                      {isClosed ? (
+                                        <span className="font-mono text-text-muted">
+                                          {b.fgSizeQty?.[size] ?? 0} / {tQty}
+                                        </span>
+                                      ) : (
+                                        <NumberInput
+                                          value={draft[size] ?? tQty}
+                                          decimals={0}
+                                          onChange={(v) => setFgSizeDraft((prev) => ({ ...prev, [b.id]: { ...(prev[b.id] ?? rollTarget), [size]: v } }))}
+                                          className="input w-[80px] text-right"
+                                        />
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
                               </div>
                             );
                           })}
-                        </div>
-                        <div className="mt-2.5">
-                          <button onClick={() => submitGroup(g.warna, g.lengan)} className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white">
-                            Simpan hasil produksi
-                          </button>
                         </div>
                       </div>
                     )}
