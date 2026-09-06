@@ -4,13 +4,17 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/shell/app-shell";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { TransferMaterialModal, type TransferCandidate } from "@/components/mrp/transfer-material-modal";
 import { SetDeliveryModal } from "@/components/mrp/set-delivery-modal";
+import { WithdrawVendorModal } from "@/components/mrp/withdraw-vendor-modal";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
   formatDate,
+  formatPcs,
   formatRupiah,
+  maklonPoBadgeWithApproval,
   materialPoFullStatus,
   materialPoFullStatusBadge,
   movableRollCountForInvoice,
@@ -21,7 +25,12 @@ import {
   type MaterialPoFullStatus,
 } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
-import type { RawMaterialInvoice } from "@/lib/mrp/types";
+import type { MaklonPO, MaklonPoStatus, RawMaterialInvoice } from "@/lib/mrp/types";
+
+// PO Produksi masih "aktif" (belum sampai tahap kirim/tagih) -- eligible untuk "Vendor Berhenti
+// Produksi", SAMA PERSIS gate MAKLON_PO_ACTIVE_STATUSES di withdrawVendorProductionAction
+// (lib/mrp/actions.ts) supaya baris yang ditampilkan di UI konsisten dengan yang diterima server.
+const MAKLON_PO_ACTIVE_STATUSES: MaklonPoStatus[] = ["FULL_WAITING_MATERIAL", "PARTIAL_WAITING_MATERIAL", "PRODUCTION", "PARTIAL_PRODUCTION"];
 
 type TrackingRow = {
   id: string;
@@ -58,10 +67,14 @@ export default function MaterialTrackingPage() {
   const vendorInvoices = useMrpStore((s) => s.vendorInvoices);
   const setInvoicesDelivery = useMrpStore((s) => s.setInvoicesDelivery);
   const transferMaterial = useMrpStore((s) => s.transferMaterial);
+  const withdrawVendorProduction = useMrpStore((s) => s.withdrawVendorProduction);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [transferOpen, setTransferOpen] = useState(false);
   const [deliveryOpen, setDeliveryOpen] = useState(false);
+  // "Vendor Berhenti Produksi" -- PO Produksi yang lagi dipilih untuk dipindahkan sisa
+  // pekerjaannya, lihat WithdrawVendorModal & withdrawVendorProductionAction.
+  const [withdrawTarget, setWithdrawTarget] = useState<MaklonPO | null>(null);
 
   if (!mounted) return null;
 
@@ -162,6 +175,37 @@ export default function MaterialTrackingPage() {
     },
   ];
 
+  // "PO Produksi aktif" -- kasus jarang tapi nyata: vendor tiba-tiba minta berhenti mid-produksi.
+  // Cuma PO yang masih dalam tahap produksi aktif yang eligible (sama gate dengan
+  // withdrawVendorProductionAction) -- PO yang sudah masuk Delivery/Invoice/Payment tidak ada lagi
+  // yang bisa dipindahkan (Finish Good sudah selesai/dikirim, bukan WIP lagi).
+  const activePOs = maklonPOs.filter((p) => p.approved && !p.closedAt && p.qty > 0 && MAKLON_PO_ACTIVE_STATUSES.includes(p.status));
+  const activePoColumns: ColumnDef<MaklonPO>[] = [
+    { key: "noPo", label: "No PO", default: true, render: (p) => <span className="font-mono font-medium">{p.id}</span> },
+    { key: "vendor", label: "Vendor", default: true, render: (p) => VENDOR_PRODUKSI[p.vendorProduksi]?.name ?? p.vendorProduksi },
+    { key: "qty", label: "Qty", default: true, align: "right", render: (p) => formatPcs(p.qty) + " pcs" },
+    { key: "nilai", label: "Nilai", default: true, align: "right", render: (p) => formatRupiah(p.amount) },
+    {
+      key: "status",
+      label: "Status",
+      default: true,
+      render: (p) => {
+        const badge = maklonPoBadgeWithApproval(p, vendorInvoices);
+        return <StatusPill tone={badge.tone}>{badge.label}</StatusPill>;
+      },
+    },
+    {
+      key: "aksi",
+      label: "Aksi",
+      default: true,
+      render: (p) => (
+        <Button onClick={() => setWithdrawTarget(p)} variant="danger" size="xs">
+          Vendor Berhenti Produksi →
+        </Button>
+      ),
+    },
+  ];
+
   return (
     <AppShell
       role="procurement"
@@ -170,6 +214,33 @@ export default function MaterialTrackingPage() {
       title="Material tracking"
       subtitle={`${rows.length} baris material — invoice yang sudah dibayar Finance ke atas`}
     >
+      {activePOs.length > 0 && (
+        <DataTable
+          title="PO Produksi aktif"
+          subtitle="Vendor tiba-tiba berhenti mid-produksi? Pindahkan sisa pekerjaannya (bahan mentah + WIP belum Finish Good) ke vendor lain sekaligus."
+          columns={activePoColumns}
+          rows={activePOs}
+          keyOf={(p) => p.id}
+          firstColumnLabel="No. MRP"
+          firstColumnRender={(p) => <span className="font-mono">{p.mrpId}</span>}
+          emptyText="Tidak ada PO Produksi aktif."
+        />
+      )}
+
+      {withdrawTarget && (
+        <WithdrawVendorModal
+          mrpId={withdrawTarget.mrpId}
+          fromVendorName={VENDOR_PRODUKSI[withdrawTarget.vendorProduksi]?.name ?? withdrawTarget.vendorProduksi}
+          qty={withdrawTarget.qty}
+          amount={withdrawTarget.amount}
+          otherVendors={Object.entries(VENDOR_PRODUKSI)
+            .filter(([id]) => id !== withdrawTarget.vendorProduksi)
+            .map(([id, v]) => ({ id, name: v.name }))}
+          onConfirm={(toVendor) => withdrawVendorProduction(withdrawTarget.mrpId, withdrawTarget.vendorProduksi, toVendor)}
+          onClose={() => setWithdrawTarget(null)}
+        />
+      )}
+
       {selected.size > 0 && (
         <div className="flex items-center gap-3 rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-[10px]">
           <span className="font-sans text-xs font-medium text-info-fg">{selected.size} dipilih</span>
