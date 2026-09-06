@@ -23,6 +23,7 @@ import type {
   RawMaterialInvoice,
   RollArrival,
   RollReceipt,
+  VendorDepositEntry,
   VendorInvoice,
   VendorInvoiceAdjustment,
   VendorInvoiceLine,
@@ -73,6 +74,7 @@ type RawTables = Record<
   | "vendorInvoiceLineRows"
   | "vendorInvoiceAdjustmentRows"
   | "materialClaimHistoryRows"
+  | "vendorDepositRows"
   | "notificationRows"
   | "hargaMaklonRows"
   | "hargaKainRows"
@@ -116,6 +118,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
     materialClaimHistoryRows,
+    vendorDepositRows,
     notificationRows,
     hargaMaklonRows,
     hargaKainRows,
@@ -151,6 +154,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     db.from("vendor_invoice_lines").select("*"),
     db.from("vendor_invoice_adjustments").select("*"),
     db.from("material_claim_history").select("*"),
+    db.from("vendor_deposits").select("*"),
     db.from("notifications").select("*"),
     db.from("harga_maklon").select("*"),
     db.from("harga_kain").select("*"),
@@ -187,6 +191,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
     materialClaimHistoryRows,
+    vendorDepositRows,
     notificationRows,
     hargaMaklonRows,
     hargaKainRows,
@@ -236,6 +241,7 @@ async function fetchFlowRowsFast(db: SupabaseClient): Promise<RawTables> {
     vendorInvoiceLineRows: wrap("vendor_invoice_lines"),
     vendorInvoiceAdjustmentRows: wrap("vendor_invoice_adjustments"),
     materialClaimHistoryRows: wrap("material_claim_history"),
+    vendorDepositRows: wrap("vendor_deposits"),
     notificationRows: wrap("notifications"),
     hargaMaklonRows: wrap("harga_maklon"),
     hargaKainRows: wrap("harga_kain"),
@@ -288,6 +294,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
     materialClaimHistoryRows,
+    vendorDepositRows,
     notificationRows,
     hargaMaklonRows,
     hargaKainRows,
@@ -526,6 +533,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
       buktiPvFileName: inv.bukti_pv_file_name ?? undefined,
       buktiBayarAt: inv.bukti_bayar_at ?? undefined,
       buktiBayarFileName: inv.bukti_bayar_file_name ?? undefined,
+      sourceClaimId: inv.source_claim_id ?? undefined,
       paidAt: inv.paid_at ?? undefined,
       deliveredAt: inv.delivered_at ?? undefined,
       receivedAt: inv.received_at ?? undefined,
@@ -696,6 +704,19 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     resolvedNetKg: h.resolved_net_kg == null ? undefined : Number(h.resolved_net_kg),
     resolvedCodeRoll: h.resolved_code_roll ?? undefined,
     claimPhotoAt: h.claim_photo_at ?? undefined,
+    replacementInvoiceId: h.replacement_invoice_id ?? undefined,
+  }));
+
+  // ---- Saldo deposit vendor (lihat migration 0018_claim_reorder_vendor_deposit.sql) ----
+  const vendorDeposits: VendorDepositEntry[] = (vendorDepositRows.data ?? []).map((d) => ({
+    id: d.id,
+    supplier: d.supplier,
+    kind: d.kind,
+    amount: Number(d.amount),
+    sourceClaimId: d.source_claim_id ?? undefined,
+    sourceInvoiceId: d.source_invoice_id ?? undefined,
+    note: d.note ?? undefined,
+    createdAt: d.created_at,
   }));
 
   // ---- Notifikasi ----
@@ -759,6 +780,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     materialClaimReturDeliveries,
     materialClaimReturReceipts,
     materialClaimHistory,
+    vendorDeposits,
     productionYieldResolutions,
     hargaMaklon,
     hargaKain,
