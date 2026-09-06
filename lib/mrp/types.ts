@@ -363,11 +363,13 @@ export type DeliveryKoli = {
    *  SELALU dikirim UTUH dalam 1 koli (dikonfirmasi user), jadi tidak ada qty parsial per roll di
    *  sini. Kosong untuk koli lama (sebelum migration ini) — HPP-nya fallback ke jalur pool lama. */
   sourceBatchIds?: string[];
-  /** Revisi 2026-09-07: ongkir yang di-set VENDOR PRODUKSI untuk batch pengiriman ini — sumber HPP
-   *  ongkir yang baru (menggantikan autoOngkirForInvoice/VendorInvoice.ongkirTotal untuk roll yang
-   *  lewat jalur baru), dibagi rata per pc isi koli ini (lihat hppRowsForInvoicePerRoll di
-   *  derive.ts), lalu dijumlah lintas koli jadi total ongkir per MRP. `ekspedisi`/`beratKoli` di
-   *  atas TETAP ada untuk histori/tampilan, bukan lagi sumber angka HPP. */
+  /** Revisi 2026-09-07: ongkir OPSIONAL untuk batch pengiriman ini, di-set VENDOR PRODUKSI kalau
+   *  ada nilai RIIL dari invoice ekspedisi yang beda dari tarif standar (override) — kalau kosong,
+   *  hppRowsForInvoicePerRoll (derive.ts) fallback ke `ekspedisiPrice(ekspedisi, beratKoli)` (tarif
+   *  standar x berat koli, formula sama seperti sebelum fitur roll ini ada — `ekspedisi`/`beratKoli`
+   *  SUDAH WAJIB diisi vendor sebelum koli bisa "Delivery", jadi selalu ada nilainya tanpa perlu
+   *  input tambahan). Dibagi rata per pc isi koli ini, lalu dijumlah lintas koli jadi total ongkir
+   *  per MRP. */
   ongkirBatch?: number;
 };
 

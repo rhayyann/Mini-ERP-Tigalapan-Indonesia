@@ -320,10 +320,13 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                 })}
               </div>
             )}
-            <div className="mt-3 max-w-[260px]">
-              <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Ongkir batch ini (Rp)</div>
+            <div className="mt-3 max-w-[320px]">
+              <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Ongkir batch ini (Rp) — opsional</div>
               <NumberInput value={ongkirBatchDraft} decimals={0} onChange={setOngkirBatchDraft} className="input mt-1 text-right" />
-              <div className="mt-1 font-sans text-[10px] text-text-muted">Dipakai Finance untuk hitung HPP ongkir per pc batch ini — bisa diisi belakangan.</div>
+              <div className="mt-1 font-sans text-[10px] text-text-muted">
+                Isi kalau ada nilai RIIL dari invoice ekspedisi. Kalau dikosongkan, HPP otomatis pakai tarif ekspedisi × berat koli (sama seperti Estimasi ongkir di
+                bawah) — jadi tidak wajib diisi.
+              </div>
             </div>
           </div>
         )}
