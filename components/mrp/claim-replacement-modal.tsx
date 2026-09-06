@@ -2,16 +2,17 @@
 
 import { useState } from "react";
 import { NumberInput } from "@/components/mrp/number-input";
-import { claimReplacementValue, formatDecimal, formatRupiah, hargaKainRate } from "@/lib/mrp/derive";
+import { claimReplacementValue, formatRupiah, hargaKainRate } from "@/lib/mrp/derive";
+import { readPdfAsDataUrl } from "@/lib/mrp/clientFiles";
 import type { HargaKainPksRow, HargaKainRow } from "@/lib/mrp/masterData";
 import type { MaterialClaimRow } from "@/lib/mrp/derive";
 
-/** Revisi 2026-09-06: modal "Buat PV Pengganti" -- procurement menyelesaikan klaim selisih berat
- *  lewat retur + pesan ulang (BUKAN cuma tukar roll apa adanya). Rate & berat SENGAJA tidak
- *  dikunci ke PV lama (ikut harga terkini, lihat diskusi konsep dengan owner) -- preview di bawah
- *  cuma ilustrasi "kalau kredit retur ini nanti dipakai PENUH untuk PV ini", BUKAN netting
- *  otomatis -- saldo deposit yang benar-benar tercatat SELALU dipakai manual belakangan oleh
- *  Finance, bisa untuk invoice mana pun ke supplier ini (lihat payment-panel.tsx). */
+/** Revisi 2026-09-06 (v2 -- disederhanakan atas permintaan owner, versi pertama kebanyakan teks
+ *  instruksi & field opsional yang tidak kepakai): modal "Buat PV Pengganti". Langsung ke inti:
+ *  rate, berat, bukti invoice, lalu perbandingan nilai lama vs baru. Rate & berat SENGAJA tidak
+ *  dikunci ke PV lama (ikut harga terkini) -- preview selisih di bawah cuma ilustrasi, saldo
+ *  deposit yang benar-benar tercatat baru dipakai manual belakangan oleh Finance (lihat
+ *  payment-panel.tsx), bisa untuk invoice mana pun ke supplier ini, tidak terikat ke PV ini saja. */
 export function ClaimReplacementModal({
   claim,
   rateLama,
@@ -27,12 +28,14 @@ export function ClaimReplacementModal({
   hargaKain: HargaKainRow[];
   hargaKainPks: HargaKainPksRow[];
   onCancel: () => void;
-  onSubmit: (rateBaru: number, beratBaruKg: number, note: string) => Promise<void>;
+  onSubmit: (rateBaru: number, beratBaruKg: number, buktiInvoiceDataUrl?: string, buktiInvoiceFileName?: string) => Promise<void>;
 }) {
   const defaultRate = hargaKainRate(hargaKain, hargaKainPks, claim.supplier, claim.warna, claim.grossKg);
   const [rateBaru, setRateBaru] = useState(defaultRate || rateLama);
   const [beratBaru, setBeratBaru] = useState(0);
-  const [note, setNote] = useState("");
+  const [buktiDataUrl, setBuktiDataUrl] = useState<string | undefined>(undefined);
+  const [buktiFileName, setBuktiFileName] = useState<string | undefined>(undefined);
+  const [buktiError, setBuktiError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -40,12 +43,28 @@ export function ClaimReplacementModal({
   const preview = claimReplacementValue(rateBaru, beratBaru, rateLama, beratLama);
   const canSubmit = rateBaru > 0 && beratBaru > 0 && !submitting;
 
+  async function handleFile(file: File | null) {
+    setBuktiError("");
+    if (!file) {
+      setBuktiDataUrl(undefined);
+      setBuktiFileName(undefined);
+      return;
+    }
+    const result = await readPdfAsDataUrl(file);
+    if ("error" in result) {
+      setBuktiError(result.error);
+      return;
+    }
+    setBuktiDataUrl(result.dataUrl);
+    setBuktiFileName(result.fileName);
+  }
+
   async function submit() {
     if (!canSubmit) return;
     setSubmitting(true);
     setError("");
     try {
-      await onSubmit(rateBaru, beratBaru, note.trim());
+      await onSubmit(rateBaru, beratBaru, buktiDataUrl, buktiFileName);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setSubmitting(false);
@@ -54,7 +73,7 @@ export function ClaimReplacementModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B131B]/45 p-4">
-      <div className="w-full max-w-[480px] overflow-hidden rounded-[9px] bg-surface-card shadow-[0_12px_32px_rgba(11,19,27,.28)]">
+      <div className="w-full max-w-[440px] overflow-hidden rounded-[9px] bg-surface-card shadow-[0_12px_32px_rgba(11,19,27,.28)]">
         <div className="flex items-center gap-2.5 bg-info-bg px-5 py-3">
           <span className="h-2 w-2 rounded-full bg-accent-blue" />
           <span className="font-sans text-xs font-semibold text-info-fg">
@@ -62,48 +81,51 @@ export function ClaimReplacementModal({
           </span>
         </div>
         <div className="px-5 py-4">
-          <div className="rounded-md border border-[#DDE4EB] bg-[#F7F9FB] px-3 py-2.5 font-sans text-[11px] leading-[1.5] text-text-muted">
-            Roll ini diretur ke <b>{claim.supplier}</b> (invoice {claim.invoiceId}, berat invoice lama {formatDecimal(beratLama)} kg). Isi rate & berat PV
-            pengganti sesuai yang BENAR-BENAR diinvoice sekarang — boleh beda dari harga lama, sistem TIDAK memotongnya otomatis dari saldo apa pun.
+          <div className="flex items-center justify-between font-sans text-[11px] text-text-muted">
+            <span>
+              PO Reference (lama): <span className="font-mono font-medium text-text-primary">{claim.invoiceId}</span> · {claim.supplier}
+            </span>
+            <span>PV baru: otomatis</span>
           </div>
 
-          <label className="mt-3 block font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Rate baru (Rp / kg)</label>
-          <NumberInput value={rateBaru} onChange={setRateBaru} currency placeholder="Rp 113.000" className="input mt-1" />
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <div>
+              <label className="block font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Rate baru (Rp/kg)</label>
+              <NumberInput value={rateBaru} onChange={setRateBaru} currency placeholder="Rp 113.000" className="input mt-1" />
+            </div>
+            <div>
+              <label className="block font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Berat roll (kg)</label>
+              <NumberInput value={beratBaru} onChange={setBeratBaru} decimals={2} commaOnly startEmptyIfZero placeholder="25,07" className="input mt-1" />
+            </div>
+          </div>
 
-          <label className="mt-3 block font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Berat roll pengganti (kg)</label>
-          <NumberInput value={beratBaru} onChange={setBeratBaru} decimals={2} commaOnly startEmptyIfZero placeholder="25,07" className="input mt-1" />
-          <div className="mt-0.5 font-sans text-[10px] text-text-muted">Pakai koma untuk desimal (mis. 25,07) — berat sesuai yang diinvoice supplier untuk roll pengganti ini.</div>
+          <label className="mt-3 block font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Bukti Invoice (PDF)</label>
+          <input
+            type="file"
+            accept="application/pdf"
+            onChange={(e) => handleFile(e.target.files?.[0] ?? null)}
+            className="mt-1 w-full text-[11px] file:mr-1.5 file:rounded file:border-0 file:bg-info-bg file:px-2 file:py-1 file:font-sans file:text-[10.5px] file:font-semibold file:text-info-fg"
+          />
+          {buktiFileName && !buktiError && <div className="mt-1 font-sans text-[10.5px] font-medium text-success-fg">✓ {buktiFileName} terupload.</div>}
+          {buktiError && <div className="mt-1 font-sans text-[10.5px] font-medium text-danger-fg">{buktiError}</div>}
 
           <div className="mt-3 overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
             <div className="flex items-center justify-between border-b border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
-              <span>Nilai PV lama (yang diretur)</span>
+              <span>Nilai PV lama</span>
               <span className="font-mono">{formatRupiah(preview.kredit)}</span>
             </div>
             <div className="flex items-center justify-between border-b border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
-              <span>Nilai PV pengganti (ditagih penuh, seperti invoice biasa)</span>
+              <span>Nilai PV baru</span>
               <span className="font-mono">{formatRupiah(preview.nilaiBaru)}</span>
             </div>
-            <div className={"px-3 py-2 font-sans text-[11.5px] font-semibold " + (preview.selisih >= 0 ? "bg-warning-bg text-warning-fg" : "bg-success-bg text-success-fg")}>
-              {preview.selisih >= 0 ? (
-                <>Kalau saldo kredit di atas nanti dipakai penuh untuk PV ini: kekurangan bayar {formatRupiah(preview.selisih)}.</>
-              ) : (
-                <>Kalau saldo kredit di atas nanti dipakai penuh untuk PV ini: sisa {formatRupiah(-preview.selisih)} tetap jadi saldo deposit {claim.supplier}.</>
-              )}
+            <div className={"flex items-center justify-between px-3 py-2 font-sans text-[11.5px] font-semibold " + (preview.selisih >= 0 ? "bg-warning-bg text-warning-fg" : "bg-success-bg text-success-fg")}>
+              <span>Selisih</span>
+              <span className="font-mono">
+                {preview.selisih >= 0 ? "+" : "−"}
+                {formatRupiah(Math.abs(preview.selisih))}
+              </span>
             </div>
           </div>
-          <div className="mt-1.5 font-sans text-[10px] leading-[1.4] text-text-muted">
-            Ilustrasi saja — kredit {formatRupiah(preview.kredit)} SELALU dicatat penuh ke saldo deposit {claim.supplier} begitu PV ini dibuat, dan baru
-            benar-benar dipakai kalau Finance memilihnya manual saat membayar (invoice ini atau invoice lain ke supplier yang sama, kapan saja).
-          </div>
-
-          <label className="mt-3 block font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">Catatan (opsional)</label>
-          <textarea
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="Contoh: no. PO reorder / referensi WA supplier"
-            rows={2}
-            className="mt-1.5 w-full rounded-md border border-[#DDE4EB] px-[11px] py-[9px] font-sans text-[12.5px] text-text-primary"
-          />
           {error && <div className="mt-2 font-sans text-[11.5px] font-medium text-danger-fg">{error}</div>}
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-border-subtle px-5 py-4">

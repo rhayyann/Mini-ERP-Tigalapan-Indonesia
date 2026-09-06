@@ -17,3 +17,42 @@ export function viewAndDownloadFile(dataUrl: string, fileName?: string) {
   a.download = fileName || "file";
   a.click();
 }
+
+/** Ukuran string base64 APA ADANYA (1 karakter base64 = 1 byte ASCII di payload yang benar-benar
+ *  dikirim) -- dipakai untuk cek batas ukuran file yang di-encode ke data URI SEBELUM dikirim ke
+ *  Server Action, bukan `file.size` mentah (base64 menggembungkan ukuran ~33%). Disalin dari
+ *  payment-panel.tsx (yang punya catatan panjang soal kenapa pengukuran ini harus begini, lihat
+ *  riwayat Round-2/Round-3 fix di sana) -- dipakai lagi di sini (claim-replacement-modal.tsx) biar
+ *  konsisten, bukan menulis ulang versi ketiga yang berisiko salah lagi. */
+export function dataUrlEncodedBytes(dataUrl: string): number {
+  const commaIdx = dataUrl.indexOf(",");
+  const b64 = commaIdx === -1 ? dataUrl : dataUrl.slice(commaIdx + 1);
+  return b64.length;
+}
+
+/** Batas ASLI hasil-encode untuk upload PDF lewat Server Action -- margin di bawah limit body 2 MB
+ *  (next.config.ts), sama nilainya dengan MAX_PROOF_ENCODED_BYTES di payment-panel.tsx. */
+export const MAX_PDF_ENCODED_BYTES = 1.5 * 1024 * 1024;
+
+/** Baca 1 file PDF jadi data URI, dengan validasi tipe + ukuran -- dipakai claim-replacement-modal.tsx
+ *  untuk upload "Bukti Invoice". Resolve dengan pesan error (string) kalau gagal, atau
+ *  {dataUrl, fileName} kalau berhasil -- caller tinggal cek `"error" in result`. */
+export function readPdfAsDataUrl(file: File): Promise<{ dataUrl: string; fileName: string } | { error: string }> {
+  return new Promise((resolve) => {
+    if (file.type !== "application/pdf") {
+      resolve({ error: "File harus berformat PDF." });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      if (dataUrlEncodedBytes(dataUrl) > MAX_PDF_ENCODED_BYTES) {
+        resolve({ error: "File terlalu besar — kompres dulu PDF-nya." });
+        return;
+      }
+      resolve({ dataUrl, fileName: file.name });
+    };
+    reader.onerror = () => resolve({ error: "Gagal membaca file, coba lagi." });
+    reader.readAsDataURL(file);
+  });
+}

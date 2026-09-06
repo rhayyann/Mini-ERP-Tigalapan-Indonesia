@@ -973,6 +973,21 @@ export function claimReplacementValue(rateBaru: number, beratBaruKg: number, rat
   return { nilaiBaru, kredit, selisih: nilaiBaru - kredit };
 }
 
+/** invoiceId asal dari 1 claim key ("invoiceId|warna|lengan|rollIndex", lihat materialClaimsList)
+ *  -- dipakai untuk kolom "PO Reference (lama)" di payment-panel.tsx tanpa perlu parseClaimKey
+ *  sisi server (yang juga butuh warna/lengan/rollIndex, di sini cukup invoiceId-nya saja). */
+export function claimKeySourceInvoiceId(claimKey: string): string {
+  return claimKey.split("|")[0] ?? claimKey;
+}
+
+/** Nilai kredit (CREDIT) yang tercatat di ledger saldo deposit untuk 1 claim key tertentu -- 0
+ *  kalau belum ada (mis. ledger belum sempat ke-refresh). Dipakai di payment-panel.tsx untuk
+ *  kolom "Pembayaran Sebelumnya" & "Selisih" pada invoice hasil klaim (RawMaterialInvoice.sourceClaimId). */
+export function vendorDepositCreditForClaim(claimKey: string, entries: VendorDepositEntry[]): number {
+  const entry = entries.find((e) => e.kind === "CREDIT" && e.sourceClaimId === claimKey);
+  return entry?.amount ?? 0;
+}
+
 export function receivedRollCountForColor(mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan, invoices: RawMaterialInvoice[]): number {
   const key = warna + "|" + lengan;
   let count = 0;

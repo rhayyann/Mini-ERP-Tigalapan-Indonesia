@@ -33,21 +33,6 @@ function BuktiFotoCell({ claimKey, hasPhoto }: { claimKey: string; hasPhoto: boo
   );
 }
 
-/** Revisi 2026-09-06: tombol "Buat PV Pengganti" -- muncul di 3 stage retur (DIMINTA/DIKIRIM/
- *  DITERIMA), begitu keputusan retur sudah diambil (minimal "Minta Retur" sudah diklik). Dipisah
- *  jadi komponen kecil karena dipakai identik di 3 branch stage berbeda di bawah. */
-function BuatPvPenggantiButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      title="Pesan ulang bahan yang diretur dengan rate & berat terkini -- selesaikan klaim ini sekaligus catat kreditnya ke saldo deposit vendor."
-      className="flex-none rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11px] font-semibold text-info-fg"
-    >
-      Buat PV Pengganti
-    </button>
-  );
-}
-
 type ViewTab = "AKTIF" | "RIWAYAT";
 
 export default function MaterialClaimsPage() {
@@ -69,7 +54,6 @@ export default function MaterialClaimsPage() {
   const hargaKain = useMrpStore((s) => s.hargaKain);
   const hargaKainPks = useMrpStore((s) => s.hargaKainPks);
 
-  const [noteDraft, setNoteDraft] = useState<Record<string, string>>({});
   const [tab, setTab] = useState<ViewTab>("AKTIF");
   // Revisi 2026-09-06: key klaim yang sedang buka modal "Buat PV Pengganti" -- null = tidak ada.
   const [replacingKey, setReplacingKey] = useState<string | null>(null);
@@ -83,26 +67,6 @@ export default function MaterialClaimsPage() {
     return materialClaimStage(key, materialClaimResolutions, materialClaimReturRequests, materialClaimReturDeliveries, materialClaimReturReceipts);
   }
   const unresolvedCount = rows.filter((r) => stage(r.key) !== "SELESAI").length;
-
-  function submitResolve(key: string) {
-    const note = (noteDraft[key] ?? "").trim();
-    if (!note) return;
-    resolveMaterialClaim(key, note);
-    setNoteDraft((prev) => ({ ...prev, [key]: "" }));
-  }
-
-  function submitRetur(key: string) {
-    const note = (noteDraft[key] ?? "").trim();
-    if (!note) return;
-    requestMaterialClaimRetur(key, note);
-    setNoteDraft((prev) => ({ ...prev, [key]: "" }));
-  }
-
-  function submitDelivered(key: string) {
-    const note = (noteDraft[key] ?? "").trim();
-    markMaterialClaimReturDelivered(key, note || undefined);
-    setNoteDraft((prev) => ({ ...prev, [key]: "" }));
-  }
 
   const stageLabel: Record<MaterialClaimStage, { label: string; tone: "warning" | "info" | "success" }> = {
     BELUM: { label: "Belum ditindak", tone: "warning" },
@@ -163,111 +127,46 @@ export default function MaterialClaimsPage() {
         if (s === "SELESAI") {
           const resolution = materialClaimResolutions[r.key];
           return (
-            <div className="flex min-w-[220px] items-start justify-between gap-2">
-              <span className="font-sans text-[11.5px] text-text-muted">
-                {resolution.note}
-                <span className="block font-mono text-[10px]">{formatDate(resolution.resolvedAt)}</span>
-              </span>
+            <div className="flex min-w-[200px] items-start justify-between gap-2">
+              <span className="font-sans text-[11.5px] text-text-muted">{resolution?.note || "—"}</span>
               <button onClick={() => unresolveMaterialClaim(r.key)} className="flex-none font-sans text-[11px] font-semibold text-action-primary underline">
                 Buka lagi
               </button>
             </div>
           );
         }
-        if (s === "RETUR_DITERIMA") {
-          const receipt = materialClaimReturReceipts[r.key];
-          return (
-            <div className="flex min-w-[260px] flex-col gap-1.5">
-              <span className="font-sans text-[11.5px] text-info-fg">
-                Vendor sudah terima roll pengganti — menunggu ditimbang ulang di Cutting.
-                <span className="block font-mono text-[10px] text-text-muted">Diterima {formatDate(receipt.receivedAt)}</span>
-              </span>
-              <div className="flex items-center justify-between gap-2">
-                <BuatPvPenggantiButton onClick={() => setReplacingKey(r.key)} />
-                <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="flex-none font-sans text-[11px] font-semibold text-action-primary underline">
-                  Batalkan
-                </button>
-              </div>
-            </div>
-          );
-        }
-        if (s === "RETUR_DIKIRIM") {
-          const delivery = materialClaimReturDeliveries[r.key];
-          return (
-            <div className="flex min-w-[260px] flex-col gap-1.5">
-              <span className="font-sans text-[11.5px] text-info-fg">
-                Roll pengganti sudah dikirim — menunggu konfirmasi diterima dari vendor.
-                <span className="block text-text-muted">
-                  {delivery.note && <>{delivery.note} · </>}
-                  <span className="font-mono text-[10px]">{formatDate(delivery.deliveredAt)}</span>
-                </span>
-              </span>
-              <div className="flex items-center justify-between gap-2">
-                <BuatPvPenggantiButton onClick={() => setReplacingKey(r.key)} />
-                <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="flex-none font-sans text-[11px] font-semibold text-action-primary underline">
-                  Batalkan
-                </button>
-              </div>
-            </div>
-          );
-        }
-        if (s === "RETUR_DIMINTA") {
-          const req = materialClaimReturRequests[r.key];
-          return (
-            <div className="flex min-w-[260px] flex-col gap-1.5">
-              <span className="font-sans text-[11.5px] text-info-fg">
-                Menunggu supplier kirim roll pengganti.
-                <span className="block text-text-muted">
-                  {req.note} · <span className="font-mono text-[10px]">{formatDate(req.requestedAt)}</span>
-                </span>
-              </span>
-              <input
-                value={noteDraft[r.key] ?? ""}
-                onChange={(e) => setNoteDraft((prev) => ({ ...prev, [r.key]: e.target.value }))}
-                placeholder="Catatan (opsional, mis. resi/estimasi tiba)…"
-                className="input text-[11.5px]"
-              />
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  onClick={() => submitDelivered(r.key)}
-                  title="Tandai roll pengganti sudah dikirim ke vendor — vendor akan diberi tahu untuk konfirmasi setelah diterima."
-                  className="flex-none rounded-md bg-action-primary px-2.5 py-[6px] font-sans text-[11px] font-semibold text-white"
-                >
+        // Revisi 2026-09-06 (v2): "Buat PV Pengganti" sekarang jadi SATU-SATUNYA aksi utama,
+        // tersedia dari stage manapun (tidak perlu "Minta Retur" dulu) -- lihat komentar di
+        // createClaimReplacementInvoiceAction. Aksi tracking retur fisik (opsional, terpisah dari
+        // penyelesaian finansial) ditaruh sebagai link kecil di bawahnya, bukan tombol sejajar.
+        return (
+          <div className="flex flex-col items-start gap-1">
+            <button onClick={() => setReplacingKey(r.key)} className="rounded-md bg-action-primary px-2.5 py-[6px] font-sans text-[11px] font-semibold text-white">
+              Buat PV Pengganti
+            </button>
+            <div className="flex flex-wrap items-center gap-x-2 font-sans text-[10.5px] text-text-muted">
+              {s === "BELUM" && (
+                <>
+                  <button onClick={() => requestMaterialClaimRetur(r.key, "")} className="font-semibold text-action-primary underline">
+                    Minta Retur
+                  </button>
+                  <button onClick={() => resolveMaterialClaim(r.key, "")} className="font-semibold text-action-primary underline">
+                    Selesai
+                  </button>
+                </>
+              )}
+              {s === "RETUR_DIMINTA" && (
+                <button onClick={() => markMaterialClaimReturDelivered(r.key)} className="font-semibold text-action-primary underline">
                   Tandai Sudah Dikirim
                 </button>
-                <BuatPvPenggantiButton onClick={() => setReplacingKey(r.key)} />
-                <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="flex-none font-sans text-[11px] font-semibold text-action-primary underline">
+              )}
+              {s === "RETUR_DIKIRIM" && <span>Menunggu konfirmasi vendor</span>}
+              {s === "RETUR_DITERIMA" && <span>Retur diterima vendor</span>}
+              {s !== "BELUM" && (
+                <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="font-semibold text-action-primary underline">
                   Batalkan
                 </button>
-              </div>
-            </div>
-          );
-        }
-        return (
-          <div className="flex min-w-[260px] flex-col gap-1.5">
-            <input
-              value={noteDraft[r.key] ?? ""}
-              onChange={(e) => setNoteDraft((prev) => ({ ...prev, [r.key]: e.target.value }))}
-              placeholder="Catatan (mis. no. retur / estimasi ganti)…"
-              className="input text-[11.5px]"
-            />
-            <div className="flex gap-1.5">
-              <button
-                onClick={() => submitRetur(r.key)}
-                disabled={!(noteDraft[r.key] ?? "").trim()}
-                title="Vendor akan diberi tahu untuk timbang ulang begitu roll pengganti sampai — klaim otomatis tertutup kalau hasil timbang ulang sudah sesuai toleransi."
-                className="flex-none rounded-md bg-action-primary px-2.5 py-[6px] font-sans text-[11px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Minta Retur
-              </button>
-              <button
-                onClick={() => submitResolve(r.key)}
-                disabled={!(noteDraft[r.key] ?? "").trim()}
-                title="Tandai selesai tanpa retur (mis. diterima apa adanya)"
-                className="flex-none rounded-md border border-[#CBD5DF] px-2.5 py-[6px] font-sans text-[11px] font-semibold text-action-primary disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Selesai
-              </button>
+              )}
             </div>
           </div>
         );
@@ -385,13 +284,10 @@ export default function MaterialClaimsPage() {
       {tab === "AKTIF" && (
         <>
           <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-            Daftar ini otomatis berisi semua roll bahan yang diterima vendor produksi dengan selisih berat KURANG dari toleransi (lebih ringan dari invoice,
-            dikirim sebagai claim saat Cutting menimbang, disertai foto bukti). Alur: hubungi supplier untuk retur roll tsb → klik <b>Minta Retur</b> (vendor diberi tahu) → begitu supplier sudah kirim roll pengganti (mis.
-            dikabari lewat WA), klik <b>Tandai Sudah Dikirim</b> → vendor konfirmasi terima di halaman Produksi (Cutting) → begitu vendor timbang ulang dengan hasil
-            sesuai toleransi, klaim ini <b>otomatis tertutup sendiri</b> (tidak perlu ditandai manual, dan otomatis pindah ke tab Riwayat/Arsip). Kalau ternyata tidak
-            jadi retur (mis. diterima apa adanya), pakai <b>Selesai</b> langsung — atau <b>Batalkan</b> dulu di tahap manapun untuk balik ke awal. Kalau bahan yang
-            diretur mau benar-benar dipesan ulang (bukan cuma tukar roll), pakai <b>Buat PV Pengganti</b> — bisa dengan rate & berat terkini, selisihnya otomatis
-            tercatat sebagai saldo deposit di supplier itu (lihat halaman Payment di Finance).
+            Daftar ini otomatis berisi semua roll bahan yang diterima vendor produksi dengan selisih berat KURANG dari toleransi (lebih ringan dari invoice).
+            Klik <b>Buat PV Pengganti</b> untuk pesan ulang bahan itu dengan rate & berat terkini — selisih dari nilai PV lama otomatis tercatat sebagai saldo
+            deposit di supplier itu (lihat Payment di Finance). Link kecil di bawahnya untuk melacak retur fisik (opsional) — begitu vendor timbang ulang
+            dengan hasil sesuai toleransi, klaim otomatis tertutup sendiri.
           </div>
 
           <DataTable
@@ -460,8 +356,8 @@ export default function MaterialClaimsPage() {
           hargaKain={hargaKain}
           hargaKainPks={hargaKainPks}
           onCancel={() => setReplacingKey(null)}
-          onSubmit={async (rateBaru, beratBaruKg, note) => {
-            await createClaimReplacementInvoice(replacingClaim.key, rateBaru, beratBaruKg, note || undefined);
+          onSubmit={async (rateBaru, beratBaruKg, buktiInvoiceDataUrl, buktiInvoiceFileName) => {
+            await createClaimReplacementInvoice(replacingClaim.key, rateBaru, beratBaruKg, buktiInvoiceDataUrl, buktiInvoiceFileName);
             setReplacingKey(null);
           }}
         />

@@ -1541,10 +1541,19 @@ export async function confirmMaterialClaimReturReceivedAction(key: string): Prom
  *  eksplisit dari diskusi konsep dengan owner (saldo deposit wajib dipilih manual, tidak pernah
  *  otomatis), bukan penyederhanaan teknis.
  *
- *  Precondition: klaim ini harus sudah minimal "retur diminta" (retur_requested_at terisi) --
- *  memastikan keputusan retur memang sudah diambil, bukan pesan-ulang diam-diam dari klaim yang
- *  belum ditindak sama sekali. */
-export async function createClaimReplacementInvoiceAction(key: string, rateBaru: number, beratBaruKg: number, note?: string): Promise<string> {
+ *  Revisi kedua (2026-09-06): TIDAK ADA LAGI precondition "Minta Retur" dulu -- awalnya diwajibkan,
+ *  tapi owner minta disederhanakan supaya "Buat PV Pengganti" langsung bisa diklik dari klaim mana
+ *  pun yang masih aktif (belum resolved), tanpa perlu melalui tahap retur fisik manapun dulu.
+ *  Tracking retur fisik (Minta Retur/Tandai Dikirim/dst, lihat requestMaterialClaimReturAction dkk)
+ *  tetap ada sebagai jalur TERPISAH & OPSIONAL untuk klaim yang memang perlu dilacak logistiknya --
+ *  tidak lagi jadi syarat untuk penyelesaian finansial di sini. */
+export async function createClaimReplacementInvoiceAction(
+  key: string,
+  rateBaru: number,
+  beratBaruKg: number,
+  buktiInvoiceDataUrl?: string,
+  buktiInvoiceFileName?: string
+): Promise<string> {
   await requireInternalRole(await requireSession(), "procurement");
   const parsed = parseClaimKey(key);
   if (!parsed) throw new Error("Klaim tidak valid.");
@@ -1555,7 +1564,6 @@ export async function createClaimReplacementInvoiceAction(key: string, rateBaru:
   if (!openId) throw new Error("Klaim ini tidak ditemukan di arsip atau sudah selesai -- tidak bisa dibuat PV pengganti.");
   const { data: claimRow, error: claimErr } = await db.from("material_claim_history").select("*").eq("id", openId).single();
   if (claimErr || !claimRow) throw new Error("Gagal membaca arsip klaim.");
-  if (!claimRow.retur_requested_at) throw new Error("Ajukan \"Minta Retur\" dulu sebelum membuat PV pengganti.");
 
   // Rate invoice ASLI diambil dari DB (bukan dari input user) -- nilai kredit HARUS berdasarkan
   // yang benar-benar sudah dibayar di invoice lama, bukan angka yang bisa diketik ulang dari
@@ -1592,6 +1600,8 @@ export async function createClaimReplacementInvoiceAction(key: string, rateBaru:
     destination_vendor: claimRow.vendor_produksi,
     booked_at: today(),
     source_claim_id: key,
+    bukti_pv_storage_path: buktiInvoiceDataUrl ?? null,
+    bukti_pv_file_name: buktiInvoiceFileName ?? null,
   });
   if (insErr) throw new Error(`Gagal membuat PV pengganti: ${insErr.message}`);
   await db.from("raw_material_invoice_colors").insert({ id: colorId, invoice_id: invoiceId, warna: claimRow.warna, lengan: claimRow.lengan, harga_per_roll: rateBaru });
@@ -1604,7 +1614,7 @@ export async function createClaimReplacementInvoiceAction(key: string, rateBaru:
     kind: "CREDIT",
     amount: kredit,
     source_claim_id: key,
-    note: note || `Kredit retur roll #${claimRow.roll_index + 1} (${claimRow.warna} · ${claimRow.lengan}, invoice ${parsed.invoiceId}) -- diganti PV ${invoiceId}.`,
+    note: `Kredit retur roll #${claimRow.roll_index + 1} (${claimRow.warna} · ${claimRow.lengan}, invoice ${parsed.invoiceId}) -- diganti PV ${invoiceId}.`,
   });
   if (depErr) throw new Error(`PV pengganti terbuat tapi gagal mencatat kredit deposit: ${depErr.message}`);
 
