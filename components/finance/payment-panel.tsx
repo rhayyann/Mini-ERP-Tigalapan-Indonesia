@@ -208,38 +208,29 @@ export function PaymentPanel() {
     reader.readAsDataURL(file);
   }
 
-  // 8 kolom default (+ checkbox di firstColumn) — No Invoice Supplier & Entitas tetap ada, cuma
-  // dipindah ke toggle "Kolom" (lebih ke arah detail rekonsiliasi/akuntansi daripada info inti
-  // buat memutuskan bayar/tidak). Urutan: No MRP, No PO, Kode Transaksi, lalu sisanya.
+  // Revisi 2026-09-07: susunan default diminta ulang jadi fokus ke rekonsiliasi klaim -- No MRP,
+  // No PO, PO Reference, Harga, Pembayaran Sebelumnya, Selisih, Status (+ Lampiran/Bukti Pembayaran
+  // tetap default di ujung karena keduanya aksi inti alur Bayar, bukan cuma info). Kode Transaksi/
+  // Supplier/No Invoice Supplier pindah ke toggle "Kolom" (tetap ada, cuma tidak lagi kolom
+  // pertama yang kelihatan). Status Klaim (badge "Deposit +Rp...") DIHAPUS sebagai kolom terpisah
+  // -- badge-nya sekarang menyatu di kolom "Status" (lihat render "status" di bawah) supaya
+  // langsung kelihatan baris mana yang jadi saldo deposit tanpa buka kolom tambahan.
   const columns: ColumnDef<RawMaterialInvoice>[] = [
     { key: "noMrp", label: "No MRP", default: true, render: (i) => <span className="font-mono">{i.mrpId}</span> },
     { key: "noPo", label: "No PO", default: true, render: (i) => <span className="font-mono font-medium">{i.poId}</span> },
-    { key: "kodeTransaksi", label: "Kode Transaksi", default: true, render: (i) => <span className="font-mono font-medium">{i.kodeTransaksi}</span> },
-    { key: "supplier", label: "Supplier / Vendor", default: true, render: (i) => `${i.supplier} → ${VENDOR_PRODUKSI[i.destinationVendor]?.name ?? i.destinationVendor}` },
-    { key: "noInvVendor", label: "No Invoice Supplier", default: false, render: (i) => i.noInvoiceVendor || "—" },
-    // Revisi 2026-09-06: default:false (toggle "Kolom") -- flag "invoice ini PV pengganti hasil
-    // klaim" (lihat sourceClaimId di types.ts), supaya kelihatan beda dari invoice biasa kalau
-    // memang perlu ditelusuri, tanpa mengambil tempat di 8 kolom default untuk kasus yang jarang.
-    {
-      key: "sumber",
-      label: "Sumber",
-      default: false,
-      render: (i) => (i.sourceClaimId ? <StatusPill tone="info">Reorder klaim</StatusPill> : <span className="font-sans text-[11px] text-text-muted">PO biasa</span>),
-    },
-    // Revisi 2026-09-06 (v2): 3 kolom khusus invoice hasil klaim ("PO Reference" ke invoice lama
-    // yang diretur, "Pembayaran Sebelumnya" = kredit yang sudah dicatat untuk klaim itu, "Selisih"
-    // = nilai invoice ini dikurangi kredit itu) -- "—" untuk invoice biasa. default:false (toggle
-    // "Kolom") karena cuma relevan untuk sebagian kecil invoice.
+    // Revisi 2026-09-06 (v2): "PO Reference" ke invoice LAMA yang diretur (cuma terisi untuk PV
+    // pengganti hasil klaim, lihat sourceClaimId di types.ts) -- "—" untuk invoice biasa.
     {
       key: "poReferenceLama",
-      label: "PO Reference (Lama)",
-      default: false,
+      label: "PO Reference",
+      default: true,
       render: (i) => (i.sourceClaimId ? <span className="font-mono">{claimKeySourceInvoiceId(i.sourceClaimId)}</span> : <span className="font-sans text-[11px] text-text-muted">—</span>),
     },
+    { key: "nilai", label: "Harga", default: true, align: "right", render: (i) => formatRupiah(i.totalBiaya) },
     {
       key: "pembayaranSebelumnya",
       label: "Pembayaran Sebelumnya",
-      default: false,
+      default: true,
       align: "right",
       render: (i) =>
         i.sourceClaimId ? <span className="font-mono">{formatRupiah(vendorDepositCreditForClaim(i.sourceClaimId, vendorDeposits))}</span> : <span className="font-sans text-[11px] text-text-muted">—</span>,
@@ -247,7 +238,7 @@ export function PaymentPanel() {
     {
       key: "selisihKlaim",
       label: "Selisih",
-      default: false,
+      default: true,
       align: "right",
       render: (i) => {
         if (!i.sourceClaimId) return <span className="font-sans text-[11px] text-text-muted">—</span>;
@@ -261,24 +252,34 @@ export function PaymentPanel() {
       },
     },
     {
-      key: "statusKlaim",
-      label: "Status Klaim",
-      default: false,
+      key: "status",
+      label: "Status",
+      default: true,
       render: (i) => {
-        if (!i.sourceClaimId) return <span className="font-sans text-[11px] text-text-muted">—</span>;
-        const selisih = i.totalBiaya - vendorDepositCreditForClaim(i.sourceClaimId, vendorDeposits);
-        // "Deposit" cuma untuk kasus PV baru LEBIH MURAH dari PV lama (selisih negatif) -- sesuai
-        // kesepakatan dengan owner. Selisih positif/nol tetap ikuti status invoice biasa (kolom
-        // "Status"), tidak perlu badge tambahan di sini.
-        return selisih < 0 ? <StatusPill tone="success">Deposit +{formatRupiah(-selisih)}</StatusPill> : <span className="font-sans text-[11px] text-text-muted">—</span>;
+        // "Deposit" cuma untuk kasus PV pengganti klaim yang LEBIH MURAH dari PV lama (selisih
+        // negatif) -- sesuai kesepakatan dengan owner. Ditumpuk di bawah badge status biasa supaya
+        // langsung kelihatan baris mana yang jadi saldo deposit tanpa buka kolom terpisah lagi.
+        const selisih = i.sourceClaimId ? i.totalBiaya - vendorDepositCreditForClaim(i.sourceClaimId, vendorDeposits) : 0;
+        const isDeposit = !!i.sourceClaimId && selisih < 0;
+        return (
+          <div className="flex flex-col items-start gap-1">
+            <StatusPill tone={invoiceBadge(i.status).tone}>{invoiceBadge(i.status).label}</StatusPill>
+            {isDeposit && <StatusPill tone="success">Deposit +{formatRupiah(-selisih)}</StatusPill>}
+          </div>
+        );
       },
     },
-    // default:false — dipindah ke toggle "Kolom" (detail rekonsiliasi, bukan info inti buat
-    // memutuskan bayar/tidak); nilai & status tetap jadi info inti.
+    { key: "kodeTransaksi", label: "Kode Transaksi", default: false, render: (i) => <span className="font-mono font-medium">{i.kodeTransaksi}</span> },
+    { key: "supplier", label: "Supplier / Vendor", default: false, render: (i) => `${i.supplier} → ${VENDOR_PRODUKSI[i.destinationVendor]?.name ?? i.destinationVendor}` },
+    { key: "noInvVendor", label: "No Invoice Supplier", default: false, render: (i) => i.noInvoiceVendor || "—" },
+    {
+      key: "sumber",
+      label: "Sumber",
+      default: false,
+      render: (i) => (i.sourceClaimId ? <StatusPill tone="info">Reorder klaim</StatusPill> : <span className="font-sans text-[11px] text-text-muted">PO biasa</span>),
+    },
     { key: "roll", label: "Roll", default: false, align: "right", render: (i) => i.qtyReady },
-    { key: "nilai", label: "Nilai", default: true, align: "right", render: (i) => formatRupiah(i.totalBiaya) },
     { key: "entitas", label: "Entitas", default: false, render: (i) => i.entity },
-    { key: "status", label: "Status", default: true, render: (i) => <StatusPill tone={invoiceBadge(i.status).tone}>{invoiceBadge(i.status).label}</StatusPill> },
     {
       key: "bukti",
       label: "Lampiran Invoice",
