@@ -66,6 +66,7 @@ export default function PoApprovalPage() {
   const hargaKainPks = useMrpStore((s) => s.hargaKainPks);
   const hargaMaklon = useMrpStore((s) => s.hargaMaklon);
   const supplierList = useMrpStore((s) => s.supplierList);
+  const vendorProduksiList = useMrpStore((s) => s.vendorProduksiList);
 
   const [selectedId, setSelectedId] = useState<string>("");
   const [drillVendor, setDrillVendor] = useState<string | null>(null);
@@ -83,7 +84,7 @@ export default function PoApprovalPage() {
   if (!mounted) return null;
 
   const detail = mrpDetails.find((d) => d.mrp.id === selectedId && !d.poSent);
-  const vendorRows = detail ? vendorProduksiRows(detail, hargaMaklon) : [];
+  const vendorRows = detail ? vendorProduksiRows(detail, hargaMaklon, vendorProduksiList) : [];
   const allMaterialAssigned = detail ? detail.materialRows.every((m) => m.supplier) : false;
 
   const materialColumns: ColumnDef<MaterialPO>[] = [
@@ -366,7 +367,7 @@ export default function PoApprovalPage() {
                 >
                   <span className="font-medium">{v.name}</span>
                   <span className="text-right font-mono">{formatPcs(v.qty)}</span>
-                  <span className="text-right font-mono">{formatPcs(VENDOR_PRODUKSI[v.vendor]?.baseCapacity ?? 0)}</span>
+                  <span className="text-right font-mono">{formatPcs(v.baseCapacity)}</span>
                   <span className="text-right font-mono">{v.capacityPct}%</span>
                   <span className="flex flex-col items-end gap-0.5 font-mono">
                     <span>{formatRupiah(v.fee)}</span>

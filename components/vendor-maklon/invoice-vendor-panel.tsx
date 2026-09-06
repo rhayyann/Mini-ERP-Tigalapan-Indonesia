@@ -39,8 +39,14 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
   const vendorInvoices = useMrpStore((s) => s.vendorInvoices);
   const maklonInvoices = useMrpStore((s) => s.maklonInvoices);
   const createVendorInvoice = useMrpStore((s) => s.createVendorInvoice);
+  const vendorProduksiList = useMrpStore((s) => s.vendorProduksiList);
 
   const vendorMeta = VENDOR_PRODUKSI[vendorId];
+  // Revisi 2026-09-06: kapasitas mingguan sekarang dari vendorProduksiList (data ASLI dari
+  // spreadsheet Procurement, lihat migration 0019) -- BUKAN lagi vendorMeta.baseCapacity
+  // (VENDOR_PRODUKSI/seed.ts, placeholder untuk 8 dari 10 vendor). `vendorMeta` tetap dipakai di
+  // bawah untuk `ratePerPc` (belum pindah ke DB).
+  const weeklyCapacity = vendorProduksiList.find((v) => v.id === vendorId)?.weeklyCapacity ?? vendorMeta?.baseCapacity ?? 0;
   // Hasil konsultasi tim produksi: invoice diajukan untuk SELURUH qty planned (PO), bukan cuma
   // yang sudah delivery — begitu delivery PERTAMA sudah mulai (lihat hasDeliveryStarted di
   // invoiceableMrpIdsFullQty). Retensi sudah dihapus dari alur (keputusan bisnis terbaru) —
@@ -86,7 +92,7 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
     };
   });
   const totalQty = selectedLines.reduce((s, l) => s + l.qty, 0);
-  const capacity = vendorMeta?.baseCapacity ?? 0;
+  const capacity = weeklyCapacity;
   const overCapacity = totalQty > capacity;
   const totalTagihan = selectedLines.reduce((s, l) => s + l.qty * l.ratePerPc, 0);
 
