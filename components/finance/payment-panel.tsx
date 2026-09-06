@@ -6,7 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { NumberInput } from "@/components/mrp/number-input";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatDate, formatRupiah, invoiceBadge, vendorDepositBalance, vendorDepositEntriesFor } from "@/lib/mrp/derive";
+import { claimKeySourceInvoiceId, formatDate, formatRupiah, invoiceBadge, vendorDepositBalance, vendorDepositCreditForClaim, vendorDepositEntriesFor } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { RawMaterialInvoice } from "@/lib/mrp/types";
 // Item 2.7: getInvoicePaymentProofAction DIPANGGIL LANGSUNG dari komponen ini (bukan lewat store)
@@ -98,6 +98,12 @@ export function PaymentPanel() {
   const totalTagihan = selectableToPay.reduce((a, i) => a + i.totalBiaya, 0);
   const depositCap = Math.max(0, Math.min(depositBalance, totalTagihan));
   const depositEntries = depositSupplier ? vendorDepositEntriesFor(depositSupplier, vendorDeposits) : [];
+  // Revisi 2026-09-06 (v2): kalau yang dipilih PERSIS 1 invoice & itu PV pengganti hasil klaim,
+  // tunjukkan selisihnya langsung (bukan minta Finance menghitung sendiri dari 2 angka) -- tombol
+  // "Isi otomatis" tetap klik eksplisit, bukan auto-terisi (aturan "harus manual" tidak berubah).
+  const singleClaimInvoice = selectableToPay.length === 1 && selectableToPay[0].sourceClaimId ? selectableToPay[0] : undefined;
+  const claimCredit = singleClaimInvoice ? vendorDepositCreditForClaim(singleClaimInvoice.sourceClaimId!, vendorDeposits) : 0;
+  const claimSelisih = singleClaimInvoice ? singleClaimInvoice.totalBiaya - claimCredit : 0;
 
   function toggle(id: string) {
     setSelected((prev) => {
@@ -220,6 +226,53 @@ export function PaymentPanel() {
       default: false,
       render: (i) => (i.sourceClaimId ? <StatusPill tone="info">Reorder klaim</StatusPill> : <span className="font-sans text-[11px] text-text-muted">PO biasa</span>),
     },
+    // Revisi 2026-09-06 (v2): 3 kolom khusus invoice hasil klaim ("PO Reference" ke invoice lama
+    // yang diretur, "Pembayaran Sebelumnya" = kredit yang sudah dicatat untuk klaim itu, "Selisih"
+    // = nilai invoice ini dikurangi kredit itu) -- "—" untuk invoice biasa. default:false (toggle
+    // "Kolom") karena cuma relevan untuk sebagian kecil invoice.
+    {
+      key: "poReferenceLama",
+      label: "PO Reference (Lama)",
+      default: false,
+      render: (i) => (i.sourceClaimId ? <span className="font-mono">{claimKeySourceInvoiceId(i.sourceClaimId)}</span> : <span className="font-sans text-[11px] text-text-muted">—</span>),
+    },
+    {
+      key: "pembayaranSebelumnya",
+      label: "Pembayaran Sebelumnya",
+      default: false,
+      align: "right",
+      render: (i) =>
+        i.sourceClaimId ? <span className="font-mono">{formatRupiah(vendorDepositCreditForClaim(i.sourceClaimId, vendorDeposits))}</span> : <span className="font-sans text-[11px] text-text-muted">—</span>,
+    },
+    {
+      key: "selisihKlaim",
+      label: "Selisih",
+      default: false,
+      align: "right",
+      render: (i) => {
+        if (!i.sourceClaimId) return <span className="font-sans text-[11px] text-text-muted">—</span>;
+        const selisih = i.totalBiaya - vendorDepositCreditForClaim(i.sourceClaimId, vendorDeposits);
+        return (
+          <span className={"font-mono font-medium " + (selisih < 0 ? "text-success-fg" : "text-warning-fg")}>
+            {selisih >= 0 ? "+" : "−"}
+            {formatRupiah(Math.abs(selisih))}
+          </span>
+        );
+      },
+    },
+    {
+      key: "statusKlaim",
+      label: "Status Klaim",
+      default: false,
+      render: (i) => {
+        if (!i.sourceClaimId) return <span className="font-sans text-[11px] text-text-muted">—</span>;
+        const selisih = i.totalBiaya - vendorDepositCreditForClaim(i.sourceClaimId, vendorDeposits);
+        // "Deposit" cuma untuk kasus PV baru LEBIH MURAH dari PV lama (selisih negatif) -- sesuai
+        // kesepakatan dengan owner. Selisih positif/nol tetap ikuti status invoice biasa (kolom
+        // "Status"), tidak perlu badge tambahan di sini.
+        return selisih < 0 ? <StatusPill tone="success">Deposit +{formatRupiah(-selisih)}</StatusPill> : <span className="font-sans text-[11px] text-text-muted">—</span>;
+      },
+    },
     // default:false — dipindah ke toggle "Kolom" (detail rekonsiliasi, bukan info inti buat
     // memutuskan bayar/tidak); nilai & status tetap jadi info inti.
     { key: "roll", label: "Roll", default: false, align: "right", render: (i) => i.qtyReady },
@@ -297,95 +350,134 @@ export function PaymentPanel() {
       )}
 
       {selected.size > 0 && (
-        <div className="flex flex-wrap items-end gap-3 rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-[10px]">
-          <span className="font-sans text-xs font-medium text-info-fg">{selected.size} dipilih</span>
+        <div className="rounded-lg border border-[#CFE0EF] bg-info-bg p-4">
+          <div className="flex items-center justify-between">
+            <span className="font-sans text-xs font-medium text-info-fg">{selected.size} dipilih</span>
+            {selectableToUnpay.length > 0 && (
+              <button
+                onClick={() => {
+                  setInvoicesPaid(selectableToUnpay.map((i) => i.id), false);
+                  setSelected(new Set());
+                }}
+                className="rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11.5px] font-semibold text-danger-fg"
+              >
+                Batalkan Bayar ({selectableToUnpay.length})
+              </button>
+            )}
+          </div>
+
           {selectableToPay.length > 0 && (
             <>
-              {/* Item revisi 2026-09-06: dulu <input type=file> polos + label kecil -- sekarang
-                 kotak upload yang jelas terlihat klik-able (border dashed + latar putih), sama
-                 bahasa visual dengan upload lain di app ini (mis. bukti PV di
-                 paying-voucher-wizard.tsx), plus status "belum ada file"/"sudah terupload" yang
-                 eksplisit -- bukan cuma nama file kalau sudah dipilih. */}
-              <div className="flex flex-col gap-1 rounded-md border border-dashed border-[#8FB3D9] bg-white px-3 py-2">
-                <label className="font-sans text-[10.5px] font-semibold uppercase tracking-wider text-info-fg">
-                  Bukti Pembayaran (PDF) <span className="text-danger-fg">*wajib</span>
-                </label>
-                <input
-                  type="file"
-                  accept="application/pdf"
-                  onChange={(e) => handleProofFileChange(e.target.files?.[0] ?? null)}
-                  className="w-56 text-[10.5px] file:mr-1.5 file:rounded file:border-0 file:bg-info-bg file:px-2 file:py-1 file:font-sans file:text-[10.5px] file:font-semibold file:text-info-fg"
-                />
-                {proofFileName && !proofError && <span className="font-sans text-[10.5px] font-medium text-success-fg">✓ {proofFileName} terupload.</span>}
-                {!proofFileName && !proofError && <span className="font-sans text-[10.5px] text-text-muted">Belum ada file dipilih.</span>}
-                {proofError && <span className="font-sans text-[10.5px] font-medium text-danger-fg">{proofError}</span>}
+              {/* Revisi 2026-09-06 (v2): dulu flex-wrap items-end -- box bukti pembayaran & box
+                 saldo deposit jadi tidak presisi (lebar & tinggi beda-beda tergantung isi), dan
+                 tombol Bayar ikut kena bottom-align jadi kelihatan aneh. Sekarang grid 2 kolom
+                 SAMA LEBAR (h-full menyamakan tinggi keduanya ke baris tertinggi), tombol Bayar
+                 dipindah ke barisnya sendiri di bawah supaya tidak perlu ikut menyesuaikan tinggi
+                 box sama sekali. */}
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div className="flex h-full flex-col gap-1.5 rounded-md border border-dashed border-[#8FB3D9] bg-white px-3.5 py-3">
+                  <label className="font-sans text-[10.5px] font-semibold uppercase tracking-wider text-info-fg">
+                    Bukti Pembayaran (PDF) <span className="text-danger-fg">*wajib</span>
+                  </label>
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    onChange={(e) => handleProofFileChange(e.target.files?.[0] ?? null)}
+                    className="w-full text-[10.5px] file:mr-1.5 file:rounded file:border-0 file:bg-info-bg file:px-2 file:py-1 file:font-sans file:text-[10.5px] file:font-semibold file:text-info-fg"
+                  />
+                  {proofFileName && !proofError && <span className="font-sans text-[10.5px] font-medium text-success-fg">✓ {proofFileName} terupload.</span>}
+                  {!proofFileName && !proofError && <span className="font-sans text-[10.5px] text-text-muted">Belum ada file dipilih.</span>}
+                  {proofError && <span className="font-sans text-[10.5px] font-medium text-danger-fg">{proofError}</span>}
+                </div>
+
+                {/* Saldo deposit vendor (dari klaim yang diselesaikan lewat "retur + pesan ulang")
+                   -- SELALU kosong di awal & dipilih manual (bukan auto mengurangi tagihan),
+                   dengan rincian asal saldo yang bisa dibuka supaya tidak jadi angka blackbox.
+                   Kotak ini cuma muncul kalau seluruh invoice terpilih dari SATU supplier yang
+                   sama & supplier itu punya saldo > 0 -- kalau tidak, kolom kedua kosong (bukan
+                   dipaksa 1 kolom penuh) supaya grid tetap presisi & tidak "loncat" lebar. */}
+                {depositSupplier && depositBalance > 0 ? (
+                  <div className="flex h-full flex-col gap-1.5 rounded-md border border-dashed border-[#B7DFC5] bg-white px-3.5 py-3">
+                    <div className="flex items-center gap-1.5">
+                      <label className="font-sans text-[10.5px] font-semibold uppercase tracking-wider text-success-fg">Saldo Deposit {depositSupplier}</label>
+                      <button type="button" onClick={() => setShowDepositDetail((v) => !v)} className="font-sans text-[10px] font-semibold text-action-primary underline">
+                        {showDepositDetail ? "Sembunyikan" : "Lihat rincian"}
+                      </button>
+                    </div>
+                    <div className="font-sans text-[11px] text-text-muted">
+                      Tersedia: <span className="font-mono font-semibold text-success-fg">{formatRupiah(depositBalance)}</span>
+                    </div>
+                    {showDepositDetail && (
+                      <div className="max-h-24 overflow-y-auto rounded border border-[#E4E8EE] bg-[#FAFBFC] px-2 py-1.5">
+                        {depositEntries.length === 0 ? (
+                          <div className="font-sans text-[10.5px] text-text-muted">Belum ada riwayat.</div>
+                        ) : (
+                          depositEntries.map((e) => (
+                            <div key={e.id} className="flex items-center justify-between gap-2 border-b border-[#F1F4F7] py-1 font-sans text-[10.5px] text-[#31414F] last:border-b-0">
+                              <span>
+                                {formatDate(e.createdAt)} — {e.kind === "CREDIT" ? `kredit dari klaim ${e.sourceClaimId ?? "—"}` : `dipakai bayar ${e.sourceInvoiceId ?? "—"}`}
+                              </span>
+                              <span className={"flex-none font-mono font-medium " + (e.kind === "CREDIT" ? "text-success-fg" : "text-danger-fg")}>
+                                {e.kind === "CREDIT" ? "+" : "−"}
+                                {formatRupiah(e.amount)}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                    {/* Kalau invoice terpilih PERSIS PV pengganti klaim, tunjukkan selisihnya
+                       langsung -- Finance tidak perlu hitung manual dari 2 angka terpisah. "Isi
+                       otomatis" tetap klik eksplisit (bukan auto-terisi). */}
+                    {singleClaimInvoice && (
+                      <div className="rounded border border-[#E4E8EE] bg-[#FAFBFC] px-2 py-1.5 font-sans text-[10.5px] text-text-muted">
+                        Invoice ini PV pengganti klaim — nilai lama {formatRupiah(claimCredit)}, nilai baru {formatRupiah(singleClaimInvoice.totalBiaya)},{" "}
+                        <span className={claimSelisih < 0 ? "font-semibold text-success-fg" : "font-semibold text-warning-fg"}>
+                          selisih {claimSelisih >= 0 ? "+" : "−"}
+                          {formatRupiah(Math.abs(claimSelisih))}
+                        </span>
+                        .{" "}
+                        <button
+                          type="button"
+                          onClick={() => setDepositAmount(Math.max(0, Math.min(claimCredit, singleClaimInvoice.totalBiaya, depositCap)))}
+                          className="font-semibold text-action-primary underline"
+                          title="Isi sebanyak kredit yang bisa dipakai untuk invoice ini -- kalau kredit lebih besar dari tagihan ini, sisanya tetap tersimpan sebagai saldo deposit untuk invoice lain nanti."
+                        >
+                          Isi otomatis
+                        </button>
+                      </div>
+                    )}
+                    <div className="mt-auto flex flex-col gap-1">
+                      <label className="font-sans text-[10.5px] font-medium text-text-muted">Pakai untuk pembayaran ini (isi manual, opsional)</label>
+                      <NumberInput value={depositAmount} onChange={(v) => setDepositAmount(Math.max(0, Math.min(v, depositCap)))} currency placeholder="Rp 0" className="input w-full text-[11px]" />
+                      <div className="font-sans text-[10px] text-text-muted">Maks {formatRupiah(depositCap)} untuk {selectableToPay.length} invoice terpilih ini.</div>
+                    </div>
+                  </div>
+                ) : (
+                  paySuppliers.size > 1 && (
+                    <div className="flex h-full items-center rounded-md border border-dashed border-[#DDE4EB] bg-white px-3.5 py-3 font-sans text-[10.5px] text-text-muted">
+                      Pilih invoice dari 1 supplier yang sama untuk bisa pakai saldo deposit.
+                    </div>
+                  )
+                )}
               </div>
 
-              {/* Revisi 2026-09-06: saldo deposit vendor (dari klaim yang diselesaikan lewat
-                 "retur + pesan ulang") -- SELALU kosong di awal & dipilih manual (bukan auto
-                 mengurangi tagihan), dengan rincian asal saldo yang bisa dibuka supaya tidak
-                 jadi angka blackbox. Kotak ini cuma muncul kalau seluruh invoice terpilih dari
-                 SATU supplier yang sama & supplier itu punya saldo > 0. */}
-              {depositSupplier && depositBalance > 0 && (
-                <div className="flex flex-col gap-1 rounded-md border border-dashed border-[#B7DFC5] bg-white px-3 py-2">
-                  <div className="flex items-center gap-1.5">
-                    <label className="font-sans text-[10.5px] font-semibold uppercase tracking-wider text-success-fg">Saldo Deposit {depositSupplier}</label>
-                    <button type="button" onClick={() => setShowDepositDetail((v) => !v)} className="font-sans text-[10px] font-semibold text-action-primary underline">
-                      {showDepositDetail ? "Sembunyikan" : "Lihat rincian"}
-                    </button>
-                  </div>
-                  <div className="font-sans text-[11px] text-text-muted">
-                    Tersedia: <span className="font-mono font-semibold text-success-fg">{formatRupiah(depositBalance)}</span>
-                  </div>
-                  {showDepositDetail && (
-                    <div className="max-h-28 overflow-y-auto rounded border border-[#E4E8EE] bg-[#FAFBFC] px-2 py-1.5">
-                      {depositEntries.length === 0 ? (
-                        <div className="font-sans text-[10.5px] text-text-muted">Belum ada riwayat.</div>
-                      ) : (
-                        depositEntries.map((e) => (
-                          <div key={e.id} className="flex items-center justify-between gap-2 border-b border-[#F1F4F7] py-1 font-sans text-[10.5px] text-[#31414F] last:border-b-0">
-                            <span>
-                              {formatDate(e.createdAt)} — {e.kind === "CREDIT" ? `kredit dari klaim ${e.sourceClaimId ?? "—"}` : `dipakai bayar ${e.sourceInvoiceId ?? "—"}`}
-                            </span>
-                            <span className={"flex-none font-mono font-medium " + (e.kind === "CREDIT" ? "text-success-fg" : "text-danger-fg")}>
-                              {e.kind === "CREDIT" ? "+" : "−"}
-                              {formatRupiah(e.amount)}
-                            </span>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                  <label className="mt-1 font-sans text-[10.5px] font-medium text-text-muted">Pakai untuk pembayaran ini (isi manual, opsional)</label>
-                  <NumberInput value={depositAmount} onChange={(v) => setDepositAmount(Math.max(0, Math.min(v, depositCap)))} currency placeholder="Rp 0" className="input w-44 text-[11px]" />
-                  <div className="font-sans text-[10px] text-text-muted">Maks {formatRupiah(depositCap)} untuk {selectableToPay.length} invoice terpilih ini.</div>
-                </div>
-              )}
-              {paySuppliers.size > 1 && (
-                <div className="font-sans text-[10.5px] text-text-muted">Pilih invoice dari 1 supplier yang sama untuk bisa pakai saldo deposit.</div>
-              )}
-
-              <button
-                onClick={handlePay}
-                disabled={!canPay}
-                title={!proofDataUrl ? "Upload bukti pembayaran (PDF) dulu" : undefined}
-                className="rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11.5px] font-semibold text-success-fg disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Bayar ({selectableToPay.length})
-                {depositAmount > 0 && <span className="ml-1 font-normal text-text-muted">· net {formatRupiah(Math.max(0, totalTagihan - depositAmount))}</span>}
-              </button>
+              <div className="mt-3 flex items-center justify-end gap-2.5">
+                {depositAmount > 0 && (
+                  <span className="font-sans text-[11.5px] text-text-muted">
+                    Total {formatRupiah(totalTagihan)} − saldo {formatRupiah(depositAmount)} = <span className="font-semibold text-info-fg">net {formatRupiah(Math.max(0, totalTagihan - depositAmount))}</span>
+                  </span>
+                )}
+                <button
+                  onClick={handlePay}
+                  disabled={!canPay}
+                  title={!proofDataUrl ? "Upload bukti pembayaran (PDF) dulu" : undefined}
+                  className="flex-none rounded-md border border-[#A8C5DF] bg-white px-3.5 py-[8px] font-sans text-[11.5px] font-semibold text-success-fg disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Bayar ({selectableToPay.length})
+                </button>
+              </div>
             </>
-          )}
-          {selectableToUnpay.length > 0 && (
-            <button
-              onClick={() => {
-                setInvoicesPaid(selectableToUnpay.map((i) => i.id), false);
-                setSelected(new Set());
-              }}
-              className="rounded-md border border-[#A8C5DF] bg-white px-2.5 py-[6px] font-sans text-[11.5px] font-semibold text-danger-fg"
-            >
-              Batalkan Bayar ({selectableToUnpay.length})
-            </button>
           )}
         </div>
       )}
@@ -413,8 +505,38 @@ export function PaymentPanel() {
           const relatedMaklon = maklonPOs.find((p) => p.mrpId === i.mrpId && p.vendorProduksi === i.destinationVendor);
           const materialSubtotal = i.colorEntries.reduce((a, c) => a + c.hargaPerRoll * c.rolls.reduce((s, w) => s + w, 0), 0);
           const addBuyTotal = i.addBuys.reduce((a, b) => a + b.totalHarga, 0);
+          const claimCreditForRow = i.sourceClaimId ? vendorDepositCreditForClaim(i.sourceClaimId, vendorDeposits) : 0;
+          const claimSelisihForRow = i.totalBiaya - claimCreditForRow;
           return (
             <div className="flex flex-col gap-3">
+              {i.sourceClaimId && (
+                <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
+                  <div className="bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">Detail Klaim (PV Pengganti)</div>
+                  <div className="grid grid-cols-2 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                    <span>PO Reference (lama)</span>
+                    <span className="text-right font-mono">{claimKeySourceInvoiceId(i.sourceClaimId)}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                    <span>PO Terbaru (PV pengganti ini)</span>
+                    <span className="text-right font-mono">{i.id}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                    <span>Pembayaran sebelumnya (nilai PV lama)</span>
+                    <span className="text-right font-mono">{formatRupiah(claimCreditForRow)}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                    <span>Nilai PV pengganti ini</span>
+                    <span className="text-right font-mono">{formatRupiah(i.totalBiaya)}</span>
+                  </div>
+                  <div className={"grid grid-cols-2 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] font-semibold " + (claimSelisihForRow < 0 ? "bg-success-bg text-success-fg" : "bg-warning-bg text-warning-fg")}>
+                    <span>Selisih{claimSelisihForRow < 0 ? " (jadi saldo deposit)" : " (kekurangan dibayar)"}</span>
+                    <span className="text-right font-mono">
+                      {claimSelisihForRow >= 0 ? "+" : "−"}
+                      {formatRupiah(Math.abs(claimSelisihForRow))}
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
                 <div className="bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">Detail Material — {i.id}</div>
                 <div className="grid grid-cols-4 gap-x-2 border-t border-[#F1F4F7] bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">

@@ -308,7 +308,7 @@ type FlowActions = {
    *  (rate & berat TERKINI, bebas beda dari PV lama) DAN catat kredit ke saldo deposit vendor
    *  (supplier) itu kalau nilainya lebih kecil dari yang sudah dibayar untuk roll yang diretur.
    *  Lihat createClaimReplacementInvoiceAction & claim-replacement-modal.tsx. */
-  createClaimReplacementInvoice: (key: string, rateBaru: number, beratBaruKg: number, note?: string) => Promise<string>;
+  createClaimReplacementInvoice: (key: string, rateBaru: number, beratBaruKg: number, buktiInvoiceDataUrl?: string, buktiInvoiceFileName?: string) => Promise<string>;
   /** Pakai sebagian/semua saldo deposit vendor (supplier) untuk mengurangi pembayaran invoice yang
    *  dipilih -- SELALU dipilih manual oleh Finance (lihat payment-panel.tsx), tidak pernah
    *  otomatis. Validasi `amount <= saldo tersedia` diulang di server (applyVendorDepositAction). */
@@ -1383,8 +1383,8 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   // selesai, beda dari action klaim lain di atas (yang cuma menimpa 1 key di record status). Klik
   // ini juga jarang & disengaja (submit modal, bukan klik berulang di sebuah list), jadi menunggu
   // 1 round-trip di sini bukan trade-off yang terasa.
-  createClaimReplacementInvoice: async (key, rateBaru, beratBaruKg, note) => {
-    const newInvoiceId = await actions.createClaimReplacementInvoiceAction(key, rateBaru, beratBaruKg, note);
+  createClaimReplacementInvoice: async (key, rateBaru, beratBaruKg, buktiInvoiceDataUrl, buktiInvoiceFileName) => {
+    const newInvoiceId = await actions.createClaimReplacementInvoiceAction(key, rateBaru, beratBaruKg, buktiInvoiceDataUrl, buktiInvoiceFileName);
     backgroundRefresh();
     return newInvoiceId;
   },
