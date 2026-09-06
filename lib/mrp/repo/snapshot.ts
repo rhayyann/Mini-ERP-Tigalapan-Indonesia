@@ -28,7 +28,7 @@ import type {
   VendorInvoiceAdjustment,
   VendorInvoiceLine,
 } from "../types";
-import type { EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow } from "../masterData";
+import type { EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "../masterData";
 import type { FlowState, MrpDates, MrpDetail } from "../store";
 
 /** Ambil SEMUA data flow dari Supabase dan bentuk ulang jadi `FlowState` -- bentuk persis yang
@@ -80,7 +80,8 @@ type RawTables = Record<
   | "hargaKainRows"
   | "hargaKainPksRows"
   | "entitasRows"
-  | "supplierRows",
+  | "supplierRows"
+  | "vendorProduksiMasterRows",
   TableResult
 >;
 
@@ -125,6 +126,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     hargaKainPksRows,
     entitasRows,
     supplierRows,
+    vendorProduksiMasterRows,
   ] = await Promise.all([
     db.from("mrp").select("*"),
     db.from("lengan_groups").select("*"),
@@ -161,6 +163,10 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     db.from("harga_kain_pks").select("*"),
     db.from("entitas").select("*"),
     db.from("suppliers").select("*"),
+    // SENGAJA select kolom spesifik (bukan "*") -- tabel ini juga punya password_hash (bcrypt,
+    // lihat loginVendorAction di lib/auth/actions.ts) yang TIDAK BOLEH pernah ikut snapshot yang
+    // sampai ke client/browser.
+    db.from("vendors_produksi").select("id,name,kategori,base_capacity"),
   ]);
   return {
     mrpRows,
@@ -198,6 +204,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     hargaKainPksRows,
     entitasRows,
     supplierRows,
+    vendorProduksiMasterRows,
   };
 }
 
@@ -248,6 +255,7 @@ async function fetchFlowRowsFast(db: SupabaseClient): Promise<RawTables> {
     hargaKainPksRows: wrap("harga_kain_pks"),
     entitasRows: wrap("entitas"),
     supplierRows: wrap("suppliers"),
+    vendorProduksiMasterRows: wrap("vendors_produksi"),
   };
 }
 
@@ -301,6 +309,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     hargaKainPksRows,
     entitasRows,
     supplierRows,
+    vendorProduksiMasterRows,
   } = await fetchFlowRows(db);
 
   for (const [name, res] of Object.entries({
@@ -760,6 +769,13 @@ export async function getFlowSnapshot(): Promise<FlowState> {
   }));
   const entitasList: EntitasRow[] = (entitasRows.data ?? []).map((r) => ({ id: r.id, nama: r.nama }));
   const supplierList: SupplierRow[] = (supplierRows.data ?? []).map((r) => ({ id: r.id, nama: r.nama }));
+  // ---- Vendor produksi (kategori & kapasitas mingguan asli, lihat migration 0019) ----
+  const vendorProduksiList: VendorProduksiMasterRow[] = (vendorProduksiMasterRows.data ?? []).map((r) => ({
+    id: r.id,
+    name: r.name,
+    kategori: r.kategori ?? undefined,
+    weeklyCapacity: Number(r.base_capacity ?? 0),
+  }));
 
   return {
     mrpDetails,
@@ -781,6 +797,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     materialClaimReturReceipts,
     materialClaimHistory,
     vendorDeposits,
+    vendorProduksiList,
     productionYieldResolutions,
     hargaMaklon,
     hargaKain,

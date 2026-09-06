@@ -2,19 +2,33 @@ import * as XLSX from "xlsx";
 import type { AduanPolaRow, Lengan, LenganGroup, MaterialRow, SizeQty } from "./types";
 import { VENDOR_PRODUKSI } from "./seed";
 
-/** Cocokkan kode vendor dari Excel (bebas huruf besar/kecil, spasi, atau tanpa strip — mis.
- *  "bayu", "gi01") ke kode vendor resmi (mis. "BAYU", "GI-01"). Kalau tidak ada yang cocok,
- *  lempar error jelas — supaya PO/invoice tidak pernah "hilang" karena kode vendor typo yang
- *  diam-diam disimpan apa adanya (mis. "BY") dan tidak pernah cocok dengan vendor manapun. */
+/** Alias kode vendor lama/spreadsheet -> id resmi di sistem ini. "BY" adalah kode Bayu di
+ *  spreadsheet Procurement asli, tapi id internal SENGAJA dipertahankan "BAYU" (lihat komentar di
+ *  lib/mrp/seed.ts) demi kompatibilitas data lama (PO, invoice, dst. semua sudah tersimpan pakai
+ *  "BAYU") — jadi "BY" perlu dikenali terpisah, tidak akan pernah cocok lewat pencocokan kode/nama
+ *  biasa di bawah. Tambah baris baru di sini kalau ketemu kode spreadsheet lain yang beda dari id
+ *  internal. */
+const VENDOR_CODE_ALIASES: Record<string, string> = { BY: "BAYU" };
+
+/** Cocokkan KODE ATAU NAMA vendor dari Excel (bebas huruf besar/kecil, spasi, atau tanpa strip —
+ *  mis. "bayu", "gi01", "Yogi 01") ke id vendor resmi (mis. "BAYU", "GI-01") -- revisi 2026-09-06:
+ *  sebelumnya cuma cocok ke KODE, jadi kolom VENDOR yang diisi NAMA lengkap (kadang begitu di
+ *  beberapa sheet Procurement) gagal dengan error "tidak dikenali" walau sebenarnya vendornya ada.
+ *  Kalau tidak ada yang cocok sama sekali, lempar error jelas — supaya PO/invoice tidak pernah
+ *  "hilang" karena kode/nama vendor typo yang diam-diam disimpan apa adanya dan tidak pernah cocok
+ *  dengan vendor manapun. */
 function normalizeVendorCode(raw: string): string {
   const cleaned = raw.trim();
   const key = cleaned.toUpperCase().replace(/[\s-]/g, "");
-  const match = Object.keys(VENDOR_PRODUKSI).find((k) => k.toUpperCase().replace(/[\s-]/g, "") === key);
-  if (!match) {
-    const valid = Object.keys(VENDOR_PRODUKSI).join(", ");
-    throw new Error(`Kode vendor "${cleaned}" pada kolom VENDOR tidak dikenali. Kode vendor yang valid: ${valid}.`);
-  }
-  return match;
+  if (VENDOR_CODE_ALIASES[key]) return VENDOR_CODE_ALIASES[key];
+  const byCode = Object.keys(VENDOR_PRODUKSI).find((k) => k.toUpperCase().replace(/[\s-]/g, "") === key);
+  if (byCode) return byCode;
+  const byName = Object.entries(VENDOR_PRODUKSI).find(([, meta]) => meta.name.toUpperCase().replace(/[\s-]/g, "") === key);
+  if (byName) return byName[0];
+  const valid = Object.entries(VENDOR_PRODUKSI)
+    .map(([k, meta]) => `${k} (${meta.name})`)
+    .join(", ");
+  throw new Error(`Kode/nama vendor "${cleaned}" pada kolom VENDOR tidak dikenali. Vendor yang valid: ${valid}.`);
 }
 
 export type ParsedMrpImport = {

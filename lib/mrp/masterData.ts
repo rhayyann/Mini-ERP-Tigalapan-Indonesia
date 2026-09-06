@@ -53,3 +53,16 @@ export type HargaKainPksRow = {
 
 export type EntitasRow = { id: string; nama: string };
 export type SupplierRow = { id: string; nama: string };
+
+/** Revisi 2026-09-06: data ASLI vendor produksi dari spreadsheet Procurement (kategori & kapasitas
+ *  produksi PER MINGGU) -- sumbernya kolom `kategori`/`base_capacity` di tabel `vendors_produksi`
+ *  (lihat migration 0019_vendor_kapasitas_asli.sql). Nama sengaja BEDA dari `VendorProduksiRow` di
+ *  derive.ts (itu row hasil AGREGASI qty per-MRP untuk 1 tampilan tertentu, bukan master data) --
+ *  supaya tidak bentrok nama. `password_hash` SENGAJA tidak ada di sini -- itu cuma pernah dibaca
+ *  server-only lewat loginVendorAction (lib/auth/actions.ts), tidak pernah ikut snapshot client. */
+export type VendorProduksiMasterRow = {
+  id: string;
+  name: string;
+  kategori?: string;
+  weeklyCapacity: number;
+};

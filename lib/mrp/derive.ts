@@ -1,6 +1,6 @@
 import { EKSPEDISI_RATES, MATERIAL_RATE_PER_ROLL, ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "./seed";
 import type { MrpDetail, PpicApprovalStatus } from "./store";
-import type { HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow } from "./masterData";
+import type { HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
 import type { AduanPolaRow, ColorBreakdown, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, Usia, VendorDepositEntry, VendorInvoice } from "./types";
 
 export function formatRupiah(n: number) {
@@ -344,12 +344,22 @@ export type VendorProduksiRow = {
   vendor: string;
   name: string;
   qty: number;
+  /** Kapasitas produksi PER MINGGU vendor ini (sumber: vendorProduksiList, lihat di bawah) --
+   *  ditambahkan di sini (revisi 2026-09-06) supaya UI pemanggil tidak perlu lookup terpisah lagi
+   *  ke VENDOR_PRODUKSI/vendorProduksiList sendiri (lihat app/procurement/po-approval/page.tsx). */
+  baseCapacity: number;
   capacityPct: number;
   fee: number;
   estDays: number;
 };
 
-export function vendorProduksiRows(detail: MrpDetail, hargaMaklon: HargaMaklonRow[]): VendorProduksiRow[] {
+/** Revisi 2026-09-06: `name`+`baseCapacity` sekarang dari `vendorProduksiList` (data ASLI dari
+ *  spreadsheet Procurement, lihat migration 0019_vendor_kapasitas_asli.sql & masterData.ts) --
+ *  BUKAN lagi dari VENDOR_PRODUKSI (seed.ts), yang untuk 8 dari 10 vendor cuma placeholder.
+ *  `estDays` TETAP dari VENDOR_PRODUKSI (belum diminta pindah ke DB). Fallback ke VENDOR_PRODUKSI
+ *  murni jaga-jaga kalau baris DB entah kenapa belum ke-load (snapshot masih kosong saat render
+ *  pertama) -- BUKAN sumber utama lagi. */
+export function vendorProduksiRows(detail: MrpDetail, hargaMaklon: HargaMaklonRow[], vendorProduksiList: VendorProduksiMasterRow[]): VendorProduksiRow[] {
   const rowsByVendor = new Map<string, AduanPolaRow[]>();
   for (const a of detail.aduanRows) {
     const arr = rowsByVendor.get(a.vendor) ?? [];
@@ -357,18 +367,22 @@ export function vendorProduksiRows(detail: MrpDetail, hargaMaklon: HargaMaklonRo
     rowsByVendor.set(a.vendor, arr);
   }
   return Array.from(rowsByVendor.entries()).map(([vendor, rows]) => {
-    const meta = VENDOR_PRODUKSI[vendor] ?? { name: vendor, baseCapacity: 5000, ratePerPc: 7000, estDays: 12 };
+    const dbMeta = vendorProduksiList.find((v) => v.id === vendor);
+    const name = dbMeta?.name ?? VENDOR_PRODUKSI[vendor]?.name ?? vendor;
+    const baseCapacity = dbMeta?.weeklyCapacity || VENDOR_PRODUKSI[vendor]?.baseCapacity || 5000;
+    const estDays = VENDOR_PRODUKSI[vendor]?.estDays ?? 12;
     const qty = rows.reduce((s, r) => s + r.qty, 0);
     return {
       vendor,
-      name: meta.name,
+      name,
       qty,
-      capacityPct: Math.min(100, Math.round((qty / meta.baseCapacity) * 100)),
+      baseCapacity,
+      capacityPct: Math.min(100, Math.round((qty / baseCapacity) * 100)),
       // Fase 2: sama seperti sendPoToFinance — lookup bertingkat Master Data > Harga Maklon,
       // bukan flat ratePerPc lagi, supaya preview "Est. Biaya" ini sama persis dengan PO yang
       // benar-benar dibuat nanti (lihat maklonAmountForVendor).
       fee: maklonAmountForVendor(hargaMaklon, vendor, rows),
-      estDays: meta.estDays,
+      estDays,
     };
   });
 }

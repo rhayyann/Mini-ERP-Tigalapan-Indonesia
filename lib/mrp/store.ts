@@ -25,7 +25,7 @@ import type {
   VendorInvoiceAdjustmentKind,
 } from "./types";
 import type { ParsedMrpImport } from "./parseImport";
-import type { EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow } from "./masterData";
+import type { EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
 import { localDateString } from "./derive";
 import * as rawActions from "./actions";
 
@@ -161,6 +161,12 @@ export type FlowState = {
   hargaKainPks: HargaKainPksRow[];
   entitasList: EntitasRow[];
   supplierList: SupplierRow[];
+  /** Kategori & kapasitas produksi PER MINGGU asli tiap vendor produksi (dari spreadsheet
+   *  Procurement, lihat migration 0019_vendor_kapasitas_asli.sql) -- sumber utama untuk
+   *  `vendorProduksiRows` (derive.ts) & kolom "Qty vs Kapasitas" di portal vendor
+   *  (app/vendor-maklon/po-produksi/page.tsx). Field lain vendor (ratePerPc, estDays, dst.) TETAP
+   *  di VENDOR_PRODUKSI (lib/mrp/seed.ts), tidak ikut pindah ke sini. */
+  vendorProduksiList: VendorProduksiMasterRow[];
   /** True selama snapshot AWAL belum selesai di-fetch dari Supabase (lihat StoreHydrator di
    *  components/shell/store-hydrator.tsx). Halaman-halaman bisa pakai ini untuk skeleton/loading
    *  state kalau perlu -- opsional, tidak wajib dicek. */
@@ -345,6 +351,7 @@ const emptyState: FlowState = {
   hargaKainPks: [],
   entitasList: [],
   supplierList: [],
+  vendorProduksiList: [],
   hydrated: false,
   busy: false,
 };

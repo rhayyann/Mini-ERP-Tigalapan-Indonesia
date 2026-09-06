@@ -15,12 +15,38 @@ function PoProduksiContent({ vendorId }: { vendorId: string }) {
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
   const invoices = useMrpStore((s) => s.invoices);
   const vendorInvoices = useMrpStore((s) => s.vendorInvoices);
+  const vendorProduksiList = useMrpStore((s) => s.vendorProduksiList);
 
   const myPOs = maklonPOs.filter((p) => p.vendorProduksi === vendorId && p.approved);
+  // Revisi 2026-09-06: kapasitas produksi PER MINGGU vendor ini sendiri (data asli dari
+  // spreadsheet Procurement, lihat migration 0019_vendor_kapasitas_asli.sql) -- dipakai di kolom
+  // "Qty vs Kapasitas" di bawah supaya vendor bisa lihat seberapa besar tiap PO dibanding
+  // kesanggupan normal mereka per minggu.
+  const weeklyCapacity = vendorProduksiList.find((v) => v.id === vendorId)?.weeklyCapacity ?? 0;
 
   const columns: ColumnDef<MaklonPO>[] = [
     { key: "noPo", label: "No PO", default: false, render: (p) => <span className="font-mono font-medium">{p.id}</span> },
     { key: "qty", label: "Qty", default: true, align: "right", render: (p) => formatPcs(p.qty) + " pcs" },
+    // Revisi 2026-09-06: qty PO ini dibanding kapasitas produksi mingguan vendor sendiri (BUKAN
+    // qty yang sudah selesai diproduksi -- itu progress, ini ukuran besar-kecil PO) -- supaya
+    // vendor tahu sekilas apakah PO ini muat dikerjakan dalam ~1 minggu atau butuh lebih lama.
+    // TIDAK dibatasi ke 100% (beda dari vendorProduksiRows di halaman PO Approval Procurement)
+    // karena >100% di sini justru informasi penting: PO itu lebih besar dari kapasitas 1 minggu.
+    {
+      key: "qtyVsKapasitas",
+      label: "Qty vs Kapasitas",
+      default: true,
+      align: "right",
+      render: (p) => {
+        if (!weeklyCapacity) return <span className="font-sans text-[11px] text-text-muted">—</span>;
+        const pct = Math.round((p.qty / weeklyCapacity) * 100);
+        return (
+          <span className={"font-mono text-[11.5px] " + (pct > 100 ? "font-semibold text-warning-fg" : "text-text-muted")}>
+            {pct}% dari {formatPcs(weeklyCapacity)}/minggu
+          </span>
+        );
+      },
+    },
     { key: "nilai", label: "Nilai", default: true, align: "right", render: (p) => formatRupiah(p.amount) },
     // Entitas SENGAJA tidak ditampilkan — PO Maklon di sistem ini tidak menggunakan entitas.
     {
