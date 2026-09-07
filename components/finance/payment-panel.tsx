@@ -41,10 +41,10 @@ function dataUrlEncodedBytes(dataUrl: string): number {
 }
 const MAX_PROOF_ENCODED_BYTES = 1.5 * 1024 * 1024; // batas ASLI hasil-encode -- margin ~500 KB di bawah limit 2 MB body Server Action
 
-async function viewPaymentProof(invoiceId: string, fileName?: string) {
+async function viewPaymentProof(invoiceId: string) {
   const proof = await getInvoicePaymentProofAction(invoiceId);
   if (!proof) return;
-  viewAndDownloadFile(proof.dataUrl, fileName ?? proof.fileName);
+  viewAndDownloadFile(proof.dataUrl);
 }
 
 /** Panel "Payment" (material) — konten diekstrak dari halaman lama /finance/payment,
@@ -286,7 +286,7 @@ export function PaymentPanel() {
       default: true,
       render: (i) =>
         i.buktiPvDataUrl ? (
-          <button onClick={() => viewAndDownloadFile(i.buktiPvDataUrl!, i.buktiPvFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+          <button onClick={() => viewAndDownloadFile(i.buktiPvDataUrl!)} className="font-sans text-[11px] font-semibold text-action-primary underline">
             Lihat / Download
           </button>
         ) : (
@@ -317,7 +317,7 @@ export function PaymentPanel() {
         if (i.buktiBayarAt) {
           return (
             <div className="flex items-center gap-2">
-              <button onClick={() => viewPaymentProof(i.id, i.buktiBayarFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+              <button onClick={() => viewPaymentProof(i.id)} className="font-sans text-[11px] font-semibold text-action-primary underline">
                 Lihat / Download
               </button>
               <button onClick={() => openRowUpload(i.id)} className="font-sans text-[11px] text-text-muted underline">

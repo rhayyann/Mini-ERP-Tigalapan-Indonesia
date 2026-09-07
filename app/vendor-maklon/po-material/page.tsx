@@ -16,10 +16,10 @@ import type { Lengan, RawMaterialInvoice } from "@/lib/mrp/types";
 import { getInvoicePaymentProofAction } from "@/lib/mrp/actions";
 import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
 
-async function viewPaymentProof(invoiceId: string, fileName?: string) {
+async function viewPaymentProof(invoiceId: string) {
   const proof = await getInvoicePaymentProofAction(invoiceId);
   if (!proof) return;
-  viewAndDownloadFile(proof.dataUrl, fileName ?? proof.fileName);
+  viewAndDownloadFile(proof.dataUrl);
 }
 
 const REMARK_BY_STATUS: Record<string, string> = {
@@ -155,7 +155,7 @@ function PoMaterialContent({ vendorId }: { vendorId: string }) {
       default: false,
       render: (r) =>
         r.buktiPvDataUrl ? (
-          <button onClick={() => viewAndDownloadFile(r.buktiPvDataUrl!, r.buktiPvFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+          <button onClick={() => viewAndDownloadFile(r.buktiPvDataUrl!)} className="font-sans text-[11px] font-semibold text-action-primary underline">
             Lihat / Download
           </button>
         ) : (
@@ -168,7 +168,7 @@ function PoMaterialContent({ vendorId }: { vendorId: string }) {
       default: false,
       render: (r) =>
         r.buktiBayarAt && r.invoiceId ? (
-          <button onClick={() => viewPaymentProof(r.invoiceId!, r.buktiBayarFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+          <button onClick={() => viewPaymentProof(r.invoiceId!)} className="font-sans text-[11px] font-semibold text-action-primary underline">
             Lihat / Download
           </button>
         ) : (
