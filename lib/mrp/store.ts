@@ -221,7 +221,7 @@ type FlowActions = {
   // komponen (lihat payment-panel.tsx / paying-voucher-material-panel.tsx).
   setInvoicePaymentProof: (invoiceIds: string[], dataUrl: string, fileName?: string) => Promise<void>;
   setInvoicesDelivery: (invoiceIds: string[], deliveryDate: string) => Promise<void>;
-  markRollArrived: (invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, codeRoll?: string, codeLot?: string) => Promise<void>;
+  markRollArrived: (invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, codeRoll?: string) => Promise<void>;
   receiveRawMaterialRoll: (
     invoiceId: string,
     warna: string,
@@ -681,7 +681,7 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   // invoice dihitung persis logika server-nya (markRollArrivedAction: DELIVERY -> RECEIVING,
   // receivedAt cuma diisi kalau belum ada) supaya tidak menyimpang dari yang bakal ditulis.
   // Rollback + alert kalau tulisnya gagal.
-  markRollArrived: async (invoiceId, warna, lengan, rollIndex, codeRoll, codeLot) => {
+  markRollArrived: async (invoiceId, warna, lengan, rollIndex, codeRoll) => {
     const colorKey = `${warna}|${lengan}`;
     const arrivedAt = localDateString(new Date());
     const previous = get().invoices;
@@ -689,7 +689,11 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
       invoices: previous.map((inv) => {
         if (inv.id !== invoiceId) return inv;
         const arr = [...(inv.rollArrivals[colorKey] ?? [])];
-        arr[rollIndex] = { arrivedAt, codeRoll, codeLot };
+        // codeLot TIDAK diisi di sini lagi (item revisi 2026-09-08) -- sudah diinput Procurement
+        // saat Paying Voucher (lihat ColorEntry.lots, ditampilkan langsung dari sana di halaman
+        // Good Receive), bukan lagi bagian dari aksi "tandai diterima" ini. backgroundRefresh()
+        // di bawah akan mewariskan nilai code_lot yang sudah ada dari snapshot server berikutnya.
+        arr[rollIndex] = { arrivedAt, codeRoll };
         return {
           ...inv,
           rollArrivals: { ...inv.rollArrivals, [colorKey]: arr },
@@ -699,7 +703,7 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
       }),
     });
     try {
-      await actions.markRollArrivedAction(invoiceId, warna, lengan, rollIndex, codeRoll, codeLot);
+      await actions.markRollArrivedAction(invoiceId, warna, lengan, rollIndex, codeRoll);
     } catch (err) {
       set({ invoices: previous });
       window.alert("Gagal menandai roll diterima -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));

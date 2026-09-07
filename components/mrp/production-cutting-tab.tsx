@@ -1241,20 +1241,26 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                             <div className="font-sans text-[11px] font-medium text-text-muted">
                               Roll {b.qtyRoll} — {b.codeRoll || "—"} (target {targetTotal} pcs){b.cuttingAt && <span className="ml-1.5 text-warning-fg">(perbaiki)</span>}
                             </div>
-                            <div className="mt-1.5 flex flex-wrap gap-2">
+                            {/* Item revisi 2026-09-08 (owner: elemen tumpang tindih/tidak presisi di
+                               form input cutting) -- label "(target N)" dulu bisa lebih lebar dari
+                               box input di bawahnya (w-[86px] terlalu sempit utk target 3 digit),
+                               bikin wrap aneh & antar box size jadi terasa mepet. `whitespace-nowrap`
+                               mencegah label pecah baris sendiri, gap & lebar box diperlebar supaya
+                               tiap size box benar-benar presisi sejajar. */}
+                            <div className="mt-2 flex flex-wrap gap-3">
                               {Object.keys(targetSizes).length === 0 && (
                                 <span className="font-sans text-[11px] text-text-muted">Aduan pola untuk roll ini tidak punya rincian size.</span>
                               )}
                               {Object.entries(targetSizes).map(([size, tgt]) => (
                                 <div key={size} className="flex flex-col">
-                                  <span className="font-sans text-[10px] text-text-muted">
+                                  <span className="whitespace-nowrap font-sans text-[10px] text-text-muted">
                                     {size} <span className="text-[9px]">(target {tgt})</span>
                                   </span>
                                   <NumberInput
                                     value={sizeDraft[size] ?? 0}
                                     decimals={0}
                                     onChange={(v) => setCuttingSizeDraft((prev) => ({ ...prev, [b.id]: { ...(prev[b.id] ?? {}), [size]: v } }))}
-                                    className="input mt-0.5 w-[86px] text-right"
+                                    className="input mt-1 w-[96px] text-right"
                                   />
                                 </div>
                               ))}

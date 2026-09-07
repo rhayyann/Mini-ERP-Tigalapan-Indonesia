@@ -10,7 +10,6 @@ import {
   cuttingSizesForGroup,
   fgMurniAndReworkForGroup,
   productionGroupMetaFor,
-  rejectGrossForGroup,
   reworkBySizeForGroup,
   reworkedAwayBySize,
   reworkQtyForGroup,
@@ -150,8 +149,11 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
             const totalFg = Object.values(fgRecorded).reduce((a, b) => a + b, 0);
             const totalSelisih = totalFg - totalTarget;
             const progressPct = totalTarget > 0 ? Math.min(100, Math.round((totalFg / totalTarget) * 100)) : 0;
-            const grossReject = Object.values(rejectGrossForGroup(groupKey, productionResults)).reduce((a, b) => a + b, 0);
-            const sisaReject = Object.values(cumulativeSizeQtyForGroup(groupKey, "REJECT", productionResults)).reduce((a, b) => a + b, 0);
+            // Item revisi 2026-09-08 (owner: "Hilangkan saja yang reject, pake saja reject sisa
+            // jadi reject saat ini") -- dulu tampil DUA angka reject berdampingan (gross sebelum
+            // rework + sisa setelah rework), sekarang cukup SATU: sisa reject SAAT INI (setelah
+            // rework dikurangkan), diberi label "Reject" biasa (bukan lagi "Sisa reject").
+            const currentReject = Object.values(cumulativeSizeQtyForGroup(groupKey, "REJECT", productionResults)).reduce((a, b) => a + b, 0);
             const rework = reworkQtyForGroup(groupKey, productionResults);
             const meta = productionGroupMetaFor(groupKey, productionGroupMeta);
             const isFgConfirmed = !!meta?.fgConfirmedAt;
@@ -159,9 +161,8 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
             const expanded = expandedGroupKey === groupKey;
             const fgSplit = fgMurniAndReworkForGroup(groupKey, productionResults);
             const sizes = Array.from(new Set([...Object.keys(target), ...Object.keys(fgRecorded)]));
-            const grossPerSize = rejectGrossForGroup(groupKey, productionResults);
             const reworkPerSize = reworkedAwayBySize(groupKey, productionResults);
-            const sisaPerSize = cumulativeSizeQtyForGroup(groupKey, "REJECT", productionResults);
+            const currentRejectPerSize = cumulativeSizeQtyForGroup(groupKey, "REJECT", productionResults);
             const fgFromReworkPerSize = reworkBySizeForGroup(groupKey, productionResults);
             return (
               <div key={groupKey} className="border-b border-[#F1F4F7] last:border-b-0">
@@ -194,13 +195,10 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                     </div>
                   </div>
                   <span className="font-mono text-[11px]">
-                    <span className="text-text-muted">Reject</span> <span className="font-semibold text-danger-fg">{grossReject}</span>
-                  </span>
-                  <span className="font-mono text-[11px]">
                     <span className="text-text-muted">Rework</span> <span className="font-semibold text-success-fg">{rework}</span>
                   </span>
                   <span className="font-mono text-[11px]">
-                    <span className="text-text-muted">Sisa reject</span> <span className="font-semibold text-danger-fg">{sisaReject}</span>
+                    <span className="text-text-muted">Reject</span> <span className="font-semibold text-danger-fg">{currentReject}</span>
                   </span>
                   <span className="ml-auto flex flex-none items-center gap-2">
                     <button
@@ -235,15 +233,14 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                   <div className="border-t border-[#CFE0EF] bg-info-bg p-4">
                     <div className="overflow-x-auto">
                       <div className="min-w-[860px] overflow-hidden rounded-md border border-[#CFE0EF] bg-white">
-                        <div className="grid grid-cols-8 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                        <div className="grid grid-cols-7 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                           <span>Size</span>
                           <span className="text-right">FG Target</span>
                           <span className="text-right">FG Terinput</span>
                           <span className="text-right">FG dari Rework</span>
                           <span className="text-right">FG Selisih</span>
-                          <span className="text-right">Reject</span>
                           <span className="text-right">Rework</span>
-                          <span className="text-right">Sisa Reject</span>
+                          <span className="text-right">Reject</span>
                         </div>
                         {sizes.length === 0 && <div className="px-3 py-3 text-center font-sans text-[11px] text-text-muted">Belum ada size tercatat.</div>}
                         {sizes.map((size) => {
@@ -251,7 +248,7 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                           const f = fgRecorded[size] ?? 0;
                           const s = f - t;
                           return (
-                            <div key={size} className="grid grid-cols-8 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
+                            <div key={size} className="grid grid-cols-7 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
                               <span className="font-mono font-medium">{size}</span>
                               <span className="text-right font-mono">{t}</span>
                               <span className="text-right font-mono text-text-muted">{f}</span>
@@ -260,9 +257,8 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                                 {s >= 0 ? "+" : ""}
                                 {s}
                               </span>
-                              <span className="text-right font-mono">{grossPerSize[size] ?? 0}</span>
                               <span className="text-right font-mono text-success-fg">{reworkPerSize[size] ?? 0}</span>
-                              <span className="text-right font-mono text-danger-fg">{sisaPerSize[size] ?? 0}</span>
+                              <span className="text-right font-mono text-danger-fg">{currentRejectPerSize[size] ?? 0}</span>
                             </div>
                           );
                         })}

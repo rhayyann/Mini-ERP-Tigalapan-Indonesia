@@ -33,14 +33,14 @@ function remainingByWarna(po: MaterialPO, entries: ColorEntry[]): WarnaGroup[] {
   return Array.from(map.values());
 }
 
-function splitRollsAcrossLengan(rolls: number[], breakdown: { lengan: Lengan; remaining: number }[]) {
+function splitRollsAcrossLengan(rolls: number[], lots: string[] | null, breakdown: { lengan: Lengan; remaining: number }[]) {
   let idx = 0;
-  const result: { lengan: Lengan; rolls: number[] }[] = [];
+  const result: { lengan: Lengan; rolls: number[]; lots: string[] }[] = [];
   for (const b of breakdown) {
     if (b.remaining <= 0 || idx >= rolls.length) continue;
     const take = Math.min(b.remaining, rolls.length - idx);
     if (take <= 0) continue;
-    result.push({ lengan: b.lengan, rolls: rolls.slice(idx, idx + take) });
+    result.push({ lengan: b.lengan, rolls: rolls.slice(idx, idx + take), lots: (lots ?? []).slice(idx, idx + take) });
     idx += take;
   }
   return result;
@@ -85,6 +85,10 @@ export function PayingVoucherWizard({
   const [hargaPerRoll, setHargaPerRoll] = useState(0);
   const [qtyRoll, setQtyRoll] = useState(1);
   const [draftRolls, setDraftRolls] = useState<number[] | null>(null);
+  // Item revisi 2026-09-08 (owner: "Belum ada input kode lot per rollnya") — kode lot per roll
+  // sekarang diinput Procurement di sini (paralel ke draftRolls), bukan lagi di-generate random
+  // vendor di Good Receive. Boleh kosong per roll (opsional, sama seperti code roll di sana).
+  const [draftLots, setDraftLots] = useState<string[] | null>(null);
   const [addBuys, setAddBuys] = useState<AddBuyItem[]>([]);
   const [diskon, setDiskon] = useState(0);
   // Dulu auto-generate "TRX-xxxx" acak dan langsung dipakai sebagai isi field -- sekarang kosong,
@@ -128,6 +132,7 @@ export function PayingVoucherWizard({
     setHargaPerRoll(0);
     setQtyRoll(1);
     setDraftRolls(null);
+    setDraftLots(null);
   }
 
   function editEntry(index: number) {
@@ -137,6 +142,7 @@ export function PayingVoucherWizard({
     setHargaPerRoll(entry.hargaPerRoll);
     setQtyRoll(entry.rolls.length);
     setDraftRolls(null);
+    setDraftLots(null);
   }
 
   function removeEntry(index: number) {
@@ -147,6 +153,7 @@ export function PayingVoucherWizard({
     if (!activeGroup) return;
     const qty = Math.max(1, Math.min(qtyRoll, activeGroup.totalRemaining));
     setDraftRolls(Array(qty).fill(25.0));
+    setDraftLots(Array(qty).fill(""));
   }
 
   // Dulu add-buy "Rib" cuma muncul kalau user klik "+ Tambah add buy" sendiri (opsional, gampang
@@ -174,8 +181,14 @@ export function PayingVoucherWizard({
 
   function saveColorEntry() {
     if (!activeGroup || !draftRolls) return;
-    const splits = splitRollsAcrossLengan(draftRolls, activeGroup.lenganBreakdown);
-    const newEntries: ColorEntry[] = splits.map((s) => ({ warna: activeGroup.warna, lengan: s.lengan, hargaPerRoll, rolls: s.rolls }));
+    const splits = splitRollsAcrossLengan(draftRolls, draftLots, activeGroup.lenganBreakdown);
+    const newEntries: ColorEntry[] = splits.map((s) => ({
+      warna: activeGroup.warna,
+      lengan: s.lengan,
+      hargaPerRoll,
+      rolls: s.rolls,
+      lots: s.lots.some((l) => l.trim()) ? s.lots : undefined,
+    }));
     const updatedEntries = [...entries, ...newEntries];
     setEntries(updatedEntries);
     setAddBuys((prev) => autoAddRibForWarna(activeGroup.warna, updatedEntries, prev));
@@ -185,6 +198,7 @@ export function PayingVoucherWizard({
     // tertentu (lihat catatan panjang di deklarasi activeKey di atas).
     setActiveKey(null);
     setDraftRolls(null);
+    setDraftLots(null);
   }
 
   function addAddBuy() {
@@ -342,6 +356,16 @@ export function PayingVoucherWizard({
                   className="input mt-0.5"
                 />
                 <div className="mt-0.5 font-sans text-[9px] text-text-muted">pakai koma untuk desimal (mis. 25,5)</div>
+                {/* Item revisi 2026-09-08: kode lot per roll diinput di sini (Procurement, saat
+                    Paying Voucher) -- akan dibawa sampai ke Good Receive vendor (read-only di
+                    sana), tidak lagi di-generate random vendor. Opsional, boleh dikosongkan. */}
+                <div className="mt-1.5 font-sans text-[10px] text-text-muted">Code lot</div>
+                <input
+                  value={draftLots?.[i] ?? ""}
+                  onChange={(e) => setDraftLots((prev) => (prev ?? draftRolls.map(() => ""))!.map((x, idx) => (idx === i ? e.target.value : x)))}
+                  placeholder="mis. 818"
+                  className="input mt-0.5 text-[11px]"
+                />
               </div>
             ))}
           </div>
@@ -349,7 +373,13 @@ export function PayingVoucherWizard({
             <button onClick={saveColorEntry} className="rounded-md bg-action-primary px-3 py-[7px] font-sans text-xs font-semibold text-white">
               Simpan warna ini
             </button>
-            <button onClick={() => setDraftRolls(null)} className="rounded-md border border-[#CBD5DF] bg-white px-3 py-[7px] font-sans text-xs font-semibold text-action-primary">
+            <button
+              onClick={() => {
+                setDraftRolls(null);
+                setDraftLots(null);
+              }}
+              className="rounded-md border border-[#CBD5DF] bg-white px-3 py-[7px] font-sans text-xs font-semibold text-action-primary"
+            >
               Kembali
             </button>
           </div>
@@ -465,7 +495,10 @@ export function PayingVoucherWizard({
           {/* Item revisi 2026-09-05: tidak lagi menampilkan status "Memproses..." -- canSubmit
              (sudah memasukkan `!submitting`) tetap mencegah dobel klik, cuma tidak lagi terlihat
              user; PV baru tampil di "Riwayat Paying Voucher" begitu backgroundRefresh selesai. */}
-          Bayar (Paying Voucher)
+          {/* Item revisi 2026-09-08 (owner: "Ganti nama button (Bayar ...) jadi Ajukan ...") --
+             PV di sini murni DIAJUKAN, belum ada pembayaran aktual (Finance yang proses belakangan,
+             lihat halaman Finance/Paying Voucher approval). */}
+          Ajukan (Paying Voucher)
         </button>
         <button onClick={onCancel} disabled={submitting} className="rounded-md border border-[#CBD5DF] px-3.5 py-2 font-sans text-xs font-semibold text-action-primary disabled:cursor-not-allowed disabled:opacity-50">
           Batal

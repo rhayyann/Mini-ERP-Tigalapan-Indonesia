@@ -1911,6 +1911,31 @@ export function maklonPoDeliveryProgress(po: MaklonPO, deliveryKolis: DeliveryKo
   };
 }
 
+// Item revisi 2026-09-08 (owner, tab Rework: "Yang bisa dirework adalah size yang sama ukurannya
+// dengan juga yang ada dibawah size yang ingin dirework tersebut" -- BUG NYATA, dropdown "Size
+// baru" dulu menampilkan SEMUA size MRP tanpa filter sama sekali, termasuk size LEBIH BESAR dari
+// size asal -- mustahil secara fisik (motong kain reject cuma bisa mengecilkan potongan, tidak
+// bisa "menambah kain"). Satu-satunya urutan size canonical di app ini -- dipakai client
+// (production-rework-tab.tsx, filter dropdown) DAN server (reworkRejectSizeAction, validasi
+// ulang) supaya satu sumber kebenaran. Size di luar daftar ini (custom/tidak dikenal) SENGAJA
+// tidak diblokir (fail-open, lihat reworkSizeAllowed) -- daripada diam-diam menghilangkan opsi
+// yang mungkin valid dari data yang tidak terduga.
+export const SIZE_ORDER = ["S", "M", "L", "XL", "2XL", "3XL"];
+
+export function sizeIndex(size: string): number {
+  return SIZE_ORDER.indexOf(size.trim().toUpperCase());
+}
+
+/** True kalau `toSize` boleh jadi tujuan rework dari `fromSize` -- size dikenal: cuma boleh sama
+ *  atau lebih kecil (index lebih rendah/sama) di SIZE_ORDER. Size TIDAK dikenal (custom, bukan
+ *  bagian SIZE_ORDER) di salah satu sisi: fail-open (selalu diizinkan) -- lihat catatan di atas. */
+export function reworkSizeAllowed(fromSize: string, toSize: string): boolean {
+  const fromIdx = sizeIndex(fromSize);
+  const toIdx = sizeIndex(toSize);
+  if (fromIdx === -1 || toIdx === -1) return true;
+  return toIdx <= fromIdx;
+}
+
 export type AvailableFgRow = { warna: string; lengan: Lengan; size: string; usia?: Usia; available: number };
 
 function isReworkResult(r: ProductionResult): boolean {
