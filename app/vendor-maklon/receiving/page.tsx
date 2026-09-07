@@ -6,7 +6,17 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
 import { VendorAuthGuard } from "@/components/mrp/vendor-auth-guard";
 import { useMrpStore } from "@/lib/mrp/store";
-import { addDays, formatDate, formatDecimal, formatPcs, invoiceBadge, materialReceivedForMaklon, rollArrivalProgress, rollArrivalStatus } from "@/lib/mrp/derive";
+import {
+  addDays,
+  formatDate,
+  formatDecimal,
+  formatPcs,
+  invoiceBadge,
+  materialReceivedForMaklon,
+  rollArrivalProgress,
+  rollArrivalStatus,
+  rollArrivalStatusBadge,
+} from "@/lib/mrp/derive";
 import { countGoodReceiveEligibleForMrp, pendingMarker } from "@/lib/shell/badges";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
@@ -141,6 +151,16 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
     markRollArrived(selectedInvoice.id, selectedColor.warna, selectedColor.lengan, idx, code.codeRoll || undefined, code.codeLot || undefined);
   }
 
+  // Item 2 (feedback batch 2026-09-07): status RECEIVING tidak bedakan "baru mulai" dari "sudah
+  // sebagian roll masuk" -- begitu masih ada roll yang belum ditandai, tampilkan pill "PARSIAL"
+  // (rollArrivalStatusBadge, sudah dipakai identik di Material Tracking Procurement) SEBAGAI
+  // GANTI pill status invoice, tetap 1 pill sesuai keputusan owner sebelumnya (lihat komentar di
+  // bawah) -- bukan pill tambahan.
+  function invoiceStatusPill(i: (typeof eligible)[number]) {
+    if (i.status === "RECEIVING" && rollArrivalStatus(i) === "PARSIAL") return rollArrivalStatusBadge("PARSIAL");
+    return invoiceBadge(i.status);
+  }
+
   return (
     <AppShell
       role="vendorMaklon"
@@ -224,7 +244,7 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                     kedatangan roll per-warna sudah cukup terwakili kolom "Roll diterima" di
                     sebelahnya (angka + warna teks). */}
                 <span>
-                  <StatusPill tone={invoiceBadge(i.status).tone}>{invoiceBadge(i.status).label}</StatusPill>
+                  <StatusPill tone={invoiceStatusPill(i).tone}>{invoiceStatusPill(i).label}</StatusPill>
                 </span>
                 <span className={"text-right font-mono " + (progress.arrived < progress.total ? "text-warning-fg" : "text-success-fg")}>
                   {progress.arrived}/{progress.total} roll
@@ -268,7 +288,7 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
           <div className="rounded-lg border border-border-subtle bg-surface-card px-4 py-3.5">
             <div className="flex items-center gap-2">
               <span className="font-sans text-[13px] font-semibold text-text-primary">{selectedInvoice.poId}</span>
-              <StatusPill tone={invoiceBadge(selectedInvoice.status).tone}>{invoiceBadge(selectedInvoice.status).label}</StatusPill>
+              <StatusPill tone={invoiceStatusPill(selectedInvoice).tone}>{invoiceStatusPill(selectedInvoice).label}</StatusPill>
             </div>
             <div className="mt-1 font-sans text-xs text-text-muted">
               {selectedInvoice.supplier} · No. invoice supplier: {selectedInvoice.noInvoiceVendor || "—"}
@@ -307,11 +327,10 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
               </div>
               <div
                 className="grid min-w-[760px] gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
-                style={{ gridTemplateColumns: "minmax(70px,0.6fr) minmax(150px,1.3fr) minmax(100px,0.8fr) minmax(110px,0.9fr) minmax(150px,1.2fr)" }}
+                style={{ gridTemplateColumns: "minmax(70px,0.6fr) minmax(150px,1.3fr) minmax(110px,0.9fr) minmax(150px,1.2fr)" }}
               >
                 <span>Roll</span>
                 <span>Code Roll</span>
-                <span>Code Lot</span>
                 <span className="text-right">Berat kotor (kg)</span>
                 <span>Status</span>
               </div>
@@ -322,7 +341,7 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                   <div
                     key={idx}
                     className="grid min-w-[760px] items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0"
-                    style={{ gridTemplateColumns: "minmax(70px,0.6fr) minmax(150px,1.3fr) minmax(100px,0.8fr) minmax(110px,0.9fr) minmax(150px,1.2fr)" }}
+                    style={{ gridTemplateColumns: "minmax(70px,0.6fr) minmax(150px,1.3fr) minmax(110px,0.9fr) minmax(150px,1.2fr)" }}
                   >
                     <span className="font-mono font-medium">Roll {idx + 1}</span>
                     {arrival ? (
@@ -333,16 +352,6 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                         onChange={(e) => setDraftCode((prev) => ({ ...prev, [idx]: { ...code, codeRoll: e.target.value } }))}
                         className="input text-[11px]"
                         placeholder="Code roll"
-                      />
-                    )}
-                    {arrival ? (
-                      <span className="font-mono text-[11px]">{arrival.codeLot || "—"}</span>
-                    ) : (
-                      <input
-                        value={code.codeLot}
-                        onChange={(e) => setDraftCode((prev) => ({ ...prev, [idx]: { ...code, codeLot: e.target.value } }))}
-                        className="input text-[11px]"
-                        placeholder="Code lot"
                       />
                     )}
                     <span className="text-right font-mono">{formatDecimal(grossKg)}</span>

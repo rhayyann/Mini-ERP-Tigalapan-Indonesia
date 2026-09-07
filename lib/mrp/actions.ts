@@ -1779,6 +1779,19 @@ export async function createClaimReplacementInvoiceAction(
 
   await db.from("material_claim_history").update({ resolution_kind: "RETUR_REORDER", resolved_at: today(), replacement_invoice_id: invoiceId }).eq("id", openId);
 
+  // Item 3 (feedback batch 2026-09-07): sebelumnya cuma arsip (di atas) yang ditutup -- kolom LIVE
+  // `raw_material_invoice_rolls.claim_resolved_at` (yang benar-benar dibaca `materialClaimStage`
+  // via `materialClaimResolutions`, lihat repo/snapshot.ts) tidak pernah disentuh, jadi roll LAMA
+  // yang sudah diklaim tetap nyangkut selamanya di daftar "Timbang roll" Cutting (lihat
+  // pendingWeighRolls di derive.ts) meski PV penggantinya sudah dibuat -- munculnya sebagai
+  // "duplikat" 2 roll yang dilaporkan owner. Update ini pakai pola SAMA PERSIS seperti
+  // resolveMaterialClaimAction supaya sumber kebenarannya tetap satu.
+  await db
+    .from("raw_material_invoice_rolls")
+    .update({ claim_resolved_note: `Diganti PV ${invoiceId}`, claim_resolved_at: today() })
+    .eq("invoice_color_id", parsed.invoiceColorId)
+    .eq("roll_index", parsed.rollIndex);
+
   await insertNotification(
     notif(
       `Klaim retur roll #${claimRow.roll_index + 1} (${claimRow.warna} · ${claimRow.lengan}, invoice ${parsed.invoiceId}) diselesaikan lewat pesan ulang -- PV pengganti ${invoiceId} (Rp ${Math.round(nilaiBaru).toLocaleString("id-ID")}) dibuat, kredit Rp ${Math.round(kredit).toLocaleString("id-ID")} tercatat di saldo deposit ${claimRow.supplier}.`,

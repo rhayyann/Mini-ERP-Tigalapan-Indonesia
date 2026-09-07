@@ -108,6 +108,9 @@ export function AppShell({
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const materialClaimResolutions = useMrpStore((s) => s.materialClaimResolutions);
+  const materialClaimReturRequests = useMrpStore((s) => s.materialClaimReturRequests);
+  const materialClaimReturDeliveries = useMrpStore((s) => s.materialClaimReturDeliveries);
+  const materialClaimReturReceipts = useMrpStore((s) => s.materialClaimReturReceipts);
   const productionYieldResolutions = useMrpStore((s) => s.productionYieldResolutions);
 
   // Auto-import Master Data (Harga Maklon/Kain/Kain PKS/Entitas) begitu terdeteksi kosong — SAMA
@@ -179,7 +182,12 @@ export function AppShell({
       // satu pun tombol aksi di halaman itu (semua trigger sudah pindah ke Good Receive,
       // Produksi, dan Invoice & Payment).
       "/vendor-maklon/receiving": countVendorGoodReceiveEligible(vendorId, invoices),
-      "/vendor-maklon/production": countVendorProduksiActionable(vendorId, productionBatches, productionResults, invoices),
+      "/vendor-maklon/production": countVendorProduksiActionable(vendorId, productionBatches, productionResults, invoices, {
+        resolutions: materialClaimResolutions,
+        returRequests: materialClaimReturRequests,
+        returDeliveries: materialClaimReturDeliveries,
+        returReceipts: materialClaimReturReceipts,
+      }),
       "/vendor-maklon/pengiriman": countVendorPengirimanReady(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs),
       "/vendor-maklon/invoice-payment": countVendorInvoicePaymentTotal(vendorId, mrpDetails, deliveryKolis, vendorInvoices, maklonInvoices),
     };

@@ -21,8 +21,17 @@ function ProductionContent({ vendorId }: { vendorId: string }) {
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
   const invoices = useMrpStore((s) => s.invoices);
+  const materialClaimResolutions = useMrpStore((s) => s.materialClaimResolutions);
+  const materialClaimReturRequests = useMrpStore((s) => s.materialClaimReturRequests);
+  const materialClaimReturDeliveries = useMrpStore((s) => s.materialClaimReturDeliveries);
+  const materialClaimReturReceipts = useMrpStore((s) => s.materialClaimReturReceipts);
 
-  const cuttingBadge = countCuttingAwaitingUpdate(vendorId, productionBatches, invoices);
+  const cuttingBadge = countCuttingAwaitingUpdate(vendorId, productionBatches, invoices, {
+    resolutions: materialClaimResolutions,
+    returRequests: materialClaimReturRequests,
+    returDeliveries: materialClaimReturDeliveries,
+    returReceipts: materialClaimReturReceipts,
+  });
   const fgBadge = countFgShortfallGroups(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails);
   // Reject SENGAJA baru badge begitu Finish Good sudah mulai dilaporkan untuk grup itu — sebelum
   // ada input FG sama sekali, belum ada dasar bilang ada reject (lihat catatan di badges.ts).
