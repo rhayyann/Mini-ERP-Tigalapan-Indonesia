@@ -30,7 +30,7 @@ function InvoicePaymentContent({ vendorId }: { vendorId: string }) {
       activeHref="/vendor-maklon/invoice-payment"
       breadcrumb={["Dashboard", "Invoice & Payment"]}
       title="Invoice & Payment"
-      subtitle="Buat invoice untuk seluruh qty planned — bisa diajukan begitu delivery pertama sudah jalan. Maksimal total qty = kapasitas produksi vendor"
+      subtitle="Buat invoice untuk qty yang sudah dikirim (lihat Pengiriman) — bertambah begitu koli baru terkirim. Maksimal total qty = kapasitas produksi vendor"
       roleOverride={VENDOR_PRODUKSI[vendorId]?.name ?? vendorId}
       entityOverride="Vendor Produksi"
     >

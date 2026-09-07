@@ -8,7 +8,7 @@ import {
   formatDate,
   formatPcs,
   formatRupiah,
-  invoiceableMrpIdsFullQty,
+  invoiceableMrpIds,
   invoiceCategoryLabel,
   invoiceProductionStatus,
   invoiceYieldSummary,
@@ -47,13 +47,18 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
   // (VENDOR_PRODUKSI/seed.ts, placeholder untuk 8 dari 10 vendor). `vendorMeta` tetap dipakai di
   // bawah untuk `ratePerPc` (belum pindah ke DB).
   const weeklyCapacity = vendorProduksiList.find((v) => v.id === vendorId)?.weeklyCapacity ?? vendorMeta?.baseCapacity ?? 0;
-  // Hasil konsultasi tim produksi: invoice diajukan untuk SELURUH qty planned (PO), bukan cuma
-  // yang sudah delivery — begitu delivery PERTAMA sudah mulai (lihat hasDeliveryStarted di
-  // invoiceableMrpIdsFullQty). Retensi sudah dihapus dari alur (keputusan bisnis terbaru) —
-  // pembayaran Finance sekarang cuma sekali lunas penuh, lihat payVendorInvoice di lib/mrp/store.ts.
-  // Cegah tagihan ganda: buang baris yang MRP-nya sudah terkunci ke jalur Invoice Maklon
-  // (per-PO) — vendor harus lanjut lewat jalur yang sudah dipakai duluan itu.
-  const allEligible = invoiceableMrpIdsFullQty(vendorId, mrpDetails, deliveryKolis, vendorInvoices);
+  // Item revisi 2026-09-07 (owner: "kenapa yang diinvoicekan itu yang totalan dari PO? kenapa
+  // bukan yang sudah dipacking atau yang ada list2 di pengiriman saja? kan harusnya seperti itu"):
+  // dibalik dari basis PLANNED (invoiceableMrpIdsFullQty, sempat jadi "hasil konsultasi tim
+  // produksi" -- lihat riwayat git kalau perlu detail keputusan lama itu) ke basis DELIVERED
+  // (invoiceableMrpIds -- qty yang benar-benar sudah masuk koli Pengiriman berstatus terkirim,
+  // deliveryKolis.deliveredAt terisi) -- vendor cuma bisa invoice untuk qty yang benar-benar sudah
+  // dikirim, bukan seluruh qty planned PO sekaligus begitu delivery pertama mulai. Retensi TETAP
+  // dihapus dari alur (keputusan terpisah, tidak disentuh) -- pembayaran Finance masih sekali
+  // lunas penuh, lihat payVendorInvoice di lib/mrp/store.ts. Cegah tagihan ganda: buang baris yang
+  // MRP-nya sudah terkunci ke jalur Invoice Maklon (per-PO) — vendor harus lanjut lewat jalur yang
+  // sudah dipakai duluan itu.
+  const allEligible = invoiceableMrpIds(vendorId, deliveryKolis, vendorInvoices);
   const eligible = allEligible.filter((r) => maklonPoInvoiceLockedBy(r.mrpId, vendorId, maklonInvoices, vendorInvoices) !== "maklon");
   const lockedByMaklonCount = allEligible.length - eligible.length;
   const lineKey = (mrpId: string, warna: string, lengan: string, usia?: string) => mrpId + "|" + warna + "|" + lengan + "|" + (usia ?? "");
@@ -96,14 +101,24 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
   const overCapacity = totalQty > capacity;
   const totalTagihan = selectedLines.reduce((s, l) => s + l.qty * l.ratePerPc, 0);
 
-  function submitInvoice() {
-    if (selectedLines.length === 0 || overCapacity) return;
+  // Item revisi 2026-09-07 (owner: aksi vendor produksi terasa lambat -- tidak ada tanda loading
+  // sama sekali sebelum ini): dulu fungsi ini TIDAK async & TIDAK menunggu createVendorInvoice
+  // (invoice BARU, bukan optimistic -- lihat store.ts) -- form langsung dikosongkan SEKETIKA
+  // sebelum invoice barunya benar-benar tersimpan, jadi ada jeda tanpa tanda apa pun.
+  const [submittingInvoice, setSubmittingInvoice] = useState(false);
+  async function submitInvoice() {
+    if (selectedLines.length === 0 || overCapacity || submittingInvoice) return;
     const lines = selectedLines.filter((l) => l.qty > 0);
     if (lines.length === 0) return;
-    createVendorInvoice({ vendorProduksi: vendorId, lines });
-    setSelected(new Set());
-    setQtyByLine({});
-    setRateByLine({});
+    setSubmittingInvoice(true);
+    try {
+      await createVendorInvoice({ vendorProduksi: vendorId, lines });
+      setSelected(new Set());
+      setQtyByLine({});
+      setRateByLine({});
+    } finally {
+      setSubmittingInvoice(false);
+    }
   }
 
   const myInvoices = vendorInvoices.filter((i) => i.vendorProduksi === vendorId);
@@ -125,13 +140,13 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
           <span>Kategori</span>
           <span>Warna</span>
           <span>Lengan</span>
-          <span className="text-right">Sisa qty planned</span>
+          <span className="text-right">Sudah dikirim, belum diinvoice</span>
           <span className="text-right">Qty diinvoice</span>
           <span className="text-right">Harga maklon / pc</span>
         </div>
         {eligible.length === 0 && (
           <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">
-            Belum ada PO yang delivery-nya sudah mulai &amp; masih ada sisa qty planned belum diinvoice.
+            Belum ada qty yang sudah dikirim (lihat Pengiriman) &amp; belum diinvoice.
           </div>
         )}
         {eligible.map(({ mrpId, warna, lengan, usia, uninvoicedQty }) => {
@@ -195,10 +210,10 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
             <div className="mt-3">
               <button
                 onClick={submitInvoice}
-                disabled={overCapacity}
+                disabled={overCapacity || submittingInvoice}
                 className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Create Invoice
+                {submittingInvoice ? "Menyimpan…" : "Create Invoice"}
               </button>
             </div>
           </div>

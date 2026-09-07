@@ -4,7 +4,7 @@ import {
   cumulativeSizeQtyForGroup,
   cutWarnaLenganGroups,
   cuttingSizesForGroup,
-  invoiceableMrpIdsFullQty,
+  invoiceableMrpIds,
   invoiceFullyArrived,
   maklonPoInvoiceLockedBy,
   materialClaimsList,
@@ -379,7 +379,15 @@ export function countVendorInvoiceableMrp(
   vendorInvoices: VendorInvoice[],
   maklonInvoices: MaklonInvoice[]
 ): number {
-  const lines = invoiceableMrpIdsFullQty(vendorId, mrpDetails, deliveryKolis, vendorInvoices).filter(
+  // Item revisi 2026-09-07 (owner: "kenapa yang diinvoicekan itu yang totalan dari PO? kenapa
+  // bukan yang sudah dipacking atau yang ada list2 di pengiriman saja?"): dibalik dari basis
+  // PLANNED (invoiceableMrpIdsFullQty, hasil konsultasi tim produksi sebelumnya) balik ke basis
+  // DELIVERED (invoiceableMrpIds -- fungsi lama, sudah ada dari awal, sebelumnya jadi dead code
+  // setelah beralih ke basis planned) -- lihat catatan lengkap di invoice-vendor-panel.tsx.
+  // `mrpDetails` TIDAK dipakai lagi di sini (basis delivered murni dari deliveryKolis), tapi
+  // dipertahankan di signature supaya caller (app/vendor-maklon/invoice-payment/page.tsx) tidak
+  // perlu ikut diubah.
+  const lines = invoiceableMrpIds(vendorId, deliveryKolis, vendorInvoices).filter(
     (l) => maklonPoInvoiceLockedBy(l.mrpId, vendorId, maklonInvoices, vendorInvoices) !== "maklon"
   );
   return new Set(lines.map((l) => l.mrpId)).size;

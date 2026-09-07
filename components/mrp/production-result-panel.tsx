@@ -6,6 +6,7 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Button } from "@/components/ui/button";
 import { useMrpStore } from "@/lib/mrp/store";
+import { usePendingActions } from "@/lib/mrp/usePendingActions";
 import {
   cumulativeSizeQtyForGroup,
   fgMurniAndReworkForGroup,
@@ -102,9 +103,15 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
   // console browser, TIDAK PERNAH terlihat user -- tombol "Selesai Produksi" tampak seperti tidak
   // melakukan apa-apa sama sekali. Sekarang errornya ditangkap & ditampilkan di banner.
   const [actionError, setActionError] = useState<string | null>(null);
-  function runAction(promise: Promise<unknown>) {
+  // Item revisi 2026-09-07 (owner: "Tutup Roll" & aksi lain terasa lambat -- tidak ada tanda
+  // loading sama sekali sebelum ini): runAction dulu MURNI penangkap error, sekarang pakai
+  // usePendingActions supaya tombol yang memicunya bisa di-disable + tampil "…" selama request
+  // masih berjalan (per-key, bukan 1 flag global -- banyak roll/grup independen di daftar yang
+  // sama tidak saling mengunci). `key` = identitas unik aksi itu (mis. batch id / groupKey).
+  const { isPending, run: runKeyed } = usePendingActions();
+  function runAction(key: string, promise: Promise<unknown>) {
     setActionError(null);
-    promise.catch((err) => setActionError(err instanceof Error ? err.message : String(err)));
+    runKeyed(key, promise, setActionError);
   }
 
   const mrpIds = Array.from(new Set(productionBatches.filter((b) => b.vendorProduksi === vendorId && b.cuttingAt).map((b) => b.mrpId)));
@@ -290,21 +297,25 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                         {kind === "FG" &&
                           (isFgConfirmed ? (
                             !isFinalDone && (
-                              <button onClick={() => runAction(undoFgConfirm(groupKey))} className="font-sans text-[10.5px] font-semibold text-action-primary underline">
-                                Buka kunci ↺
+                              <button
+                                onClick={() => runAction(groupKey, undoFgConfirm(groupKey))}
+                                disabled={isPending(groupKey)}
+                                className="font-sans text-[10.5px] font-semibold text-action-primary underline disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {isPending(groupKey) ? "Membuka…" : "Buka kunci ↺"}
                               </button>
                             )
                           ) : (
                             <button
-                              onClick={() => allRollsClosed && runAction(confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
-                              disabled={!allRollsClosed}
+                              onClick={() => allRollsClosed && runAction(groupKey, confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
+                              disabled={!allRollsClosed || isPending(groupKey)}
                               title={allRollsClosed ? undefined : "Tutup semua roll grup ini dulu (\"Lihat by size\" → Tutup Roll)"}
                               className={
-                                "flex-none rounded-md px-2.5 py-[5px] font-sans text-[11px] font-semibold text-white " +
-                                (allRollsClosed ? "bg-action-primary" : "cursor-not-allowed bg-[#B8C2CC]")
+                                "flex-none rounded-md px-2.5 py-[5px] font-sans text-[11px] font-semibold text-white disabled:cursor-not-allowed " +
+                                (allRollsClosed ? "bg-action-primary" + (isPending(groupKey) ? " opacity-50" : "") : "bg-[#B8C2CC]")
                               }
                             >
-                              Selesai Produksi
+                              {isPending(groupKey) ? "Menyimpan…" : "Selesai Produksi"}
                             </button>
                           ))}
                       </span>
@@ -371,8 +382,8 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                                   {isClosed ? (
                                     <StatusPill tone="success">Roll ditutup</StatusPill>
                                   ) : (
-                                    <Button onClick={() => runAction(closeProductionBatch(b.id, draft))} variant="primary" size="xs">
-                                      Tutup Roll ({totalDraft})
+                                    <Button onClick={() => runAction(b.id, closeProductionBatch(b.id, draft))} disabled={isPending(b.id)} variant="primary" size="xs">
+                                      {isPending(b.id) ? "Menutup…" : `Tutup Roll (${totalDraft})`}
                                     </Button>
                                   )}
                                 </div>

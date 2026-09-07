@@ -37,6 +37,9 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
   // (lihat juga filter `groups` di bawah — grup yang sudah selesai sekarang tidak lagi ditampilkan
   // di daftar sisa reject, supaya kasus ini jarang kejadian dari awal).
   const [actionError, setActionError] = useState<string | null>(null);
+  // Item revisi 2026-09-07 (owner: aksi vendor produksi terasa lambat -- tidak ada tanda loading
+  // sama sekali sebelum ini): pola sama seperti submitResting di production-cutting-tab.tsx.
+  const [submitting, setSubmitting] = useState(false);
 
   const mrpIds = mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults);
   // Grup yang sudah "Selesai Produksi" dikunci (lihat markProductionGroupDoneAction) -- tidak
@@ -61,11 +64,12 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
   }
 
   async function submitRework() {
-    if (!reworking || !toSize.trim() || qty <= 0) return;
+    if (!reworking || !toSize.trim() || qty <= 0 || submitting) return;
     // Guard lagi di client (selain di server) — dropdown toLengan sudah dibatasi opsinya lewat
     // reworkLenganOptionsFor, tapi dicek ulang di sini kalau-kalau state-nya nyangkut.
     if (reworking.lengan === "PENDEK" && toLengan === "PANJANG") return;
     setActionError(null);
+    setSubmitting(true);
     try {
       await reworkRejectSize({
         mrpId: selectedMrpId,
@@ -82,6 +86,8 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
       setToSize("");
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Gagal menyimpan rework.");
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -212,12 +218,16 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
               <div className="mt-2.5 flex gap-2">
                 <button
                   onClick={submitRework}
-                  disabled={!toSize.trim()}
+                  disabled={!toSize.trim() || submitting}
                   className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Simpan Rework
+                  {submitting ? "Menyimpan…" : "Simpan Rework"}
                 </button>
-                <button onClick={() => setReworking(null)} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-2 font-sans text-xs font-semibold text-action-primary">
+                <button
+                  onClick={() => setReworking(null)}
+                  disabled={submitting}
+                  className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-2 font-sans text-xs font-semibold text-action-primary disabled:cursor-not-allowed disabled:opacity-50"
+                >
                   Batal
                 </button>
               </div>

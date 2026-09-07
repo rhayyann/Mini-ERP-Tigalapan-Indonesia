@@ -4,6 +4,7 @@ import { useState } from "react";
 import { StatusPill } from "@/components/ui/status-pill";
 import { CloseProductionPoModal } from "@/components/mrp/close-production-po-modal";
 import { useMrpStore } from "@/lib/mrp/store";
+import { usePendingActions } from "@/lib/mrp/usePendingActions";
 import {
   cumulativeSizeQtyForGroup,
   cuttingSizesForGroup,
@@ -44,9 +45,13 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
   // menolak, error-nya cuma jadi unhandled rejection di console, tidak pernah terlihat user (lihat
   // catatan lebih lengkap di production-result-panel.tsx, gejala yang sama persis di tab ini).
   const [actionError, setActionError] = useState<string | null>(null);
-  function runAction(promise: Promise<unknown>) {
+  // Item revisi 2026-09-07: sama seperti production-result-panel.tsx -- runAction sekarang pakai
+  // usePendingActions supaya tombol yang memicunya bisa di-disable + tampil "…" selama request
+  // masih berjalan (per-key, bukan 1 flag global).
+  const { isPending, run: runKeyed } = usePendingActions();
+  function runAction(key: string, promise: Promise<unknown>) {
     setActionError(null);
-    promise.catch((err) => setActionError(err instanceof Error ? err.message : String(err)));
+    runKeyed(key, promise, setActionError);
   }
 
   const mrpIds = Array.from(new Set(productionBatches.filter((b) => b.vendorProduksi === vendorId && b.cuttingAt).map((b) => b.mrpId)));
@@ -87,19 +92,21 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                   <StatusPill tone="locked">PO DITUTUP</StatusPill>
                 </span>
                 <button
-                  onClick={() => runAction(reopenProductionPo(selectedMaklonPo.id))}
+                  onClick={() => runAction(selectedMaklonPo.id, reopenProductionPo(selectedMaklonPo.id))}
+                  disabled={isPending(selectedMaklonPo.id)}
                   title="Buka kembali gerbang Pengiriman untuk PO ini -- grup warna/lengan yang sudah terlanjur dikunci Close PO tetap terkunci (buka satu-satu lewat 'Buka kunci ↺' kalau perlu diperbaiki)"
-                  className="rounded-md border border-[#CBD5DF] bg-white px-3 py-[9px] font-sans text-[11.5px] font-semibold text-action-primary"
+                  className="rounded-md border border-[#CBD5DF] bg-white px-3 py-[9px] font-sans text-[11.5px] font-semibold text-action-primary disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Buka kembali PO
+                  {isPending(selectedMaklonPo.id) ? "Membuka…" : "Buka kembali PO"}
                 </button>
               </span>
             ) : (
               <button
                 onClick={() => setClosePoOpen(true)}
-                className="flex-none rounded-md border border-danger px-3 py-[9px] font-sans text-[11.5px] font-semibold text-danger-fg"
+                disabled={isPending(selectedMaklonPo.id)}
+                className="flex-none rounded-md border border-danger px-3 py-[9px] font-sans text-[11.5px] font-semibold text-danger-fg disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Close PO
+                {isPending(selectedMaklonPo.id) ? "Menutup…" : "Close PO"}
               </button>
             ))}
         </div>
@@ -125,7 +132,7 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
           maklonPoId={selectedMaklonPo.id}
           onNo={() => setClosePoOpen(false)}
           onYes={(reason) => {
-            runAction(closeProductionPo(selectedMaklonPo.id, reason));
+            runAction(selectedMaklonPo.id, closeProductionPo(selectedMaklonPo.id, reason));
             setClosePoOpen(false);
           }}
         />
@@ -204,18 +211,20 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                     </button>
                     {isPoClosed ? null : isDone ? (
                       <button
-                        onClick={() => runAction(undoProductionGroupDone(groupKey))}
+                        onClick={() => runAction(groupKey, undoProductionGroupDone(groupKey))}
+                        disabled={isPending(groupKey)}
                         title="Buka kunci grup ini supaya Finish Good/Reject/Rework bisa dibuka lagi (mulai dari tab Finish Good)"
-                        className="rounded-md border border-[#CBD5DF] bg-white px-3 py-[6px] font-sans text-[11px] font-semibold text-action-primary"
+                        className="rounded-md border border-[#CBD5DF] bg-white px-3 py-[6px] font-sans text-[11px] font-semibold text-action-primary disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        Buka kunci ↺
+                        {isPending(groupKey) ? "Membuka…" : "Buka kunci ↺"}
                       </button>
                     ) : isFgConfirmed ? (
                       <button
-                        onClick={() => runAction(markProductionGroupDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
-                        className="rounded-md bg-action-primary px-3 py-[6px] font-sans text-[11px] font-semibold text-white"
+                        onClick={() => runAction(groupKey, markProductionGroupDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
+                        disabled={isPending(groupKey)}
+                        className="rounded-md bg-action-primary px-3 py-[6px] font-sans text-[11px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        Selesai Produksi
+                        {isPending(groupKey) ? "Menyimpan…" : "Selesai Produksi"}
                       </button>
                     ) : (
                       <span className="font-sans text-[10.5px] text-text-muted">Selesaikan dulu Finish Good (tab Finish Good)</span>
