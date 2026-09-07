@@ -1779,32 +1779,40 @@ export async function createClaimReplacementInvoiceAction(
 
   // Item revisi 2026-09-07 (owner: "kenapa kita di sini jatuhnya seperti bayar double, sementara
   // kita masih punya uang di supplier"): sebelum ini, PV pengganti SELALU didudukkan sebagai
-  // invoice biasa berstatus INVOICED -- Finance harus lewat alur "Bayar" (Payment) + lampirkan
-  // bukti pembayaran PDF WAJIB, padahal kalau PV pengganti ini SAMA ATAU LEBIH MURAH dari PV lama
-  // (nilaiBaru <= kredit), uang yang sudah ditransfer untuk PV lama itu SUDAH LEBIH DARI CUKUP
-  // membayar PV pengganti ini -- tidak ada uang baru yang perlu keluar sama sekali, jadi tidak
-  // seharusnya minta "bukti transfer" untuk transfer yang memang tidak pernah terjadi.
+  // invoice biasa berstatus INVOICED bernilai PENUH nilaiBaru -- Finance harus lewat alur "Bayar"
+  // (Payment) + lampirkan bukti pembayaran PDF WAJIB untuk SELURUH nilaiBaru, padahal uang yang
+  // sudah ditransfer untuk PV lama (kredit) itu HARUS otomatis mengurangi tagihan PV pengganti --
+  // owner: "hanya perlu dikurangi dengan pv sebelumnya karena di sini kita retur barangnya...
+  // yang perlu kita bayar hanya selisih[nya]". Berlaku DUA ARAH:
+  // - nilaiBaru <= kredit (PV pengganti lebih murah/sama): kredit lama SUDAH LEBIH dari cukup --
+  //   PV pengganti otomatis LUNAS, tidak ada uang baru yang perlu keluar sama sekali. Sisa kredit
+  //   (kredit - nilaiBaru) TETAP di ledger sebagai saldo deposit riil untuk invoice lain nanti.
+  // - nilaiBaru > kredit (PV pengganti lebih mahal): kredit lama otomatis diterapkan sebagai
+  //   pelunasan SEBAGIAN -- yang genuinely perlu dibayar uang baru cuma SELISIHNYA (nilaiBaru -
+  //   kredit), bukan nilaiBaru penuh. PV pengganti TETAP status INVOICED (belum lunas sepenuhnya),
+  //   tapi tagihan efektifnya sudah dikurangi kredit -- lihat outstandingAmountForInvoice
+  //   (lib/mrp/derive.ts) yang dipakai Payment (payment-panel.tsx) untuk netting DEBIT
+  //   `source_invoice_id` ini terhadap total_biaya, supaya kotak "Bayar" di sana otomatis cuma
+  //   minta selisihnya -- total_biaya SENGAJA TIDAK diubah (tetap nilaiBaru penuh) supaya nilai PV
+  //   yang sebenarnya tetap akurat di semua tempat lain (Material Tracking, riwayat Paying
+  //   Voucher, HPP) yang menampilkan total_biaya sebagai "nilai PV ini", bukan "sisa tagihan".
   //
-  // Sekarang: kalau nilaiBaru <= kredit, PV pengganti ini otomatis dilunasi dari kredit retur --
-  // catat DEBIT sebesar nilaiBaru (pola SAMA PERSIS seperti applyVendorDepositAction) lalu langsung
-  // set status PAID (tanpa bukti pembayaran, karena memang tidak ada transfer). Sisa kredit
-  // (kredit - nilaiBaru) TETAP di ledger sebagai saldo deposit riil untuk invoice lain nanti --
-  // itulah yang muncul sebagai "Deposit +Rp ..." di Payment. Kalau nilaiBaru > kredit (PV
-  // pengganti lebih MAHAL dari PV lama), TIDAK diotomatiskan -- ada selisih yang genuinely perlu
-  // dibayar uang baru, tetap lewat alur Payment biasa seperti sekarang (kredit yang ada tetap bisa
-  // dipakai manual di sana lewat kotak "Saldo Deposit").
+  // Di KEDUA kasus, DEBIT dicatat SAAT INI JUGA (bukan menunggu Finance klik "Bayar" manual) --
+  // pola SAMA PERSIS seperti applyVendorDepositAction, cuma dipicu otomatis dari sini.
+  const debitApplied = Math.min(kredit, nilaiBaru);
+  const debitId = await nextReadableId("VDP");
+  const { error: debitErr } = await db.from("vendor_deposits").insert({
+    id: debitId,
+    supplier: claimRow.supplier,
+    kind: "DEBIT",
+    amount: debitApplied,
+    source_invoice_id: invoiceId,
+    note: `Otomatis diterapkan dari kredit retur PV lama ${parsed.invoiceId} ke PV pengganti ${invoiceId}.`,
+  });
+  if (debitErr) throw new Error(`PV pengganti & kredit terbuat tapi gagal mencatat penerapan kredit: ${debitErr.message}`);
+
   const autoLunas = nilaiBaru <= kredit + 0.5; // toleransi floating point kecil, sama seperti applyVendorDepositAction
   if (autoLunas) {
-    const debitId = await nextReadableId("VDP");
-    const { error: debitErr } = await db.from("vendor_deposits").insert({
-      id: debitId,
-      supplier: claimRow.supplier,
-      kind: "DEBIT",
-      amount: nilaiBaru,
-      source_invoice_id: invoiceId,
-      note: `Otomatis lunas dari kredit retur PV lama ${parsed.invoiceId} -- tidak ada pembayaran baru.`,
-    });
-    if (debitErr) throw new Error(`PV pengganti & kredit terbuat tapi gagal mencatat pelunasan otomatis: ${debitErr.message}`);
     await db.from("raw_material_invoices").update({ status: "PAID", paid_at: today() }).eq("id", invoiceId);
     // Side-effect yang sama seperti setInvoicesPaidAction -- tandai first_payment_at MRP ini kalau
     // ini pembayaran pertamanya, supaya logic lain yang bergantung pada field itu tidak salah
@@ -1828,12 +1836,13 @@ export async function createClaimReplacementInvoiceAction(
     .eq("invoice_color_id", parsed.invoiceColorId)
     .eq("roll_index", parsed.rollIndex);
 
-  const sisaDeposit = kredit - (autoLunas ? nilaiBaru : 0);
+  const sisaDeposit = kredit - debitApplied; // sisa kredit yang MASIH tersedia di ledger supplier ini setelah dipakai PV pengganti ini
+  const kekuranganBayar = nilaiBaru - debitApplied; // 0 kalau autoLunas
   await insertNotification(
     notif(
       autoLunas
         ? `Klaim retur roll #${claimRow.roll_index + 1} (${claimRow.warna} · ${claimRow.lengan}, invoice ${parsed.invoiceId}) diselesaikan lewat pesan ulang -- PV pengganti ${invoiceId} (Rp ${Math.round(nilaiBaru).toLocaleString("id-ID")}) OTOMATIS LUNAS dari kredit retur (tidak perlu bayar baru), sisa Rp ${Math.round(sisaDeposit).toLocaleString("id-ID")} tercatat di saldo deposit ${claimRow.supplier}.`
-        : `Klaim retur roll #${claimRow.roll_index + 1} (${claimRow.warna} · ${claimRow.lengan}, invoice ${parsed.invoiceId}) diselesaikan lewat pesan ulang -- PV pengganti ${invoiceId} (Rp ${Math.round(nilaiBaru).toLocaleString("id-ID")}) dibuat, kredit Rp ${Math.round(kredit).toLocaleString("id-ID")} tercatat di saldo deposit ${claimRow.supplier} (bisa dipakai kurangi pembayaran PV ini di Payment).`,
+        : `Klaim retur roll #${claimRow.roll_index + 1} (${claimRow.warna} · ${claimRow.lengan}, invoice ${parsed.invoiceId}) diselesaikan lewat pesan ulang -- PV pengganti ${invoiceId} (Rp ${Math.round(nilaiBaru).toLocaleString("id-ID")}) dibuat, kredit retur PV lama Rp ${Math.round(debitApplied).toLocaleString("id-ID")} OTOMATIS diterapkan -- tinggal SELISIH Rp ${Math.round(kekuranganBayar).toLocaleString("id-ID")} yang perlu dibayar di Payment.`,
       ["finance"]
     )
   );

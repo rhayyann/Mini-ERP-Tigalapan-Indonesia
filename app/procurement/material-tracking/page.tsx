@@ -222,8 +222,15 @@ export default function MaterialTrackingPage() {
       <div className="flex gap-2 rounded-lg border border-border-subtle bg-surface-card p-1.5">
         {(
           [
-            { key: "material" as const, label: "Material", badge: rows.length },
-            { key: "produksi-aktif" as const, label: "PO Produksi aktif", badge: activePOs.length },
+            // Item revisi 2026-09-07: badge tab dulu cuma jumlah baris total (rows.length) --
+            // owner minta badge cuma nyala kalau MASIH ADA yang perlu di-set delivery (hilang
+            // begitu semua baris yang tampil sudah di-set delivery), bukan sekadar "ada baris".
+            // Sama definisi dengan countMaterialInvoicesReadyForDelivery (badge sidebar).
+            { key: "material" as const, label: "Material", badge: rows.filter((r) => r.invoice?.status === "PAID" && !r.invoice.deliveredAt).length },
+            // "PO Produksi aktif" SENGAJA tidak pakai badge sama sekali -- ini bukan antrean kerja
+            // yang perlu ditindak (beda dari "Material" di atas), murni daftar monitoring PO yang
+            // sedang berjalan, jadi badge angka di sini cuma bikin bingung.
+            { key: "produksi-aktif" as const, label: "PO Produksi aktif", badge: 0 },
           ]
         ).map((t) => (
           <button
