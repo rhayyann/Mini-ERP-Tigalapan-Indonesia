@@ -1002,6 +1002,28 @@ export function vendorDepositCreditForClaim(claimKey: string, entries: VendorDep
   return entry?.amount ?? 0;
 }
 
+/** Item revisi 2026-09-07 (owner: "kenapa masih harus bayar dengan nilai pv terbaru? kan kita
+ *  cuman harus bayar selisihnya saja"): sisa TAGIHAN RIIL 1 invoice, dikurangi DEBIT deposit yang
+ *  SUDAH diterapkan langsung ke invoice ini (`source_invoice_id`) -- bukan `totalBiaya` mentah.
+ *  Dipakai payment-panel.tsx untuk kotak "Bayar" supaya PV pengganti klaim yang kreditnya sudah
+ *  otomatis diterapkan (lihat createClaimReplacementInvoiceAction) cuma minta SELISIHNYA, bukan
+ *  nilai penuh PV baru. `totalBiaya` sendiri SENGAJA tidak diubah/dikurangi di manapun -- field itu
+ *  tetap merepresentasikan nilai ASLI PV ini (dipakai Material Tracking, riwayat Paying Voucher,
+ *  HPP, dst sebagai "nilai PV"), jadi netting-nya dihitung di sini secara terpisah, bukan menimpa
+ *  data sumbernya.
+ *
+ *  Aman dipakai untuk SEMUA invoice (bukan cuma PV pengganti klaim): sebelum revisi ini, satu-
+ *  satunya jalan bikin DEBIT `source_invoice_id` menunjuk ke invoice yang MASIH berstatus INVOICED
+ *  (bukan langsung PAID di klik yang sama) adalah lewat jalur otomatis baru ini -- alur manual lama
+ *  (applyVendorDepositAction lewat kotak "Saldo Deposit" Payment) SELALU dipanggil BARENGAN dengan
+ *  setInvoicesPaid di klik "Bayar" yang sama, jadi invoice-nya langsung PAID juga, tidak pernah
+ *  nyangkut INVOICED dengan DEBIT parsial. Makanya untuk invoice lama/biasa, hasilnya SELALU sama
+ *  persis dengan totalBiaya (tidak ada regresi). */
+export function outstandingAmountForInvoice(invoice: RawMaterialInvoice, entries: VendorDepositEntry[]): number {
+  const applied = entries.filter((e) => e.kind === "DEBIT" && e.sourceInvoiceId === invoice.id).reduce((a, e) => a + e.amount, 0);
+  return Math.max(0, invoice.totalBiaya - applied);
+}
+
 export function receivedRollCountForColor(mrpId: string, vendorProduksi: string, warna: string, lengan: Lengan, invoices: RawMaterialInvoice[]): number {
   const key = warna + "|" + lengan;
   let count = 0;

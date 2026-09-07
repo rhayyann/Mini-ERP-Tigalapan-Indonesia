@@ -6,7 +6,17 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { NumberInput } from "@/components/mrp/number-input";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { claimKeySourceInvoiceId, formatDate, formatDecimal, formatRupiah, invoiceBadge, vendorDepositBalance, vendorDepositCreditForClaim, vendorDepositEntriesFor } from "@/lib/mrp/derive";
+import {
+  claimKeySourceInvoiceId,
+  formatDate,
+  formatDecimal,
+  formatRupiah,
+  invoiceBadge,
+  outstandingAmountForInvoice,
+  vendorDepositBalance,
+  vendorDepositCreditForClaim,
+  vendorDepositEntriesFor,
+} from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { RawMaterialInvoice } from "@/lib/mrp/types";
 // Item 2.7: getInvoicePaymentProofAction DIPANGGIL LANGSUNG dari komponen ini (bukan lewat store)
@@ -95,7 +105,14 @@ export function PaymentPanel() {
   const paySuppliers = new Set(selectableToPay.map((i) => i.supplier));
   const depositSupplier = paySuppliers.size === 1 ? selectableToPay[0]?.supplier : undefined;
   const depositBalance = depositSupplier ? vendorDepositBalance(depositSupplier, vendorDeposits) : 0;
-  const totalTagihan = selectableToPay.reduce((a, i) => a + i.totalBiaya, 0);
+  // Item revisi 2026-09-07 (owner: "kenapa masih harus bayar dengan nilai pv terbaru? kan kita
+  // cuman harus bayar selisihnya saja"): totalTagihan sekarang pakai SISA tagihan riil per invoice
+  // (outstandingAmountForInvoice, sudah netting DEBIT deposit yang otomatis diterapkan saat PV
+  // pengganti klaim dibuat -- lihat createClaimReplacementInvoiceAction), bukan totalBiaya mentah
+  // lagi -- supaya kotak "Bayar" otomatis cuma minta selisihnya untuk PV pengganti yang kreditnya
+  // sudah diterapkan otomatis. Untuk invoice biasa (atau PV pengganti LAMA dari sebelum revisi ini
+  // yang belum sempat di-auto-apply), hasilnya identik dengan totalBiaya seperti sebelumnya.
+  const totalTagihan = selectableToPay.reduce((a, i) => a + outstandingAmountForInvoice(i, vendorDeposits), 0);
   const depositCap = Math.max(0, Math.min(depositBalance, totalTagihan));
   const depositEntries = depositSupplier ? vendorDepositEntriesFor(depositSupplier, vendorDeposits) : [];
   // Revisi 2026-09-06 (v2): kalau yang dipilih PERSIS 1 invoice & itu PV pengganti hasil klaim,
@@ -104,6 +121,11 @@ export function PaymentPanel() {
   const singleClaimInvoice = selectableToPay.length === 1 && selectableToPay[0].sourceClaimId ? selectableToPay[0] : undefined;
   const claimCredit = singleClaimInvoice ? vendorDepositCreditForClaim(singleClaimInvoice.sourceClaimId!, vendorDeposits) : 0;
   const claimSelisih = singleClaimInvoice ? singleClaimInvoice.totalBiaya - claimCredit : 0;
+  // Revisi 2026-09-07: sisa tagihan RIIL invoice ini (sudah netting DEBIT yang sudah diterapkan,
+  // baik otomatis waktu dibuat MAUPUN manual dari sebelumnya) -- kalau sudah < totalBiaya berarti
+  // kreditnya SUDAH diterapkan, "Isi otomatis" di bawah jadi tidak relevan lagi (disembunyikan).
+  const claimOutstanding = singleClaimInvoice ? outstandingAmountForInvoice(singleClaimInvoice, vendorDeposits) : 0;
+  const claimCreditAlreadyApplied = singleClaimInvoice ? singleClaimInvoice.totalBiaya - claimOutstanding : 0;
 
   function toggle(id: string) {
     setSelected((prev) => {
@@ -346,8 +368,9 @@ export function PaymentPanel() {
         <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
           Centang invoice berstatus INVOICED, lampirkan bukti pembayaran (PDF, wajib), lalu klik Bayar untuk mengubah ke PAID. Bukti bisa diganti kapan
           saja lewat kolom &quot;Bukti Pembayaran&quot;. Pembayaran juga dapat dibatalkan (kembali ke INVOICED) jika keliru -- bukti yang sudah terlampir
-          tidak ikut terhapus. PV pengganti klaim (badge &quot;Reorder klaim&quot;) yang nilainya SAMA ATAU LEBIH MURAH dari PV lama otomatis langsung PAID
-          begitu dibuat -- tidak perlu bayar baru sama sekali, karena sudah lunas dari kredit retur PV lama itu sendiri (lihat &quot;Pembayaran Sebelumnya&quot;).
+          tidak ikut terhapus. PV pengganti klaim (badge &quot;Reorder klaim&quot;) otomatis dikurangi kredit retur PV lama begitu dibuat -- kalau nilainya
+          SAMA ATAU LEBIH MURAH dari PV lama, langsung PAID tanpa bayar baru sama sekali; kalau LEBIH MAHAL, kotak &quot;Bayar&quot; di sini otomatis cuma
+          minta SELISIHNYA (bukan nilai penuh PV baru) -- uang yang sudah ada di supplier dari PV lama tidak pernah diminta dua kali.
         </div>
       )}
 
@@ -429,8 +452,12 @@ export function PaymentPanel() {
                       </div>
                     )}
                     {/* Kalau invoice terpilih PERSIS PV pengganti klaim, tunjukkan selisihnya
-                       langsung -- Finance tidak perlu hitung manual dari 2 angka terpisah. "Isi
-                       otomatis" tetap klik eksplisit (bukan auto-terisi). */}
+                       langsung -- Finance tidak perlu hitung manual dari 2 angka terpisah.
+                       Revisi 2026-09-07: PV pengganti BARU (dibuat setelah revisi ini) sudah
+                       auto-terapkan kreditnya sendiri saat dibuat (lihat
+                       createClaimReplacementInvoiceAction) -- box di sini jadi MURNI informasi,
+                       tombol "Isi otomatis" cuma muncul untuk PV pengganti LAMA (dari sebelum
+                       revisi ini) yang kreditnya belum sempat diterapkan otomatis. */}
                     {singleClaimInvoice && (
                       <div className="rounded border border-[#E4E8EE] bg-[#FAFBFC] px-2 py-1.5 font-sans text-[10.5px] text-text-muted">
                         Invoice ini PV pengganti klaim — nilai lama {formatRupiah(claimCredit)}, nilai baru {formatRupiah(singleClaimInvoice.totalBiaya)},{" "}
@@ -439,14 +466,21 @@ export function PaymentPanel() {
                           {formatRupiah(Math.abs(claimSelisih))}
                         </span>
                         .{" "}
-                        <button
-                          type="button"
-                          onClick={() => setDepositAmount(Math.max(0, Math.min(claimCredit, singleClaimInvoice.totalBiaya, depositCap)))}
-                          className="font-semibold text-action-primary underline"
-                          title="Isi sebanyak kredit yang bisa dipakai untuk invoice ini -- kalau kredit lebih besar dari tagihan ini, sisanya tetap tersimpan sebagai saldo deposit untuk invoice lain nanti."
-                        >
-                          Isi otomatis
-                        </button>
+                        {claimCreditAlreadyApplied > 0.5 ? (
+                          <span>
+                            Kredit retur Rp {formatRupiah(claimCreditAlreadyApplied)} <span className="font-semibold text-success-fg">sudah otomatis diterapkan</span> ke invoice ini — sisa
+                            yang perlu dibayar cuma <span className="font-semibold text-info-fg">{formatRupiah(claimOutstanding)}</span>.
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setDepositAmount(Math.max(0, Math.min(claimCredit, singleClaimInvoice.totalBiaya, depositCap)))}
+                            className="font-semibold text-action-primary underline"
+                            title="Isi sebanyak kredit yang bisa dipakai untuk invoice ini -- kalau kredit lebih besar dari tagihan ini, sisanya tetap tersimpan sebagai saldo deposit untuk invoice lain nanti."
+                          >
+                            Isi otomatis
+                          </button>
+                        )}
                       </div>
                     )}
                     <div className="mt-auto flex flex-col gap-1">
@@ -509,6 +543,8 @@ export function PaymentPanel() {
           const addBuyTotal = i.addBuys.reduce((a, b) => a + b.totalHarga, 0);
           const claimCreditForRow = i.sourceClaimId ? vendorDepositCreditForClaim(i.sourceClaimId, vendorDeposits) : 0;
           const claimSelisihForRow = i.totalBiaya - claimCreditForRow;
+          const outstandingForRow = outstandingAmountForInvoice(i, vendorDeposits);
+          const creditAlreadyAppliedForRow = i.totalBiaya - outstandingForRow;
           return (
             <div className="flex flex-col gap-3">
               {i.sourceClaimId && (
@@ -607,11 +643,34 @@ export function PaymentPanel() {
                   </div>
                 )}
                 <div className="grid grid-cols-5 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[12px] font-bold text-info-fg">
-                  <span>Total yang harus dibayar (invoice ini)</span>
+                  <span>Nilai PV ini</span>
                   <span />
                   <span />
                   <span />
                   <span className="text-right font-mono">{formatRupiah(i.totalBiaya)}</span>
+                </div>
+                {/* Revisi 2026-09-07: "Total yang harus dibayar" dulu SELALU sama dengan nilai PV
+                   mentah (i.totalBiaya) -- salah untuk PV pengganti klaim yang kreditnya sudah
+                   diterapkan (auto atau manual), karena tagihan RIIL yang perlu dibayar sudah
+                   dikurangi kredit itu (lihat outstandingAmountForInvoice). Baris "Nilai PV ini" di
+                   atas tetap tampilkan nilai ASLI (untuk histori/HPP), baris ini baru tunjukkan
+                   sisa tagihan RIIL yang dipakai kotak "Bayar" -- cuma beda kalau ada kredit yang
+                   sudah diterapkan, kalau tidak ada dua baris ini akan sama persis. */}
+                {creditAlreadyAppliedForRow > 0.5 && (
+                  <div className="grid grid-cols-5 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-success-fg">
+                    <span>Sudah ditutup kredit retur PV lama</span>
+                    <span />
+                    <span />
+                    <span />
+                    <span className="text-right font-mono">−{formatRupiah(creditAlreadyAppliedForRow)}</span>
+                  </div>
+                )}
+                <div className="grid grid-cols-5 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[12px] font-bold text-info-fg">
+                  <span>Total yang harus dibayar (invoice ini)</span>
+                  <span />
+                  <span />
+                  <span />
+                  <span className="text-right font-mono">{formatRupiah(outstandingForRow)}</span>
                 </div>
               </div>
               <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
