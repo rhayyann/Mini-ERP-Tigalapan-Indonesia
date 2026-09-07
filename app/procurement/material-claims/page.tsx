@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/shell/app-shell";
 import { StatusPill } from "@/components/ui/status-pill";
+import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { ClaimReplacementModal } from "@/components/mrp/claim-replacement-modal";
 import { useMrpStore } from "@/lib/mrp/store";
@@ -51,6 +52,7 @@ export default function MaterialClaimsPage() {
   const cancelMaterialClaimReturRequest = useMrpStore((s) => s.cancelMaterialClaimReturRequest);
   const markMaterialClaimReturDelivered = useMrpStore((s) => s.markMaterialClaimReturDelivered);
   const createClaimReplacementInvoice = useMrpStore((s) => s.createClaimReplacementInvoice);
+  const deleteMaterialClaimHistory = useMrpStore((s) => s.deleteMaterialClaimHistory);
   const hargaKain = useMrpStore((s) => s.hargaKain);
   const hargaKainPks = useMrpStore((s) => s.hargaKainPks);
 
@@ -59,6 +61,16 @@ export default function MaterialClaimsPage() {
   const [replacingKey, setReplacingKey] = useState<string | null>(null);
 
   if (!mounted) return null;
+
+  // Item revisi 2026-09-07: material_claim_history (arsip di bawah) dulu tidak ikut cascade
+  // terhapus waktu resetAllAction menghapus mrp (sama kasusnya dengan vendor_deposits, sudah
+  // dibetulkan di actions.ts) -- baris LAMA yang sudah terlanjur "yatim" dari sebelum perbaikan
+  // itu butuh cara dibersihkan manual, sama pola dengan "Hapus" di Saldo Deposit Vendor.
+  function confirmDeleteHistory(id: string, label: string) {
+    if (window.confirm(`Hapus permanen arsip klaim "${label}"? Tindakan ini tidak bisa dibatalkan.`)) {
+      deleteMaterialClaimHistory(id);
+    }
+  }
 
   const archivedHistory = materialClaimHistory.filter((h) => h.resolvedAt);
 
@@ -236,6 +248,16 @@ export default function MaterialClaimsPage() {
             </span>
           )}
         </div>
+      ),
+    },
+    {
+      key: "aksi",
+      label: "Aksi",
+      default: true,
+      render: (h) => (
+        <Button onClick={() => confirmDeleteHistory(h.id, `${h.invoiceId} · ${h.warna} · ${h.lengan} #${h.rollIndex + 1}`)} variant="danger" size="xs">
+          Hapus
+        </Button>
       ),
     },
   ];

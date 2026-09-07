@@ -333,6 +333,10 @@ type FlowActions = {
   applyVendorDeposit: (supplier: string, amount: number, invoiceIds: string[], note?: string) => Promise<void>;
   /** Hapus permanen 1 baris ledger saldo deposit -- lihat deleteVendorDepositEntryAction. */
   deleteVendorDepositEntry: (id: string) => Promise<void>;
+  /** Hapus permanen 1 baris arsip Riwayat Klaim Material -- lihat deleteMaterialClaimHistoryAction
+   *  (dipakai untuk membersihkan baris "yatim" hasil test/reset dari sebelum resetAllAction ikut
+   *  menghapus tabel ini). */
+  deleteMaterialClaimHistory: (id: string) => Promise<void>;
   /** Dulu menghapus semua data LOKAL (localStorage browser sendiri) + reload -- sekarang benar2
    *  menghapus data BERSAMA di Supabase (semua modul & vendor). Confirm dialog WAJIB ditampilkan
    *  di caller SEBELUM memanggil ini -- lihat components/shell/reset-data-button.tsx. */
@@ -1434,6 +1438,18 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     } catch (err) {
       set({ vendorDeposits: previous });
       window.alert("Gagal menghapus baris saldo deposit -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
+    backgroundRefresh();
+  },
+  deleteMaterialClaimHistory: async (id) => {
+    const previous = get().materialClaimHistory;
+    set({ materialClaimHistory: previous.filter((h) => h.id !== id) });
+    try {
+      await actions.deleteMaterialClaimHistoryAction(id);
+    } catch (err) {
+      set({ materialClaimHistory: previous });
+      window.alert("Gagal menghapus baris arsip klaim -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
       throw err;
     }
     backgroundRefresh();

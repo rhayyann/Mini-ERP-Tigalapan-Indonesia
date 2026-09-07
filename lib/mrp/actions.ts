@@ -1859,6 +1859,16 @@ export async function deleteVendorDepositEntryAction(id: string): Promise<void> 
   if (error) throw new Error(error.message);
 }
 
+/** Revisi 2026-09-07: sama alasannya dengan deleteVendorDepositEntryAction di atas --
+ *  material_claim_history (arsip Riwayat Klaim Material) standalone, tidak ikut cascade terhapus
+ *  waktu resetAllAction menghapus mrp (baru dibetulkan di action itu sendiri, tapi baris LAMA yang
+ *  sudah terlanjur "yatim" dari sebelum perbaikan itu tetap butuh cara dibersihkan manual). */
+export async function deleteMaterialClaimHistoryAction(id: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "procurement");
+  const { error } = await supabaseServer().from("material_claim_history").delete().eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
 /** Fetch aduan_pola_rows (+sizes) untuk SATU mrpId -- targeted, dipakai
  *  fetchProductionScopeForMrp maupun closePoWithReasonAction/reassignMaterialToSupplierAction di
  *  bawah (dua-duanya cuma butuh potongan .aduanRows ini, bukan MrpDetail penuh). */
@@ -2739,6 +2749,17 @@ export async function resetAllAction(): Promise<void> {
   // Baris ledger-nya jadi "yatim" (menunjuk ke invoice/klaim yang sudah tidak ada) tapi tetap
   // dihitung ke saldo berjalan supplier itu -- itu sebabnya saldo lama tetap muncul setelah reset.
   await db.from("vendor_deposits").delete().neq("id", "");
+  // BUG FIX 2026-09-07 (lanjutan, ketemu owner lewat "kenapa masih ada data lain di Riwayat Klaim
+  // setelah reset?"): 3 tabel arsip/payload-terpisah lain punya masalah persis sama seperti
+  // vendor_deposits di atas -- SEMUA `create table` di migration 0011/0014/0017 sengaja tidak
+  // dikasih FK ke mrp/raw_material_invoices (invoice_id/mrp_id/claim_key cuma teks bebas), jadi
+  // ikut lolos dari cascade delete mrp:
+  // - material_claim_history (arsip Riwayat Klaim Material, migration 0011)
+  // - material_claim_photos (payload foto bukti klaim, migration 0014)
+  // - invoice_payment_proofs (payload bukti transfer/bayar, migration 0017)
+  await db.from("material_claim_history").delete().neq("id", "");
+  await db.from("material_claim_photos").delete().neq("claim_key", "");
+  await db.from("invoice_payment_proofs").delete().neq("invoice_id", "");
   // Master data (bukan vendors_produksi) -- persis initialState lama (semua balik ke []).
   await db.from("harga_maklon").delete().neq("id", "");
   await db.from("harga_kain").delete().neq("id", "");

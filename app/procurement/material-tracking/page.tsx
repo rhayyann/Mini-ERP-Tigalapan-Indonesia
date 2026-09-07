@@ -236,7 +236,7 @@ export default function MaterialTrackingPage() {
           >
             {t.label}
             {t.badge > 0 && (
-              <span className="flex-shrink-0 rounded-full bg-[#8B98A6] px-[5px] py-px font-mono text-[9px] font-semibold text-white">{t.badge}</span>
+              <span className="flex-shrink-0 rounded-full bg-danger px-[5px] py-px font-mono text-[9px] font-semibold text-white">{t.badge}</span>
             )}
           </button>
         ))}
