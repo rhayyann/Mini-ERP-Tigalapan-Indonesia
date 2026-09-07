@@ -46,7 +46,14 @@ export function PayingVoucherMaterialPanel() {
   const [mrpFilter, setMrpFilter] = useState("");
 
   const pvHistoryColumns: ColumnDef<RawMaterialInvoice>[] = [
-    { key: "noInvoice", label: "No Invoice", default: true, render: (i) => <span className="font-mono font-medium">{i.id}</span> },
+    // BUG FIX: kolom ini dulu menampilkan i.id (kode PV internal sistem, mis. "INV-206311") --
+    // padahal labelnya "No Invoice" bikin user mengira ini nomor invoice yang MEREKA ketik sendiri
+    // di form (field "No invoice vendor material" -> i.noInvoiceVendor, mis. "OH123456789"). Nomor
+    // yang diketik user itu SUDAH tersimpan benar ke database dari awal -- cuma tidak pernah
+    // ditampilkan di tabel riwayat ini. Kode PV internal sistem dipindah ke kolom terpisah
+    // "No PV (Sistem)" di bawah (toggle "Kolom") supaya tetap bisa ditelusuri kalau perlu.
+    { key: "noInvoice", label: "No Invoice", default: true, render: (i) => <span className="font-mono font-medium">{i.noInvoiceVendor || "—"}</span> },
+    { key: "noPvSistem", label: "No PV (Sistem)", default: false, render: (i) => <span className="font-mono text-text-muted">{i.id}</span> },
     { key: "noPo", label: "No PO", default: true, render: (i) => <span className="font-mono">{i.poId}</span> },
     { key: "supplierVendor", label: "Supplier → Vendor", default: true, render: (i) => `${i.supplier} → ${VENDOR_PRODUKSI[i.destinationVendor]?.name ?? i.destinationVendor}` },
     { key: "kodeTransaksi", label: "Kode Transaksi", default: true, render: (i) => <span className="font-mono">{i.kodeTransaksi}</span> },
