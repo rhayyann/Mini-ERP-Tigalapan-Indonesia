@@ -63,6 +63,17 @@ export function AppShell({
 }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+  // Revisi 2026-09-07: `hydrated` sudah lama ada di store (di-set true begitu getFlowSnapshot()
+  // pertama SUKSES lewat StoreHydrator) tapi TIDAK PERNAH dibaca di mana pun -- akibatnya tiap
+  // halaman langsung render dengan array store yang masih KOSONG selama snapshot awal masih
+  // di-fetch (`mounted` cuma menandai React sudah hydrate di client, BUKAN datanya sudah
+  // sampai). Beberapa halaman (mis. Purchase Order -> panel "Material") punya warning "belum ada
+  // X" yang dihitung dari array itu -- selama window ini warning itu SELALU salah muncul (bukan
+  // benar-benar kosong, cuma belum sempat ke-load), baru hilang begitu snapshot beneran selesai.
+  // Fix-nya di SINI (bukan per halaman) supaya berlaku otomatis untuk SEMUA halaman yang pakai
+  // AppShell -- children diganti indikator "Memuat data..." sampai hydrated, tanpa AppShell
+  // sendiri (sidebar/topbar) ikut hilang seperti behavior lama.
+  const hydrated = useMrpStore((s) => s.hydrated);
 
   const router = useRouter();
   const unlockedRoles = useInternalAuthStore((s) => s.unlockedRoles);
@@ -216,7 +227,18 @@ export function AppShell({
           </div>
           {actions && <div className="ml-auto flex gap-2">{actions}</div>}
         </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-3.5 px-[22px] py-4">{children}</div>
+        <div className="flex min-w-0 flex-1 flex-col gap-3.5 px-[22px] py-4">
+          {hydrated ? (
+            children
+          ) : (
+            <div className="flex flex-1 items-center justify-center py-20">
+              <div className="flex items-center gap-2 font-sans text-[12.5px] text-text-muted">
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-border-subtle border-t-action-primary" />
+                Memuat data…
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
