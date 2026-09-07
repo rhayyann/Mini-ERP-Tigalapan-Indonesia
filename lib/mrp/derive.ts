@@ -1169,11 +1169,30 @@ export type PendingWeighRoll = {
  *  atau sudah ditimbang tapi masih ada klaim selisih berat aktif (kurang dari toleransi, perlu
  *  ditimbang ulang) — dipakai di halaman Cutting sebagai daftar "Timbang roll". Roll yang sudah
  *  tersimpan net_kg-nya & bebas klaim TIDAK lagi muncul di sini (lihat weighedUnconfirmedRolls). */
-export function pendingWeighRolls(mrpId: string, vendorId: string, invoices: RawMaterialInvoice[], batches: ProductionBatch[]): PendingWeighRoll[] {
+/** Item 3 (feedback batch 2026-09-07): 4 dict status resolusi klaim (satu sumber kebenaran yang
+ *  sama dipakai `materialClaimStage`, lihat production-cutting-tab.tsx) -- opsional & default
+ *  kosong supaya caller lama (mis. badge sidebar di lib/shell/badges.ts) yang belum sempat
+ *  diteruskan dict-nya tetap jalan PERSIS seperti sebelumnya (materialClaimStage dengan 4 dict
+ *  kosong selalu balik "BELUM", jadi exclusion baru di bawah tidak pernah kepicu). */
+export type ClaimResolutionDicts = {
+  resolutions?: Record<string, unknown>;
+  returRequests?: Record<string, unknown>;
+  returDeliveries?: Record<string, unknown>;
+  returReceipts?: Record<string, unknown>;
+};
+
+export function pendingWeighRolls(
+  mrpId: string,
+  vendorId: string,
+  invoices: RawMaterialInvoice[],
+  batches: ProductionBatch[],
+  claimDicts: ClaimResolutionDicts = {}
+): PendingWeighRoll[] {
   // `batches` dipertahankan di signature (dipanggil dgn argumen yang sama seperti
   // weighedUnconfirmedRolls/confirmedWeighedRolls dari UI) walau tidak dipakai lagi di sini --
   // exclusion "sudah dipakai batch" tidak lagi relevan untuk daftar 1 (lihat catatan di atas).
   void batches;
+  const { resolutions = {}, returRequests = {}, returDeliveries = {}, returReceipts = {} } = claimDicts;
   const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
   const out: PendingWeighRoll[] = [];
   for (const inv of invoices) {
@@ -1187,7 +1206,15 @@ export function pendingWeighRolls(mrpId: string, vendorId: string, invoices: Raw
         if (!arrival) return;
         const receipt = receipts[idx];
         const claimKey = `${inv.id}|${key}|${idx}`;
-        if (receipt != null && !activeClaimKeys.has(claimKey)) return;
+        if (receipt != null) {
+          // Roll sudah ditimbang: tetap tampil di sini SELAMA klaimnya masih aktif (perlu timbang
+          // ulang) -- tapi begitu klaim itu ditutup (mis. "Buat PV Pengganti", lihat
+          // createClaimReplacementInvoiceAction), stage-nya jadi SELESAI & roll LAMA ini harus
+          // berhenti muncul di sini (roll penggantinya sudah masuk lewat invoice baru terpisah) --
+          // sebelum fix ini, roll lama nyangkut selamanya & tampak "duplikat" dgn roll pengganti.
+          const stage = materialClaimStage(claimKey, resolutions, returRequests, returDeliveries, returReceipts);
+          if (!activeClaimKeys.has(claimKey) || stage === "SELESAI") return;
+        }
         out.push({
           invoiceId: inv.id,
           poId: inv.poId,
@@ -1299,7 +1326,14 @@ export function confirmedWeighedRolls(mrpId: string, vendorId: string, invoices:
  *  sama persis dengan badge menu-level di atas (termasuk roll "sudah ditimbang tapi belum
  *  dikonfirmasi", yang sebelumnya salah dihitung pakai `pendingWeighRolls` yang TIDAK mencakup
  *  kasus itu). Kalau tidak diisi, perilaku sama seperti sebelumnya (semua MRP vendor ini). */
-export function pendingWeighRollsCount(vendorId: string, invoices: RawMaterialInvoice[], batches: ProductionBatch[], mrpId?: string): number {
+export function pendingWeighRollsCount(
+  vendorId: string,
+  invoices: RawMaterialInvoice[],
+  batches: ProductionBatch[],
+  mrpId?: string,
+  claimDicts: ClaimResolutionDicts = {}
+): number {
+  const { resolutions = {}, returRequests = {}, returDeliveries = {}, returReceipts = {} } = claimDicts;
   const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
   let count = 0;
   for (const inv of invoices) {
@@ -1322,7 +1356,11 @@ export function pendingWeighRollsCount(vendorId: string, invoices: RawMaterialIn
           return;
         }
         if (activeClaimKeys.has(claimKey)) {
-          count++;
+          // Sinkron dgn pendingWeighRolls di atas -- klaim yang sudah SELESAI (mis. sudah
+          // dibuatkan PV pengganti) berhenti dihitung SAMA SEKALI (roll lama ini sudah "diganti"
+          // & tidak lagi muncul di weighedUnconfirmedRolls/pendingWeighRolls manapun), supaya
+          // badge tidak nyala terus untuk roll yang sudah tidak ada di daftar mana pun.
+          if (materialClaimStage(claimKey, resolutions, returRequests, returDeliveries, returReceipts) !== "SELESAI") count++;
           return;
         }
         if (!receipt.weighConfirmedAt && !(receipt.codeRoll && usedCodeRolls.has(receipt.codeRoll))) count++;

@@ -253,7 +253,13 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   // Item 12/13: 3 daftar terpisah (lihat catatan panjang di derive.ts) -- pendingRows (belum
   // ditimbang/perlu timbang ulang), unconfirmedRows (sudah ditimbang, belum "Konfirmasi"),
   // confirmedRows (sudah dikonfirmasi, read-only + bisa ajukan claim).
-  const pendingRows = selectedMrpId ? pendingWeighRolls(selectedMrpId, vendorId, invoices, productionBatches) : [];
+  const claimDicts = {
+    resolutions: materialClaimResolutions,
+    returRequests: materialClaimReturRequests,
+    returDeliveries: materialClaimReturDeliveries,
+    returReceipts: materialClaimReturReceipts,
+  };
+  const pendingRows = selectedMrpId ? pendingWeighRolls(selectedMrpId, vendorId, invoices, productionBatches, claimDicts) : [];
   const unconfirmedRows = selectedMrpId ? weighedUnconfirmedRolls(selectedMrpId, vendorId, invoices, productionBatches) : [];
   const confirmedRows = selectedMrpId ? confirmedWeighedRolls(selectedMrpId, vendorId, invoices, productionBatches) : [];
   function weighKey(r: PendingWeighRoll): string {
@@ -563,7 +569,7 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
           {readyMrps.map((d) => (
             <option key={d.mrp.id} value={d.mrp.id}>
               {d.mrp.id}
-              {pendingMarker(countCuttingAwaitingUpdateForMrp(d.mrp.id, vendorId, productionBatches, invoices), "roll belum selesai")}
+              {pendingMarker(countCuttingAwaitingUpdateForMrp(d.mrp.id, vendorId, productionBatches, invoices, claimDicts), "roll belum selesai")}
             </option>
           ))}
         </select>

@@ -6,7 +6,57 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatDate, formatRupiah, vendorDepositBalance, vendorDepositEntriesFor, vendorDepositSuppliers } from "@/lib/mrp/derive";
+import { formatDateTime, formatRupiah, vendorDepositBalance, vendorDepositEntriesFor, vendorDepositSuppliers } from "@/lib/mrp/derive";
+// Item 6 (feedback batch 2026-09-07): bukti transfer & bukti foto klaim sengaja tidak ada di
+// snapshot (payload PDF/foto besar) -- fetch on-demand saat tombol diklik, pola SAMA seperti
+// payment-panel.tsx (viewPaymentProof) & material-claims/page.tsx (viewClaimPhoto).
+import { getInvoicePaymentProofAction, getMaterialClaimPhotoAction } from "@/lib/mrp/actions";
+import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
+import type { RawMaterialInvoice, VendorDepositEntry } from "@/lib/mrp/types";
+
+/** `sourceClaimId` disimpan dgn format yang sama seperti key klaim di seluruh app
+ *  ("invoiceId|warna|lengan|rollIndex", lihat parseClaimKey di lib/mrp/actions.ts -- tidak bisa
+ *  diimpor langsung dari situ karena file itu "use server") -- dipakai untuk cari invoice ASLI
+ *  yang diklaim & kode roll roll itu. */
+function parseSourceClaimId(key: string): { invoiceId: string; warna: string; lengan: string; rollIndex: number } | null {
+  const parts = key.split("|");
+  if (parts.length !== 4) return null;
+  const [invoiceId, warna, lengan, rollIndexStr] = parts;
+  const rollIndex = parseInt(rollIndexStr, 10);
+  if (Number.isNaN(rollIndex)) return null;
+  return { invoiceId, warna, lengan, rollIndex };
+}
+
+/** Invoice + roll yang relevan untuk 1 baris ledger deposit -- dipakai untuk isi kolom No MRP/No
+ *  PO/Kode Roll & 3 tombol bukti. Untuk CREDIT: invoice ASLI yang diklaim (dari sourceClaimId).
+ *  Untuk DEBIT: invoice yang DIBAYAR pakai saldo ini (dari sourceInvoiceId) -- tidak ada roll
+ *  spesifik (mengurangi tagihan invoice, bukan 1 roll), jadi Kode Roll & bukti klaim "—". */
+function relevantContextFor(e: VendorDepositEntry, invoices: RawMaterialInvoice[]) {
+  if (e.kind === "CREDIT" && e.sourceClaimId) {
+    const parsed = parseSourceClaimId(e.sourceClaimId);
+    const invoice = parsed ? invoices.find((i) => i.id === parsed.invoiceId) : undefined;
+    const colorKey = parsed ? `${parsed.warna}|${parsed.lengan}` : "";
+    const codeRoll = parsed && invoice ? (invoice.rollArrivals[colorKey]?.[parsed.rollIndex]?.codeRoll ?? invoice.rollReceipts[colorKey]?.[parsed.rollIndex]?.codeRoll) : undefined;
+    return { invoice, codeRoll, claimKey: e.sourceClaimId, transferInvoiceId: invoice?.id };
+  }
+  if (e.kind === "DEBIT" && e.sourceInvoiceId) {
+    const invoice = invoices.find((i) => i.id === e.sourceInvoiceId);
+    return { invoice, codeRoll: undefined, claimKey: undefined, transferInvoiceId: invoice?.id };
+  }
+  return { invoice: undefined, codeRoll: undefined, claimKey: undefined, transferInvoiceId: undefined };
+}
+
+async function viewBuktiTransfer(invoiceId: string, fileName?: string) {
+  const proof = await getInvoicePaymentProofAction(invoiceId);
+  if (!proof) return;
+  viewAndDownloadFile(proof.dataUrl, fileName ?? proof.fileName);
+}
+
+async function viewBuktiKlaim(claimKey: string) {
+  const photo = await getMaterialClaimPhotoAction(claimKey);
+  if (!photo) return;
+  viewAndDownloadFile(photo.dataUrl, photo.fileName || `${claimKey}.jpg`);
+}
 
 type SupplierDepositRow = { supplier: string; balance: number; entryCount: number };
 
@@ -26,6 +76,7 @@ export default function VendorDepositPage() {
 
   const vendorDeposits = useMrpStore((s) => s.vendorDeposits);
   const deleteVendorDepositEntry = useMrpStore((s) => s.deleteVendorDepositEntry);
+  const invoices = useMrpStore((s) => s.invoices);
 
   if (!mounted) return null;
 
@@ -86,33 +137,69 @@ export default function VendorDepositPage() {
         emptyText="Belum ada saldo deposit vendor tercatat."
         renderExpanded={(r) => {
           const entries = vendorDepositEntriesFor(r.supplier, vendorDeposits);
+          const gridCols = "minmax(90px,0.8fr) minmax(90px,0.8fr) minmax(70px,0.6fr) minmax(70px,0.6fr) minmax(100px,0.9fr) minmax(90px,0.8fr) minmax(160px,1.4fr) minmax(60px,0.5fr)";
           return (
-            <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
-              <div className="grid grid-cols-5 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+            <div className="overflow-x-auto rounded-md border border-[#E4E8EE] bg-white">
+              <div
+                className="grid min-w-[900px] gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted"
+                style={{ gridTemplateColumns: gridCols }}
+              >
                 <span>Tanggal</span>
                 <span>Jenis</span>
-                <span>Sumber</span>
+                <span>No MRP</span>
+                <span>No PO</span>
+                <span>Kode Roll</span>
                 <span className="text-right">Nilai</span>
+                <span>Bukti</span>
                 <span className="text-right">Aksi</span>
               </div>
               {entries.map((e) => {
-                const sumberLabel = e.kind === "CREDIT" ? (e.sourceClaimId ? `Klaim ${e.sourceClaimId}` : "—") : e.sourceInvoiceId ? `Invoice ${e.sourceInvoiceId}` : "—";
+                const label = e.kind === "CREDIT" ? "Kredit masuk" : "Dipakai bayar";
+                const ctx = relevantContextFor(e, invoices);
                 return (
-                  <div key={e.id} className="grid grid-cols-5 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
-                    <span className="font-mono text-[10.5px]">{formatDate(e.createdAt)}</span>
+                  <div key={e.id} className="grid min-w-[900px] items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]" style={{ gridTemplateColumns: gridCols }}>
+                    <span className="font-mono text-[10.5px]">{formatDateTime(e.createdAt)}</span>
                     <span>
-                      <StatusPill tone={e.kind === "CREDIT" ? "success" : "warning"}>{e.kind === "CREDIT" ? "Kredit masuk" : "Dipakai bayar"}</StatusPill>
+                      <StatusPill tone={e.kind === "CREDIT" ? "success" : "warning"}>{label}</StatusPill>
                     </span>
-                    <span className="text-text-muted">
-                      {sumberLabel}
-                      {e.note ? ` — ${e.note}` : ""}
+                    <span className="font-mono text-[10.5px]">{ctx.invoice?.mrpId ?? "—"}</span>
+                    <span className="font-mono text-[10.5px]">{ctx.invoice?.poId ?? "—"}</span>
+                    <span className="font-mono text-[10.5px]">
+                      {ctx.codeRoll ?? "—"}
+                      {e.note ? <span className="ml-1 font-sans text-text-muted">— {e.note}</span> : null}
                     </span>
                     <span className={"text-right font-mono font-medium " + (e.kind === "CREDIT" ? "text-success-fg" : "text-danger-fg")}>
                       {e.kind === "CREDIT" ? "+" : "−"}
                       {formatRupiah(e.amount)}
                     </span>
+                    <span className="flex flex-wrap gap-x-2 gap-y-0.5">
+                      {ctx.invoice?.buktiPvDataUrl ? (
+                        <button
+                          onClick={() => viewAndDownloadFile(ctx.invoice!.buktiPvDataUrl!, ctx.invoice!.buktiPvFileName)}
+                          className="font-sans text-[10.5px] font-semibold text-action-primary underline"
+                        >
+                          PV lama
+                        </button>
+                      ) : (
+                        <span className="font-sans text-[10.5px] text-text-muted">PV lama —</span>
+                      )}
+                      {ctx.transferInvoiceId ? (
+                        <button onClick={() => viewBuktiTransfer(ctx.transferInvoiceId!)} className="font-sans text-[10.5px] font-semibold text-action-primary underline">
+                          Transfer
+                        </button>
+                      ) : (
+                        <span className="font-sans text-[10.5px] text-text-muted">Transfer —</span>
+                      )}
+                      {ctx.claimKey ? (
+                        <button onClick={() => viewBuktiKlaim(ctx.claimKey!)} className="font-sans text-[10.5px] font-semibold text-action-primary underline">
+                          Foto klaim
+                        </button>
+                      ) : (
+                        <span className="font-sans text-[10.5px] text-text-muted">Foto klaim —</span>
+                      )}
+                    </span>
                     <span className="text-right">
-                      <Button onClick={() => confirmDelete(e.id, `${e.kind === "CREDIT" ? "Kredit masuk" : "Dipakai bayar"} — ${sumberLabel}`)} variant="danger" size="xs">
+                      <Button onClick={() => confirmDelete(e.id, `${label} — ${ctx.invoice?.id ?? e.id}`)} variant="danger" size="xs">
                         Hapus
                       </Button>
                     </span>

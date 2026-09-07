@@ -92,6 +92,13 @@ export function ClaimReplacementModal({
             <div>
               <label className="block font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Rate baru (Rp/kg)</label>
               <NumberInput value={rateBaru} onChange={setRateBaru} currency placeholder="Rp 113.000" className="input mt-1" />
+              {/* Item 5 (feedback batch 2026-09-07): rateLama sudah ada di props dari awal
+                  (dipakai murni untuk kalkulasi preview di bawah) tapi tidak pernah ditampilkan --
+                  owner minta rate lama disematkan supaya Procurement bisa langsung bandingkan
+                  tanpa buka tab lain. */}
+              <div className="mt-1 font-sans text-[10.5px] text-text-muted">
+                Rate lama: <span className="font-mono font-medium text-text-primary">{formatRupiah(rateLama)}</span>/kg
+              </div>
             </div>
             <div>
               <label className="block font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Berat roll (kg)</label>

@@ -1,5 +1,6 @@
 import {
   availableFgToShip,
+  type ClaimResolutionDicts,
   cumulativeSizeQtyForGroup,
   cutWarnaLenganGroups,
   cuttingSizesForGroup,
@@ -126,9 +127,10 @@ export function countVendorProduksiActionable(
   vendorId: string,
   productionBatches: ProductionBatch[],
   productionResults: ProductionResult[],
-  invoices: RawMaterialInvoice[]
+  invoices: RawMaterialInvoice[],
+  claimDicts: ClaimResolutionDicts = {}
 ): number {
-  const awaitingWeigh = pendingWeighRollsCount(vendorId, invoices, productionBatches);
+  const awaitingWeigh = pendingWeighRollsCount(vendorId, invoices, productionBatches, undefined, claimDicts);
   const awaitingCuttingUpdate = productionBatches.filter((b) => b.vendorProduksi === vendorId && !b.cuttingAt).length;
   const mrpWithRemainingReject = mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults).length;
   return awaitingWeigh + awaitingCuttingUpdate + mrpWithRemainingReject;
@@ -136,8 +138,13 @@ export function countVendorProduksiActionable(
 
 /** Roll yang sudah diterima tapi belum ditimbang, plus batch yang sudah masuk masa resting
  *  tapi belum di-"Update ke Cutting" — badge tab Cutting. */
-export function countCuttingAwaitingUpdate(vendorId: string, productionBatches: ProductionBatch[], invoices: RawMaterialInvoice[]): number {
-  const awaitingWeigh = pendingWeighRollsCount(vendorId, invoices, productionBatches);
+export function countCuttingAwaitingUpdate(
+  vendorId: string,
+  productionBatches: ProductionBatch[],
+  invoices: RawMaterialInvoice[],
+  claimDicts: ClaimResolutionDicts = {}
+): number {
+  const awaitingWeigh = pendingWeighRollsCount(vendorId, invoices, productionBatches, undefined, claimDicts);
   const awaitingCuttingUpdate = productionBatches.filter((b) => b.vendorProduksi === vendorId && !b.cuttingAt).length;
   return awaitingWeigh + awaitingCuttingUpdate;
 }
@@ -150,8 +157,14 @@ export function countCuttingAwaitingUpdate(vendorId: string, productionBatches: 
  *  belum dikonfirmasi" yang justru dihitung oleh `countCuttingAwaitingUpdate` di atas. Dengan
  *  bug lama, badge tab bisa nyala (mis. 1) sementara marker dropdown untuk MRP yang sama diam
  *  di 0. */
-export function countCuttingAwaitingUpdateForMrp(mrpId: string, vendorId: string, productionBatches: ProductionBatch[], invoices: RawMaterialInvoice[]): number {
-  const awaitingWeigh = pendingWeighRollsCount(vendorId, invoices, productionBatches, mrpId);
+export function countCuttingAwaitingUpdateForMrp(
+  mrpId: string,
+  vendorId: string,
+  productionBatches: ProductionBatch[],
+  invoices: RawMaterialInvoice[],
+  claimDicts: ClaimResolutionDicts = {}
+): number {
+  const awaitingWeigh = pendingWeighRollsCount(vendorId, invoices, productionBatches, mrpId, claimDicts);
   const awaitingCuttingUpdate = productionBatches.filter((b) => b.mrpId === mrpId && b.vendorProduksi === vendorId && !b.cuttingAt).length;
   return awaitingWeigh + awaitingCuttingUpdate;
 }

@@ -75,6 +75,11 @@ export default function MaterialTrackingPage() {
   // "Vendor Berhenti Produksi" -- PO Produksi yang lagi dipilih untuk dipindahkan sisa
   // pekerjaannya, lihat WithdrawVendorModal & withdrawVendorProductionAction.
   const [withdrawTarget, setWithdrawTarget] = useState<MaklonPO | null>(null);
+  // Item 4 (feedback batch 2026-09-07): "Material per line" & "PO Produksi aktif" dulu ditumpuk
+  // vertikal di 1 halaman -- owner khawatir makin lama makin banyak baris di keduanya jadi
+  // menumpuk & membingungkan. Dipisah jadi 2 tab, murni pembungkus navigasi (isi/logic tiap
+  // section tidak berubah).
+  const [tab, setTab] = useState<"material" | "produksi-aktif">("material");
 
   if (!mounted) return null;
 
@@ -214,7 +219,30 @@ export default function MaterialTrackingPage() {
       title="Material tracking"
       subtitle={`${rows.length} baris material — invoice yang sudah dibayar Finance ke atas`}
     >
-      {activePOs.length > 0 && (
+      <div className="flex gap-2 rounded-lg border border-border-subtle bg-surface-card p-1.5">
+        {(
+          [
+            { key: "material" as const, label: "Material", badge: rows.length },
+            { key: "produksi-aktif" as const, label: "PO Produksi aktif", badge: activePOs.length },
+          ]
+        ).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={
+              "flex items-center gap-1.5 rounded-md px-3.5 py-[7px] font-sans text-[12.5px] font-semibold " +
+              (tab === t.key ? "bg-action-primary text-white" : "text-text-muted hover:bg-[#F7F9FB]")
+            }
+          >
+            {t.label}
+            {t.badge > 0 && (
+              <span className="flex-shrink-0 rounded-full bg-[#8B98A6] px-[5px] py-px font-mono text-[9px] font-semibold text-white">{t.badge}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {tab === "produksi-aktif" && (
         <DataTable
           title="PO Produksi aktif"
           subtitle="Vendor tiba-tiba berhenti mid-produksi? Pindahkan sisa pekerjaannya (bahan mentah + WIP belum Finish Good) ke vendor lain sekaligus."
@@ -241,7 +269,7 @@ export default function MaterialTrackingPage() {
         />
       )}
 
-      {selected.size > 0 && (
+      {tab === "material" && selected.size > 0 && (
         <div className="flex items-center gap-3 rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-[10px]">
           <span className="font-sans text-xs font-medium text-info-fg">{selected.size} dipilih</span>
           <div className="ml-1 flex gap-2">
@@ -264,6 +292,7 @@ export default function MaterialTrackingPage() {
         </div>
       )}
 
+      {tab === "material" && (
       <DataTable
         title="Material per line"
         columns={columns}
@@ -297,6 +326,7 @@ export default function MaterialTrackingPage() {
         ]}
         emptyText="Belum ada invoice material yang sudah dibayar Finance."
       />
+      )}
 
       {deliveryOpen && (
         <SetDeliveryModal
