@@ -7,6 +7,7 @@ import { NumberInput } from "@/components/mrp/number-input";
 import { Button } from "@/components/ui/button";
 import { VendorAuthGuard } from "@/components/mrp/vendor-auth-guard";
 import { useMrpStore } from "@/lib/mrp/store";
+import { usePendingActions } from "@/lib/mrp/usePendingActions";
 import { availableFgToShip, closedUnshippedRollsForMrp, ekspedisiPrice, formatDate, formatDecimal, formatRupiah, mrpIdsWithUnpackedFg } from "@/lib/mrp/derive";
 import { countPengirimanPendingForMrp, pendingMarker } from "@/lib/shell/badges";
 import { EKSPEDISI_LIST, VENDOR_PRODUKSI } from "@/lib/mrp/seed";
@@ -113,6 +114,10 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   // Klik baris "Koli belum dikirim"/"Riwayat pengiriman" untuk expand/collapse rincian isi koli
   // per item — id koli unik lintas kedua tabel jadi aman pakai 1 Set gabungan.
   const [expandedKoli, setExpandedKoli] = useState<Set<string>>(new Set());
+  // Item revisi 2026-09-07 (owner: aksi vendor produksi terasa lambat -- tidak ada tanda loading
+  // sama sekali sebelum ini): dipakai tombol "Delivery →" di bawah, per koli (banyak koli
+  // independen di daftar yang sama, tidak boleh saling mengunci).
+  const { isPending, run: runPendingAction } = usePendingActions();
 
   function toggleKoliExpanded(koliId: string) {
     setExpandedKoli((prev) => {
@@ -187,8 +192,15 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   // roll yang SUDAH ada di koli yang sedang di-edit tetap kelihatan/bisa dipilih.
   const closedRolls = mrpId ? closedUnshippedRollsForMrp(mrpId, vendorId, productionBatches, deliveryKolis, maklonPOs, editingKoliId ?? undefined) : [];
 
-  function submit() {
-    if (!mrpId || !noKoli.trim()) return;
+  // Item revisi 2026-09-07 (owner: aksi vendor produksi terasa lambat -- tidak ada tanda loading
+  // sama sekali sebelum ini): dulu fungsi ini TIDAK async & TIDAK menunggu createDeliveryKoli/
+  // updateDeliveryKoli sama sekali -- form langsung dikosongkan SEKETIKA meski createDeliveryKoli
+  // (koli BARU, bukan optimistic -- lihat store.ts) belum tentu sudah selesai di server, jadi ada
+  // jeda "form kosong tapi koli barunya belum kelihatan" sampai backgroundRefresh selesai, tanpa
+  // ada tanda apa pun kalau masih diproses.
+  const [submitting, setSubmitting] = useState(false);
+  async function submit() {
+    if (!mrpId || !noKoli.trim() || submitting) return;
     const validItems: DeliveryKoliItem[] = rows
       .filter((r) => (qtyDraft[r.key] ?? 0) > 0)
       .map((r) => ({ warna: r.warna, lengan: r.lengan, size: r.size, usia: r.usia, qty: Math.min(qtyDraft[r.key] ?? 0, r.available), kind: r.kind }));
@@ -203,17 +215,22 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
     if (allItems.length === 0) return;
     const sourceBatchIds = Array.from(selectedRollIds);
     const ongkirBatch = ongkirBatchDraft > 0 ? ongkirBatchDraft : undefined;
-    if (editingKoliId) {
-      const existing = deliveryKolis.find((k) => k.id === editingKoliId);
-      updateDeliveryKoli(editingKoliId, { ekspedisi: existing?.ekspedisi ?? "", noKoli: noKoli.trim(), items: allItems, sourceBatchIds, ongkirBatch });
-      cancelEdit();
-    } else {
-      // Ekspedisi belum dipilih di sini — dipilih belakangan langsung di tabel "Koli belum dikirim".
-      createDeliveryKoli({ mrpId, vendorProduksi: vendorId, ekspedisi: "", noKoli: noKoli.trim(), items: allItems, sourceBatchIds, ongkirBatch });
-      setNoKoli("");
-      setQtyDraft({});
-      setSelectedRollIds(new Set());
-      setOngkirBatchDraft(0);
+    setSubmitting(true);
+    try {
+      if (editingKoliId) {
+        const existing = deliveryKolis.find((k) => k.id === editingKoliId);
+        await updateDeliveryKoli(editingKoliId, { ekspedisi: existing?.ekspedisi ?? "", noKoli: noKoli.trim(), items: allItems, sourceBatchIds, ongkirBatch });
+        cancelEdit();
+      } else {
+        // Ekspedisi belum dipilih di sini — dipilih belakangan langsung di tabel "Koli belum dikirim".
+        await createDeliveryKoli({ mrpId, vendorProduksi: vendorId, ekspedisi: "", noKoli: noKoli.trim(), items: allItems, sourceBatchIds, ongkirBatch });
+        setNoKoli("");
+        setQtyDraft({});
+        setSelectedRollIds(new Set());
+        setOngkirBatchDraft(0);
+      }
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -230,9 +247,19 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   function doDelivery(koliId: string) {
     const weight = weightDraft[koliId];
     const k = deliveryKolis.find((d) => d.id === koliId);
-    if (!weight || weight <= 0 || !k?.ekspedisi) return;
-    setKoliWeight(koliId, weight);
-    markKoliDelivered(koliId);
+    if (!weight || weight <= 0 || !k?.ekspedisi || isPending(koliId)) return;
+    // Bug fix sekalian (ketemu waktu menambah loading state): dulu setKoliWeight & markKoliDelivered
+    // dipanggil TANPA await, bisa balapan -- markKoliDelivered (yang DIAM-DIAM no-op kalau berat_koli
+    // belum tersimpan di server, lihat catatan di store.ts) berpotensi sampai ke server LEBIH DULU
+    // dari setKoliWeight, membuat "Delivery" gagal diam-diam tanpa error sama sekali. Sekarang
+    // di-await berurutan.
+    runPendingAction(
+      koliId,
+      (async () => {
+        await setKoliWeight(koliId, weight);
+        await markKoliDelivered(koliId);
+      })()
+    );
   }
 
   return (
@@ -371,8 +398,12 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
         )}
 
         <div className="mt-3">
-          <button onClick={submit} className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white">
-            {editingKoliId ? "Update koli" : "Simpan koli"}
+          <button
+            onClick={submit}
+            disabled={submitting}
+            className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting ? "Menyimpan…" : editingKoliId ? "Update koli" : "Simpan koli"}
           </button>
         </div>
       </div>
@@ -439,12 +470,12 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                     <span className="text-right">
                       <Button
                         onClick={() => doDelivery(k.id)}
-                        disabled={!(berat > 0 && k.ekspedisi)}
+                        disabled={!(berat > 0 && k.ekspedisi) || isPending(k.id)}
                         title={!k.ekspedisi ? "Pilih ekspedisi dulu" : undefined}
                         variant="success"
                         size="xs"
                       >
-                        Delivery →
+                        {isPending(k.id) ? "Mengirim…" : "Delivery →"}
                       </Button>
                     </span>
                   </div>

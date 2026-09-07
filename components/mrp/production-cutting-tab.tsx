@@ -5,6 +5,7 @@ import { NumberInput } from "@/components/mrp/number-input";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
 import { useMrpStore } from "@/lib/mrp/store";
+import { usePendingActions } from "@/lib/mrp/usePendingActions";
 import {
   availableCodeRollsForColor,
   availableRollsByAduanRow,
@@ -152,6 +153,11 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const [cuttingSizeDraft, setCuttingSizeDraft] = useState<Record<string, Record<string, number>>>({});
   const [submitNotice, setSubmitNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Item revisi 2026-09-07 (owner: aksi vendor produksi terasa lambat -- tidak ada tanda loading
+  // sama sekali sebelum ini): dipakai tombol "Konfirmasi" per grup warna/lengan (confirmRollWeigh
+  // TIDAK optimistic -- server yang menentukan roll mana yang benar2 lolos), per-key supaya grup
+  // lain tidak ikut terkunci sementara satu grup diproses.
+  const { isPending, run: runPendingAction } = usePendingActions();
   // Timbang roll — dulu ada di Good Receive (vendor timbang begitu roll fisik datang), sekarang
   // dipindah ke sini: roll yang sudah ditandai diterima di Good Receive tapi belum ditimbang (atau
   // masih di luar toleransi & perlu ditimbang ulang) baru bisa dipilih untuk Resting setelah
@@ -759,8 +765,8 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                   <span className={"transition-transform " + (weighExpanded ? "rotate-90" : "")}>›</span>
                   {g.warna} · {g.lengan} ({g.rows.length})
                 </button>
-                <Button onClick={() => confirmGroup(g.rows)} variant="success" size="xs">
-                  Konfirmasi ({g.rows.length}) →
+                <Button onClick={() => runPendingAction(g.key, confirmGroup(g.rows))} disabled={isPending(g.key)} variant="success" size="xs">
+                  {isPending(g.key) ? "Mengonfirmasi…" : `Konfirmasi (${g.rows.length}) →`}
                 </Button>
               </div>
               {weighExpanded && (
