@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { NumberInput } from "@/components/mrp/number-input";
 import { Button } from "@/components/ui/button";
-import { aduanRibAllocationPreview, formatRupiah } from "@/lib/mrp/derive";
+import { aduanRibAllocationPreview, formatDecimal, formatRupiah } from "@/lib/mrp/derive";
 import type { MrpDetail } from "@/lib/mrp/store";
 import type { AddBuyItem, ColorEntry, Lengan, MaterialPO } from "@/lib/mrp/types";
 
@@ -242,31 +242,41 @@ export function PayingVoucherWizard({
 
       {entries.length > 0 && (
         <div className="mt-3 overflow-hidden rounded-md border border-border-subtle bg-white">
-          <div className="grid grid-cols-5 gap-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+          {/* BUG FIX 2026-09-07: kolom ini dulu berlabel "Harga/roll" & tidak menampilkan total
+              berat -- padahal Subtotal SUDAH dihitung benar sebagai harga x TOTAL KG semua roll
+              (field `hargaPerRoll` itu sebenarnya harga PER KG, cocok dengan label input "Harga /
+              kg" di form di bawah), bukan x jumlah roll. Sekarang total berat (kg) ditampilkan
+              eksplisit supaya Subtotal = Total Berat x Harga/Kg terlihat jelas. */}
+          <div className="grid grid-cols-6 gap-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
             <span>Warna</span>
             <span className="text-right">Roll</span>
-            <span className="text-right">Harga/roll</span>
+            <span className="text-right">Total Berat (kg)</span>
+            <span className="text-right">Harga/Kg</span>
             <span className="text-right">Subtotal</span>
             <span className="text-right">Aksi</span>
           </div>
-          {entries.map((e, i) => (
-            <div key={i} className="grid grid-cols-5 items-center gap-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
-              <span>
-                {e.warna} <span className="text-text-muted">· {e.lengan}</span>
-              </span>
-              <span className="text-right font-mono">{e.rolls.length}</span>
-              <span className="text-right font-mono">{formatRupiah(e.hargaPerRoll)}</span>
-              <span className="text-right font-mono">{formatRupiah(e.hargaPerRoll * e.rolls.reduce((s, w) => s + w, 0))}</span>
-              <span className="flex justify-end gap-2">
-                <Button onClick={() => editEntry(i)} variant="accent" size="xs">
-                  Edit
-                </Button>
-                <Button onClick={() => removeEntry(i)} variant="danger" size="xs">
-                  Hapus
-                </Button>
-              </span>
-            </div>
-          ))}
+          {entries.map((e, i) => {
+            const totalKg = e.rolls.reduce((s, w) => s + w, 0);
+            return (
+              <div key={i} className="grid grid-cols-6 items-center gap-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F]">
+                <span>
+                  {e.warna} <span className="text-text-muted">· {e.lengan}</span>
+                </span>
+                <span className="text-right font-mono">{e.rolls.length}</span>
+                <span className="text-right font-mono">{formatDecimal(totalKg)}</span>
+                <span className="text-right font-mono">{formatRupiah(e.hargaPerRoll)}</span>
+                <span className="text-right font-mono">{formatRupiah(e.hargaPerRoll * totalKg)}</span>
+                <span className="flex justify-end gap-2">
+                  <Button onClick={() => editEntry(i)} variant="accent" size="xs">
+                    Edit
+                  </Button>
+                  <Button onClick={() => removeEntry(i)} variant="danger" size="xs">
+                    Hapus
+                  </Button>
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
 

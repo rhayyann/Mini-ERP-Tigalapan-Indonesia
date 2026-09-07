@@ -6,7 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { NumberInput } from "@/components/mrp/number-input";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { claimKeySourceInvoiceId, formatDate, formatRupiah, invoiceBadge, vendorDepositBalance, vendorDepositCreditForClaim, vendorDepositEntriesFor } from "@/lib/mrp/derive";
+import { claimKeySourceInvoiceId, formatDate, formatDecimal, formatRupiah, invoiceBadge, vendorDepositBalance, vendorDepositCreditForClaim, vendorDepositEntriesFor } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { RawMaterialInvoice } from "@/lib/mrp/types";
 // Item 2.7: getInvoicePaymentProofAction DIPANGGIL LANGSUNG dari komponen ini (bukan lewat store)
@@ -540,58 +540,74 @@ export function PaymentPanel() {
               )}
               <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
                 <div className="bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">Detail Material — {i.id}</div>
-                <div className="grid grid-cols-4 gap-x-2 border-t border-[#F1F4F7] bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                {/* BUG FIX 2026-09-07: kolom "Harga/roll" dulu salah label -- field-nya (ColorEntry.
+                    hargaPerRoll) ITU HARGA PER KG (lihat label input aslinya "Harga / kg" di
+                    paying-voucher-wizard.tsx), dan Subtotal SUDAH DIHITUNG benar (harga x TOTAL KG
+                    semua roll warna itu, bukan x jumlah roll) -- cuma labelnya menyesatkan seolah
+                    dikali jumlah roll. Sekarang jumlah roll & total berat (kg) ditampilkan sebagai
+                    2 kolom terpisah supaya kelihatan jelas subtotal = Total Berat x Harga/Kg. */}
+                <div className="grid grid-cols-5 gap-x-2 border-t border-[#F1F4F7] bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                   <span>Warna / lengan</span>
                   <span className="text-right">Roll</span>
-                  <span className="text-right">Harga/roll</span>
+                  <span className="text-right">Total Berat (kg)</span>
+                  <span className="text-right">Harga/Kg</span>
                   <span className="text-right">Subtotal</span>
                 </div>
-                {i.colorEntries.map((c, idx) => (
-                  <div key={idx} className="grid grid-cols-4 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
-                    <span className="font-medium">
-                      {c.warna} · {c.lengan}
-                    </span>
-                    <span className="text-right font-mono">{c.rolls.length}</span>
-                    <span className="text-right font-mono">{formatRupiah(c.hargaPerRoll)}</span>
-                    <span className="text-right font-mono">{formatRupiah(c.hargaPerRoll * c.rolls.reduce((s, w) => s + w, 0))}</span>
-                  </div>
-                ))}
+                {i.colorEntries.map((c, idx) => {
+                  const totalKg = c.rolls.reduce((s, w) => s + w, 0);
+                  return (
+                    <div key={idx} className="grid grid-cols-5 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                      <span className="font-medium">
+                        {c.warna} · {c.lengan}
+                      </span>
+                      <span className="text-right font-mono">{c.rolls.length}</span>
+                      <span className="text-right font-mono">{formatDecimal(totalKg)}</span>
+                      <span className="text-right font-mono">{formatRupiah(c.hargaPerRoll)}</span>
+                      <span className="text-right font-mono">{formatRupiah(c.hargaPerRoll * totalKg)}</span>
+                    </div>
+                  );
+                })}
                 {i.addBuys.length > 0 && (
                   <>
-                    <div className="grid grid-cols-4 gap-x-2 border-t border-[#F1F4F7] bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                    <div className="grid grid-cols-5 gap-x-2 border-t border-[#F1F4F7] bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                       <span>Add buy</span>
-                      <span className="text-right">Berat (kg)</span>
                       <span />
+                      <span className="text-right">Berat (kg)</span>
+                      <span className="text-right">Harga/Kg</span>
                       <span className="text-right">Subtotal</span>
                     </div>
                     {i.addBuys.map((b) => (
-                      <div key={b.id} className="grid grid-cols-4 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                      <div key={b.id} className="grid grid-cols-5 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
                         <span className="font-medium">
                           {b.item} · {b.warna}
                         </span>
-                        <span className="text-right font-mono">{b.beratKg}</span>
                         <span />
+                        <span className="text-right font-mono">{formatDecimal(b.beratKg)}</span>
+                        <span className="text-right font-mono">{b.hargaPerKg != null ? formatRupiah(b.hargaPerKg) : "—"}</span>
                         <span className="text-right font-mono">{formatRupiah(b.totalHarga)}</span>
                       </div>
                     ))}
                   </>
                 )}
-                <div className="grid grid-cols-4 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
+                <div className="grid grid-cols-5 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
                   <span>Material + add buy</span>
+                  <span />
                   <span />
                   <span />
                   <span className="text-right font-mono">{formatRupiah(materialSubtotal + addBuyTotal)}</span>
                 </div>
                 {i.diskon > 0 && (
-                  <div className="grid grid-cols-4 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-danger-fg">
+                  <div className="grid grid-cols-5 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-danger-fg">
                     <span>Diskon</span>
+                    <span />
                     <span />
                     <span />
                     <span className="text-right font-mono">-{formatRupiah(i.diskon)}</span>
                   </div>
                 )}
-                <div className="grid grid-cols-4 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[12px] font-bold text-info-fg">
+                <div className="grid grid-cols-5 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[12px] font-bold text-info-fg">
                   <span>Total yang harus dibayar (invoice ini)</span>
+                  <span />
                   <span />
                   <span />
                   <span className="text-right font-mono">{formatRupiah(i.totalBiaya)}</span>

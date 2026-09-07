@@ -2377,7 +2377,15 @@ function materialCostForWarna(warna: string, vendorProduksi: string, rawInvoices
     for (const c of rawInv.colorEntries) {
       if (c.warna !== warna) continue;
       rollCount += c.rolls.length;
-      hargaBahanTotal += c.hargaPerRoll * c.rolls.length;
+      // BUG FIX 2026-09-07: `hargaPerRoll` (nama field historis, ColorEntry.hargaPerRoll) ITU
+      // SEBENARNYA HARGA PER KG -- lihat label input aslinya ("Harga / kg") di
+      // paying-voucher-wizard.tsx, dan cara Payment/PV menghitung subtotal (harga x TOTAL KG,
+      // bukan x jumlah roll). Baris ini dulu salah kali jumlah roll (`c.rolls.length`, angka
+      // kecil mis. 4-8) alih-alih total kg (`c.rolls` isinya berat gross per roll dalam kg, bisa
+      // ~25kg/roll) -- akibatnya hargaBahanTotal (dipakai Laporan HPP & fallback pool HPP per
+      // roll) understated sampai puluhan kali lipat. Gross kg (bukan net hasil timbang ulang)
+      // dipakai supaya konsisten dengan nilai yang benar-benar ditagih ke supplier (PV/invoice).
+      hargaBahanTotal += c.hargaPerRoll * c.rolls.reduce((s, w) => s + w, 0);
       const receipts = rawInv.rollReceipts[c.warna + "|" + c.lengan] ?? [];
       c.rolls.forEach((grossKg, idx) => {
         totalNetWeight += receipts[idx]?.netKg ?? grossKg;
@@ -2392,13 +2400,17 @@ function materialCostForWarna(warna: string, vendorProduksi: string, rawInvoices
 
 /** Cari roll bahan baku ASAL 1 roll produksi (ProductionBatch) lewat pencocokan `codeRoll` ke
  *  `RollReceipt.codeRoll` (diisi Good Receive/Cutting) -- dipakai hppRowsForInvoicePerRoll untuk
- *  mengambil harga & berat bersih ROLL INI SPESIFIK (bisa beda dari roll lain kalau ini roll
- *  pengganti klaim retur, lihat createClaimReplacementInvoiceAction), persis pendekatan "Detail
- *  HPP" di Template Excel Finance -- beda dari materialCostForWarna di atas yang MENGUMPULKAN
- *  semua roll 1 warna+lengan jadi satu pool. Return null kalau tidak ketemu (roll belum py
- *  codeRoll, atau data lama sebelum fitur pencocokan ini ada) -- caller fallback ke rata-rata
- *  pool (materialCostForWarna). */
-function findRawMaterialRollForBatch(batch: ProductionBatch, rawInvoices: RawMaterialInvoice[]): { hargaPerRoll: number; netKg: number } | null {
+ *  mengambil harga & berat ROLL INI SPESIFIK (bisa beda dari roll lain kalau ini roll pengganti
+ *  klaim retur, lihat createClaimReplacementInvoiceAction), persis pendekatan "Detail HPP" di
+ *  Template Excel Finance -- beda dari materialCostForWarna di atas yang MENGUMPULKAN semua roll
+ *  1 warna+lengan jadi satu pool. Return null kalau tidak ketemu (roll belum py codeRoll, atau
+ *  data lama sebelum fitur pencocokan ini ada) -- caller fallback ke rata-rata pool
+ *  (materialCostForWarna).
+ *
+ *  `hargaPerKg` (nama field asli di ColorEntry: `hargaPerRoll`, TAPI ITU HARGA PER KG -- lihat
+ *  catatan bug fix di materialCostForWarna) dikembalikan APA ADANYA (belum dikali berat) --
+ *  caller yang mengalikan dengan `grossKg` roll ini sendiri untuk dapat total biaya roll itu. */
+function findRawMaterialRollForBatch(batch: ProductionBatch, rawInvoices: RawMaterialInvoice[]): { hargaPerKg: number; grossKg: number; netKg: number } | null {
   if (!batch.codeRoll) return null;
   for (const rawInv of rawInvoices) {
     if (rawInv.destinationVendor !== batch.vendorProduksi) continue;
@@ -2407,7 +2419,8 @@ function findRawMaterialRollForBatch(batch: ProductionBatch, rawInvoices: RawMat
       const receipts = rawInv.rollReceipts[c.warna + "|" + c.lengan] ?? [];
       const idx = receipts.findIndex((r) => r?.codeRoll === batch.codeRoll);
       if (idx === -1) continue;
-      return { hargaPerRoll: c.hargaPerRoll, netKg: receipts[idx]?.netKg ?? c.rolls[idx] ?? 0 };
+      const grossKg = c.rolls[idx] ?? 0;
+      return { hargaPerKg: c.hargaPerRoll, grossKg, netKg: receipts[idx]?.netKg ?? grossKg };
     }
   }
   return null;
@@ -2670,9 +2683,16 @@ export function hppRowsForInvoicePerRoll(
 
       const rawRoll = findRawMaterialRollForBatch(roll, rawInvoices);
       const pool = rawRoll ? null : materialCostForWarna(line.warna, inv.vendorProduksi, rawInvoices);
-      const hargaPerRoll = rawRoll ? rawRoll.hargaPerRoll : pool && pool.rollCount > 0 ? pool.hargaBahanTotal / pool.rollCount : 0;
+      // BUG FIX 2026-09-07: `hargaPerKg` (dari codeRoll yang match) itu harga PER KG, bukan harga
+      // TOTAL roll -- dulu dipakai langsung seolah sudah jadi biaya total 1 roll (persis bug yang
+      // sama seperti materialCostForWarna). Biaya total roll ini SPESIFIK = hargaPerKg x berat
+      // GROSS roll ini (gross, bukan net -- konsisten dengan nilai yang ditagih supplier, lihat
+      // catatan di materialCostForWarna). Fallback pool (`pool.hargaBahanTotal / pool.rollCount`)
+      // sudah otomatis benar sekarang setelah materialCostForWarna dibetulkan -- itu rata-rata
+      // biaya TOTAL per roll, bukan per kg, jadi tidak perlu dikali apa pun lagi di sini.
+      const rollTotalCost = rawRoll ? rawRoll.hargaPerKg * rawRoll.grossKg : pool && pool.rollCount > 0 ? pool.hargaBahanTotal / pool.rollCount : 0;
       const netKg = rawRoll ? rawRoll.netKg : pool && pool.rollCount > 0 ? pool.totalNetWeight / pool.rollCount : 0;
-      const materialCostPerPcRoll = hargaPerRoll / totalFgRoll;
+      const materialCostPerPcRoll = rollTotalCost / totalFgRoll;
 
       const koli = deliveryKolis.find((k) => (k.sourceBatchIds ?? []).includes(roll.id));
       const totalPcsInKoli = koli ? koli.items.reduce((s, it) => s + it.qty, 0) : 0;
@@ -2718,7 +2738,7 @@ export function hppRowsForInvoicePerRoll(
           faktorProduksi: cuttingQty > 0 ? fgQty / cuttingQty : 0,
           aktualBeratTerpakai: netKg * (fgQty / totalFgRoll),
           persentase: fgQty / totalFgRoll,
-          hargaBahanTotal: hargaPerRoll,
+          hargaBahanTotal: rollTotalCost,
           cogsBahan: materialCostPerPcRoll * fgQty,
           cogsBahanPerItem: materialCostPerPcRoll,
           pemotonganDenda: 0,
