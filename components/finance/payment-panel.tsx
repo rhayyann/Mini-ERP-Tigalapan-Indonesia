@@ -346,7 +346,8 @@ export function PaymentPanel() {
         <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
           Centang invoice berstatus INVOICED, lampirkan bukti pembayaran (PDF, wajib), lalu klik Bayar untuk mengubah ke PAID. Bukti bisa diganti kapan
           saja lewat kolom &quot;Bukti Pembayaran&quot;. Pembayaran juga dapat dibatalkan (kembali ke INVOICED) jika keliru -- bukti yang sudah terlampir
-          tidak ikut terhapus.
+          tidak ikut terhapus. PV pengganti klaim (badge &quot;Reorder klaim&quot;) yang nilainya SAMA ATAU LEBIH MURAH dari PV lama otomatis langsung PAID
+          begitu dibuat -- tidak perlu bayar baru sama sekali, karena sudah lunas dari kredit retur PV lama itu sendiri (lihat &quot;Pembayaran Sebelumnya&quot;).
         </div>
       )}
 
