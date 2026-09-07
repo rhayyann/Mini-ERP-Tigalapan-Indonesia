@@ -92,6 +92,28 @@ export default function MaterialTrackingPage() {
     });
   }
 
+  // Item revisi 2026-09-07 (owner: "kenapa sudah status production untuk roll... yang dibuat baru
+  // (berdasarkan claim) padahal belum di set delivery"): materialPoFullStatus dihitung PER MaterialPO
+  // (`po.id`), bukan per invoice -- SEMUA invoice yang berbagi po.id yang sama (termasuk PV
+  // pengganti klaim yang baru dibuat belakangan, lihat createClaimReplacementInvoiceAction) ikut
+  // "mewarisi" status PALING MAJU di antara SEMUA invoice PO itu (lihat `rank`/`bestIdx` di
+  // materialPoFullStatus) PLUS progres produksi keseluruhan PO. Ini benar untuk 1 invoice bulk per
+  // PO (asumsi lama), tapi SALAH untuk PV pengganti klaim -- roll penggantinya baru diterbitkan
+  // belakangan & belum tentu sudah dikirim/diterima vendor sama sekali, padahal PO induknya sendiri
+  // sudah lama masuk PRODUCTION dari roll-roll LAIN yang tidak terkait. Untuk baris PV pengganti
+  // (i.sourceClaimId terisi), status yang ditampilkan sekarang murni dari status invoice ITU
+  // SENDIRI (WAITING_INVOICE/INVOICED/PAID/DELIVERY/RECEIVING -- field ini sendiri TIDAK PERNAH
+  // maju melewati RECEIVING, lihat actions.ts, jadi aman dipetakan langsung tanpa perlu logic
+  // produksi PO sama sekali), bukan status agregat PO induknya.
+  const claimInvoiceOwnStatus: Record<RawMaterialInvoice["status"], MaterialPoFullStatus> = {
+    WAITING_INVOICE: "WAITING_INVOICE",
+    INVOICED: "INVOICE",
+    PAID: "PAID",
+    DELIVERY: "DELIVERY",
+    RECEIVING: "RECEIVING",
+    WAITING_PRODUCTION: "RECEIVING",
+    PRODUCTION_DONE: "RECEIVING",
+  };
   const invoiceRows: TrackingRow[] = invoices.map((i) => {
     const po = materialPOs.find((p) => p.id === i.poId);
     return {
@@ -111,7 +133,11 @@ export default function MaterialTrackingPage() {
       tglDelivery: i.deliveredAt,
       tglReceiving: i.receivedAt,
       tglProduksi: i.productionStart,
-      status: po ? materialPoFullStatus(po, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs) : "INVOICE",
+      status: i.sourceClaimId
+        ? claimInvoiceOwnStatus[i.status]
+        : po
+          ? materialPoFullStatus(po, invoices, productionBatches, productionResults, mrpDetails, deliveryKolis, vendorInvoices, maklonPOs)
+          : "INVOICE",
       invoice: i,
     };
   });
