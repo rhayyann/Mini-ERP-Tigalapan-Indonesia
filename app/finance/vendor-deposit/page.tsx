@@ -46,16 +46,16 @@ function relevantContextFor(e: VendorDepositEntry, invoices: RawMaterialInvoice[
   return { invoice: undefined, codeRoll: undefined, claimKey: undefined, transferInvoiceId: undefined };
 }
 
-async function viewBuktiTransfer(invoiceId: string, fileName?: string) {
+async function viewBuktiTransfer(invoiceId: string) {
   const proof = await getInvoicePaymentProofAction(invoiceId);
   if (!proof) return;
-  viewAndDownloadFile(proof.dataUrl, fileName ?? proof.fileName);
+  viewAndDownloadFile(proof.dataUrl);
 }
 
 async function viewBuktiKlaim(claimKey: string) {
   const photo = await getMaterialClaimPhotoAction(claimKey);
   if (!photo) return;
-  viewAndDownloadFile(photo.dataUrl, photo.fileName || `${claimKey}.jpg`);
+  viewAndDownloadFile(photo.dataUrl);
 }
 
 type SupplierDepositRow = { supplier: string; balance: number; entryCount: number };
@@ -175,7 +175,7 @@ export default function VendorDepositPage() {
                     <span className="flex flex-wrap gap-x-2 gap-y-0.5">
                       {ctx.invoice?.buktiPvDataUrl ? (
                         <button
-                          onClick={() => viewAndDownloadFile(ctx.invoice!.buktiPvDataUrl!, ctx.invoice!.buktiPvFileName)}
+                          onClick={() => viewAndDownloadFile(ctx.invoice!.buktiPvDataUrl!)}
                           className="font-sans text-[10.5px] font-semibold text-action-primary underline"
                         >
                           PV lama

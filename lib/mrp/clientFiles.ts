@@ -4,18 +4,44 @@
  *  di-preview DAN di-download, diterapkan konsisten di semua modul (Procurement/Finance/Vendor
  *  Produksi)" -- sebelumnya tiap halaman punya cara sendiri-sendiri (kebanyakan cuma
  *  `window.open(dataUrl)`, yang MEMANG membuka file-nya tapi user harus tahu sendiri cara
- *  men-download dari situ -- beda-beda tergantung viewer PDF/gambar bawaan browser). Sekarang satu
- *  fungsi dipakai bareng di semua tempat: buka tab baru untuk preview (perilaku user paling
- *  familiar) SEKALIGUS trigger download otomatis lewat elemen `<a download>` sementara (tidak
- *  ditaruh di DOM, cukup diklik programatik) -- pola ini sendiri sudah dipakai duluan di
- *  app/procurement/material-claims/page.tsx (viewClaimPhoto), cuma belum konsisten di tempat lain.
- *  Aman dipakai untuk file apa pun yang disimpan sebagai data-URI base64 (PDF maupun gambar). */
-export function viewAndDownloadFile(dataUrl: string, fileName?: string) {
-  window.open(dataUrl, "_blank");
-  const a = document.createElement("a");
-  a.href = dataUrl;
-  a.download = fileName || "file";
-  a.click();
+ *  men-download dari situ -- beda-beda tergantung viewer PDF/gambar bawaan browser). Satu fungsi
+ *  dipakai bareng di semua tempat supaya perilakunya konsisten di semua modul.
+ *
+ *  Revisi 2026-09-07: owner minta trigger download OTOMATIS (elemen `<a download>` yang diklik
+ *  programatik, dulu jalan berbarengan dengan window.open) dihapus -- "tidak perlu download, jadi
+ *  ke tab browser dulu baru nanti download dari situ". Sekarang MURNI buka tab baru untuk preview;
+ *  user download sendiri lewat viewer PDF/gambar bawaan browser di tab itu kalau memang perlu.
+ *  Parameter `fileName` DIHAPUS dari signature (dulu cuma dipakai untuk `<a download>` yang
+ *  sekarang tidak ada lagi) -- semua caller di-update ikut menghapus argumen ini.
+ *
+ *  PENTING: `window.open(dataUrl)` LANGSUNG ke string "data:..." DIBLOKIR browser modern (Chrome
+ *  sejak versi 65 menolak navigasi top-level ke skema data: lewat window.open, murni proteksi
+ *  anti-phishing bawaan browser -- bukan popup-blocker biasa, jadi tidak ada workaround dari sisi
+ *  App kalau tetap pakai data: URI mentah). Makanya di sini data URI dikonversi dulu jadi
+ *  Blob + `URL.createObjectURL` (skema `blob:` TIDAK kena blokir yang sama) sebelum di-window.open.
+ *  Blob URL sengaja di-revoke belakangan (bukan langsung) supaya tab baru sempat selesai memuat
+ *  isinya dulu. */
+export function viewAndDownloadFile(dataUrl: string) {
+  const commaIdx = dataUrl.indexOf(",");
+  if (commaIdx === -1) {
+    window.open(dataUrl, "_blank");
+    return;
+  }
+  const meta = dataUrl.slice(5, commaIdx); // buang prefix "data:"
+  const isBase64 = meta.endsWith(";base64");
+  const mime = isBase64 ? meta.slice(0, -";base64".length) : meta.split(";")[0];
+  try {
+    const binary = isBase64 ? atob(dataUrl.slice(commaIdx + 1)) : decodeURIComponent(dataUrl.slice(commaIdx + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mime || "application/octet-stream" }));
+    window.open(blobUrl, "_blank");
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  } catch {
+    // Fallback kalau data URI-nya tidak terduga formatnya -- lebih baik coba apa adanya
+    // (mungkin masih kena blokir, tapi tidak lebih buruk dari sebelumnya) daripada diam saja.
+    window.open(dataUrl, "_blank");
+  }
 }
 
 /** Ukuran string base64 APA ADANYA (1 karakter base64 = 1 byte ASCII di payload yang benar-benar

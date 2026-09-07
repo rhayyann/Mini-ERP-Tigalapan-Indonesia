@@ -21,7 +21,7 @@ import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
 async function viewClaimPhoto(claimKey: string) {
   const photo = await getMaterialClaimPhotoAction(claimKey);
   if (!photo) return;
-  viewAndDownloadFile(photo.dataUrl, photo.fileName || `${claimKey}.jpg`);
+  viewAndDownloadFile(photo.dataUrl);
 }
 
 function BuktiFotoCell({ claimKey, hasPhoto }: { claimKey: string; hasPhoto: boolean }) {

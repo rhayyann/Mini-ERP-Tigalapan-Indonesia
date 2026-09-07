@@ -18,10 +18,10 @@ import { getInvoicePaymentProofAction } from "@/lib/mrp/actions";
 // Revisi 2026-09-06: preview+download konsisten di semua modul -- lihat komentar di file ini.
 import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
 
-async function viewPaymentProof(invoiceId: string, fileName?: string) {
+async function viewPaymentProof(invoiceId: string) {
   const proof = await getInvoicePaymentProofAction(invoiceId);
   if (!proof) return;
-  viewAndDownloadFile(proof.dataUrl, fileName ?? proof.fileName);
+  viewAndDownloadFile(proof.dataUrl);
 }
 
 /** Panel "Invoice Material" — konten diekstrak dari halaman lama Paying Voucher (Invoice)
@@ -66,7 +66,7 @@ export function PayingVoucherMaterialPanel() {
       default: true,
       render: (i) =>
         i.buktiPvDataUrl ? (
-          <button onClick={() => viewAndDownloadFile(i.buktiPvDataUrl!, i.buktiPvFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+          <button onClick={() => viewAndDownloadFile(i.buktiPvDataUrl!)} className="font-sans text-[11px] font-semibold text-action-primary underline">
             Lihat / Download
           </button>
         ) : (
@@ -79,7 +79,7 @@ export function PayingVoucherMaterialPanel() {
       default: true,
       render: (i) =>
         i.buktiBayarAt ? (
-          <button onClick={() => viewPaymentProof(i.id, i.buktiBayarFileName)} className="font-sans text-[11px] font-semibold text-action-primary underline">
+          <button onClick={() => viewPaymentProof(i.id)} className="font-sans text-[11px] font-semibold text-action-primary underline">
             Lihat / Download
           </button>
         ) : (
