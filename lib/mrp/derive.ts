@@ -1917,11 +1917,29 @@ function isReworkResult(r: ProductionResult): boolean {
   return !!r.note && r.note.startsWith("Rework dari");
 }
 
+// Item revisi 2026-09-07 (owner: "Apa yang terjadi jika saya klik kirim per roll dan per size?
+// apakah akan double?" -- BUG NYATA, dikonfirmasi lewat trace kode): closeProductionBatchAction
+// ("Tutup Roll") DUAL-WRITE 1 ProductionResult (note "Roll {codeRoll}") ke pool production_results
+// yang SAMA dipakai fgProducedBySize/availableFgToShip -- tanpa exclusion ini, roll yang sudah
+// "Tutup Roll" & BELUM masuk koli manapun akan muncul DUA KALI sebagai "bisa dikirim": sekali di
+// "Pilih Roll Finish Good" (closedUnshippedRollsForMrp, basis ProductionBatch.closedAt) DAN sekali
+// lagi di tabel "Isi Koli" (availableFgToShip, basis pool production_results) -- kalau vendor
+// pilih roll itu VIA CHECKBOX *dan* ISI QTY-nya manual di "Isi Koli" dalam satu "Simpan koli" yang
+// sama, roll_items (dari checkbox) DAN validItems (dari Isi Koli) SAMA-SAMA masuk koli.items ->
+// pcs roll itu tercatat 2x di koli yang sama. Fix: exclude entry dual-write "Roll ..." dari basis
+// FG "Isi Koli" -- roll yang sudah ditutup HANYA shippable lewat checkbox "dikirim utuh"
+// (closedUnshippedRollsForMrp), TIDAK lagi ikut campur ke pool "Isi Koli" (yang sesuai namanya --
+// "REWORK & SISA FG LAMA" -- sekarang MEMANG murni untuk itu: rework + FG lama dari sebelum fitur
+// HPP per roll ada, bukan roll baru).
+function isRollClosureResult(r: ProductionResult): boolean {
+  return !!r.note && r.note.startsWith("Roll ");
+}
+
 // Item 20: Reject bukan lagi produk yang bisa dikirim -- resultMatchesShippableKind sekarang cuma
 // membedakan FG "murni" (hasil cutting langsung) vs REWORK (reject yang dipotong ulang jadi FG).
 function resultMatchesShippableKind(r: ProductionResult, source: ShippableKind): boolean {
   if (source === "REWORK") return r.kind === "FG" && isReworkResult(r);
-  return r.kind === "FG" && !isReworkResult(r);
+  return r.kind === "FG" && !isReworkResult(r) && !isRollClosureResult(r);
 }
 
 export function fgProducedBySize(mrpId: string, vendorProduksi: string, results: ProductionResult[], source: ShippableKind = "FG"): Map<string, number> {
