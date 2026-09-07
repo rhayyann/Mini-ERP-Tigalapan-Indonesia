@@ -13,6 +13,8 @@ import {
   formatDate,
   formatPcs,
   formatRupiah,
+  hargaKainRate,
+  hargaMaklonRate,
   maklonPoBadgeWithApproval,
   maklonPoDeliveryProgress,
   maklonPoInvoiceLockedBy,
@@ -28,8 +30,8 @@ import {
 } from "@/lib/mrp/derive";
 import { countMaterialRowsWithoutSupplierForMrp, pendingMarker } from "@/lib/shell/badges";
 import { exportMaklonPoPdf, exportMaterialPoPdf } from "@/lib/mrp/exportPoPdf";
-import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
-import type { MaklonPO, MaterialPO } from "@/lib/mrp/types";
+import { ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "@/lib/mrp/seed";
+import type { Lengan, MaklonPO, MaterialPO } from "@/lib/mrp/types";
 
 /** Badge kecil "Standar"/"PKS"/"Estimasi" di sebelah nilai Rupiah — hover untuk lihat rincian
  *  per lengan/warna (kenapa dapat harga itu, tonase/kapasitas berapa). Dipakai di 3 tempat:
@@ -450,32 +452,56 @@ export default function PoApprovalPage() {
           },
         ]}
         emptyText="Belum ada PO material yang dibuat."
-        renderExpanded={(p) => (
-          <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
-            <div className="grid grid-cols-4 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
-              <span>Warna</span>
-              <span>Lengan</span>
-              <span className="text-right">Roll</span>
-              <span>Entitas</span>
-            </div>
-            {p.colorBreakdown.map((c, i) => (
-              <div key={i} className="grid grid-cols-4 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
-                <span className="font-medium">{c.warna}</span>
-                <span>{c.lengan}</span>
-                <span className="text-right font-mono">{c.rollCount}</span>
-                {/* Fix 2026-09-05: dulu langsung render `c.entitas` -- karena colorBreakdown[].entitas
-                   sudah diisi DEFAULT sejak PO dibuat (lihat sendPoToFinanceAction), Procurement
-                   kelihatan seolah entitas per-warna sudah final padahal Finance belum input/approve
-                   apa-apa. Gating-nya disamakan persis dengan kolom "Entitas" level-PO di atas
-                   (p.approved ? ... : "-") supaya konsisten: keduanya sama-sama representasi entitas
-                   yang sama, cuma level PO vs per-warna. */}
-                <span className={p.approved ? undefined : "text-text-muted"} title={p.approved ? undefined : "Menunggu input dari Finance"}>
-                  {p.approved ? (c.entitas ?? "—") : "-"}
-                </span>
+        renderExpanded={(p) => {
+          // Item revisi 2026-09-08 (owner: "list detail PO material... ada harga roll per/kg dan
+          // harga per warnanya itu berapa nominalnya dan nominal total"): rate dihitung per WARNA
+          // (gabung semua lengan warna yang sama, 1 roll fisik harganya sama mau dipotong PENDEK
+          // atau PANJANG) -- formula PERSIS sama seperti materialAmountForPo (dipakai hitung
+          // p.amount sendiri), supaya baris "Total" di bawah selalu cocok dengan kolom Nilai.
+          const kgByWarna = new Map<string, number>();
+          for (const c of p.colorBreakdown) kgByWarna.set(c.warna, (kgByWarna.get(c.warna) ?? 0) + c.rollCount * ROLL_KG_ESTIMATE);
+          const rateByWarna = new Map<string, number>();
+          for (const [warna, kg] of kgByWarna) rateByWarna.set(warna, hargaKainRate(hargaKain, hargaKainPks, p.supplier, warna, kg));
+          return (
+            <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
+              <div className="grid grid-cols-6 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                <span>Warna</span>
+                <span>Lengan</span>
+                <span className="text-right">Roll</span>
+                <span className="text-right">Harga/Kg</span>
+                <span className="text-right">Subtotal</span>
+                <span>Entitas</span>
               </div>
-            ))}
-          </div>
-        )}
+              {p.colorBreakdown.map((c, i) => {
+                const rate = rateByWarna.get(c.warna) ?? 0;
+                const subtotal = c.rollCount * ROLL_KG_ESTIMATE * rate;
+                return (
+                  <div key={i} className="grid grid-cols-6 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                    <span className="font-medium">{c.warna}</span>
+                    <span>{c.lengan}</span>
+                    <span className="text-right font-mono">{c.rollCount}</span>
+                    <span className="text-right font-mono">{formatRupiah(rate)}</span>
+                    <span className="text-right font-mono">{formatRupiah(subtotal)}</span>
+                    {/* Fix 2026-09-05: dulu langsung render `c.entitas` -- karena colorBreakdown[].entitas
+                       sudah diisi DEFAULT sejak PO dibuat (lihat sendPoToFinanceAction), Procurement
+                       kelihatan seolah entitas per-warna sudah final padahal Finance belum input/approve
+                       apa-apa. Gating-nya disamakan persis dengan kolom "Entitas" level-PO di atas
+                       (p.approved ? ... : "-") supaya konsisten: keduanya sama-sama representasi entitas
+                       yang sama, cuma level PO vs per-warna. */}
+                    <span className={p.approved ? undefined : "text-text-muted"} title={p.approved ? undefined : "Menunggu input dari Finance"}>
+                      {p.approved ? (c.entitas ?? "—") : "-"}
+                    </span>
+                  </div>
+                );
+              })}
+              <div className="grid grid-cols-6 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
+                <span className="col-span-4">Total</span>
+                <span className="text-right font-mono">{formatRupiah(p.amount)}</span>
+                <span />
+              </div>
+            </div>
+          );
+        }}
       />
 
       <DataTable
@@ -501,24 +527,52 @@ export default function PoApprovalPage() {
           if (rows.length === 0) {
             return <div className="font-sans text-[11.5px] text-text-muted">Belum ada rincian aduan pola untuk PO ini.</div>;
           }
+          // Item revisi 2026-09-08 (owner: "satu warna itu berapa qty-nya untuk pendek atau
+          // panjang dan juga berapa harga maklon per tipe itu serta totalannya") -- restrukturisasi
+          // dari 1 baris per aduanRow jadi 1 baris per WARNA, qty PENDEK/PANJANG dipisah jelas.
+          // Rate per lengan dihitung dari qty KUMULATIF SELURUH PO ini (lintas warna) -- formula
+          // PERSIS sama seperti maklonRateExplanation (dipakai badge "Standar/PKS" di kolom Nilai
+          // level-PO), supaya rate yang tampil di sini konsisten dgn yang benar-benar dipakai.
+          const qtyByLengan = new Map<Lengan, number>();
+          for (const a of rows) qtyByLengan.set(a.lengan, (qtyByLengan.get(a.lengan) ?? 0) + a.qty);
+          const rateByLengan: Record<"PENDEK" | "PANJANG", number> = {
+            PENDEK: hargaMaklonRate(hargaMaklon, p.vendorProduksi, "PENDEK", qtyByLengan.get("PENDEK") ?? 0),
+            PANJANG: hargaMaklonRate(hargaMaklon, p.vendorProduksi, "PANJANG", qtyByLengan.get("PANJANG") ?? 0),
+          };
+          const byWarna = new Map<string, { pendek: number; panjang: number }>();
+          for (const a of rows) {
+            const cur = byWarna.get(a.warna) ?? { pendek: 0, panjang: 0 };
+            if (a.lengan === "PENDEK") cur.pendek += a.qty;
+            else cur.panjang += a.qty;
+            byWarna.set(a.warna, cur);
+          }
           return (
             <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
-              <div className="grid grid-cols-4 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+              <div className="grid grid-cols-6 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                 <span>Warna</span>
-                <span>Lengan</span>
-                <span className="text-right">Qty (pcs)</span>
-                <span>Size</span>
+                <span className="text-right">Qty Pendek</span>
+                <span className="text-right">Harga/Pc Pendek</span>
+                <span className="text-right">Qty Panjang</span>
+                <span className="text-right">Harga/Pc Panjang</span>
+                <span className="text-right">Subtotal</span>
               </div>
-              {rows.map((a) => (
-                <div key={a.id} className="grid grid-cols-4 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
-                  <span className="font-medium">{a.warna}</span>
-                  <span>{a.lengan}</span>
-                  <span className="text-right font-mono">{formatPcs(a.qty)}</span>
-                  <span className="font-mono text-[11px] text-text-muted">
-                    {a.sizes.length > 0 ? a.sizes.map((s) => `${s.size} ${s.qty}`).join(", ") : "—"}
-                  </span>
-                </div>
-              ))}
+              {Array.from(byWarna.entries()).map(([warna, q]) => {
+                const subtotal = q.pendek * rateByLengan.PENDEK + q.panjang * rateByLengan.PANJANG;
+                return (
+                  <div key={warna} className="grid grid-cols-6 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                    <span className="font-medium">{warna}</span>
+                    <span className="text-right font-mono">{q.pendek > 0 ? formatPcs(q.pendek) : "—"}</span>
+                    <span className="text-right font-mono">{q.pendek > 0 ? formatRupiah(rateByLengan.PENDEK) : "—"}</span>
+                    <span className="text-right font-mono">{q.panjang > 0 ? formatPcs(q.panjang) : "—"}</span>
+                    <span className="text-right font-mono">{q.panjang > 0 ? formatRupiah(rateByLengan.PANJANG) : "—"}</span>
+                    <span className="text-right font-mono">{formatRupiah(subtotal)}</span>
+                  </div>
+                );
+              })}
+              <div className="grid grid-cols-6 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
+                <span className="col-span-5">Total</span>
+                <span className="text-right font-mono">{formatRupiah(p.amount)}</span>
+              </div>
             </div>
           );
         }}

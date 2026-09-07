@@ -106,7 +106,12 @@ export type MaklonPO = {
 
 export type InvoiceStatus = "WAITING_INVOICE" | "INVOICED" | "PAID" | "DELIVERY" | "RECEIVING" | "WAITING_PRODUCTION" | "PRODUCTION_DONE";
 
-export type ColorEntry = { warna: string; lengan: Lengan; hargaPerRoll: number; rolls: number[] };
+// Item revisi 2026-09-08 (owner: "Belum ada input kode lot per rollnya" -- kelanjutan dari
+// keputusan 2026-09-07 yang sengaja MENUNDA input manual ini, "buat otomatis terisi untuk saat
+// ini saja"): `lots` opsional, PARALEL ke `rolls` (index sama) -- kode lot per roll diinput
+// Procurement di sini (paying-voucher-wizard.tsx) saat input berat, bukan lagi di-generate random
+// di Good Receive vendor. Optional supaya invoice LAMA (dari sebelum field ini ada) tetap valid.
+export type ColorEntry = { warna: string; lengan: Lengan; hargaPerRoll: number; rolls: number[]; lots?: string[] };
 // hargaPerKg: harga per kg yang diinput user — totalHarga (dipakai di semua kalkulasi lain,
 // termasuk hppRowsForInvoice) SELALU = beratKg * hargaPerKg, dihitung otomatis begitu salah satu
 // dari keduanya diubah (lihat updateAddBuyBerat/updateAddBuyHargaPerKg di paying-voucher-wizard.tsx).

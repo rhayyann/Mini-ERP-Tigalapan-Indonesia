@@ -4,7 +4,7 @@ import { useState } from "react";
 import { NumberInput } from "@/components/mrp/number-input";
 import { Button } from "@/components/ui/button";
 import { useMrpStore } from "@/lib/mrp/store";
-import { cumulativeSizeQtyForGroup, cutWarnaLenganGroups, formatDateTimeShort, mrpDetailFor, mrpIdsWithRemainingReject, productionGroupMetaFor } from "@/lib/mrp/derive";
+import { cumulativeSizeQtyForGroup, cutWarnaLenganGroups, formatDateTimeShort, mrpDetailFor, mrpIdsWithRemainingReject, productionGroupMetaFor, reworkSizeAllowed } from "@/lib/mrp/derive";
 import { countRemainingRejectGroupsForMrp, pendingMarker } from "@/lib/shell/badges";
 import type { Lengan, Usia } from "@/lib/mrp/types";
 
@@ -165,74 +165,87 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
             <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">Tidak ada sisa reject untuk MRP ini.</div>
           )}
 
-          {reworking && (
-            <div className="border-t border-[#CFE0EF] bg-info-bg p-4">
-              <div className="font-sans text-xs font-semibold text-info-fg">
-                Rework {reworking.warna} · {reworking.lengan} — size {reworking.size} (maks {reworking.max} pcs)
-              </div>
-              {reworking.lengan === "PENDEK" && (
-                <div className="mt-1.5 font-sans text-[10.5px] text-warning-fg">
-                  Reject lengan PENDEK cuma bisa dirework jadi size lain — lengan tidak bisa dipanjangkan.
+          {reworking &&
+            (() => {
+              // Item revisi 2026-09-08 (owner: "Yang bisa dirework adalah size yang sama
+              // ukurannya dengan juga yang ada dibawah size yang ingin dirework tersebut") --
+              // size TUJUAN cuma boleh sama atau lebih kecil dari size ASAL (motong kain reject
+              // cuma bisa mengecilkan, tidak bisa "menambah kain"). Lihat reworkSizeAllowed
+              // (lib/mrp/derive.ts) -- validasi ulang server-side di reworkRejectSizeAction.
+              const reworkableSizes = knownSizes.filter((s) => reworkSizeAllowed(reworking.size, s));
+              return (
+                <div className="border-t border-[#CFE0EF] bg-info-bg p-4">
+                  <div className="font-sans text-xs font-semibold text-info-fg">
+                    Rework {reworking.warna} · {reworking.lengan} — size {reworking.size} (maks {reworking.max} pcs)
+                  </div>
+                  <div className="mt-1.5 font-sans text-[10.5px] text-warning-fg">
+                    Size tujuan cuma boleh sama atau lebih kecil dari {reworking.size} — motong kain cuma bisa mengecilkan, tidak bisa &quot;menambah kain&quot;.
+                    {reworking.lengan === "PENDEK" && " Lengan PENDEK juga tidak bisa dipanjangkan lagi."}
+                  </div>
+                  <div className="mt-2 grid grid-cols-4 gap-3">
+                    <div>
+                      <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Qty dirework</div>
+                      <NumberInput value={qty} onChange={(v) => setQty(Math.max(1, Math.min(v, reworking.max)))} decimals={0} className="input mt-1" />
+                    </div>
+                    <div>
+                      <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Lengan hasil rework</div>
+                      <select value={toLengan} onChange={(e) => setToLengan(e.target.value as Lengan)} className="input mt-1">
+                        {reworkLenganOptionsFor(reworking.lengan).map((l) => (
+                          <option key={l} value={l}>
+                            {l}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Size baru (hasil rework)</div>
+                      {/* Dulu free-text (rawan salah ketik) -- sekarang dropdown dari size yang
+                          benar-benar ada di rencana aduan pola MRP ini, DIFILTER lagi ke size ≤
+                          size asal (lihat reworkableSizes di atas). */}
+                      <select value={toSize} onChange={(e) => setToSize(e.target.value)} className="input mt-1">
+                        <option value="">— pilih size —</option>
+                        {reworkableSizes.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                      {reworkableSizes.length === 0 && (
+                        <div className="mt-1 font-sans text-[10px] text-danger-fg">
+                          Tidak ada size ≤ {reworking.size} terdaftar untuk MRP ini.
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Kids atau Dewasa</div>
+                      <select value={usia} onChange={(e) => setUsia(e.target.value as Usia)} className="input mt-1">
+                        {USIA_OPTIONS.map((u) => (
+                          <option key={u} value={u}>
+                            {u}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="mt-2.5 flex gap-2">
+                    <button
+                      onClick={submitRework}
+                      disabled={!toSize.trim() || submitting}
+                      className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {submitting ? "Menyimpan…" : "Simpan Rework"}
+                    </button>
+                    <button
+                      onClick={() => setReworking(null)}
+                      disabled={submitting}
+                      className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-2 font-sans text-xs font-semibold text-action-primary disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Batal
+                    </button>
+                  </div>
                 </div>
-              )}
-              <div className="mt-2 grid grid-cols-4 gap-3">
-                <div>
-                  <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Qty dirework</div>
-                  <NumberInput value={qty} onChange={(v) => setQty(Math.max(1, Math.min(v, reworking.max)))} decimals={0} className="input mt-1" />
-                </div>
-                <div>
-                  <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Lengan hasil rework</div>
-                  <select value={toLengan} onChange={(e) => setToLengan(e.target.value as Lengan)} className="input mt-1">
-                    {reworkLenganOptionsFor(reworking.lengan).map((l) => (
-                      <option key={l} value={l}>
-                        {l}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Size baru (hasil rework)</div>
-                  {/* Dulu free-text (rawan salah ketik) -- sekarang dropdown dari size yang
-                      benar-benar ada di rencana aduan pola MRP ini. */}
-                  <select value={toSize} onChange={(e) => setToSize(e.target.value)} className="input mt-1">
-                    <option value="">— pilih size —</option>
-                    {knownSizes.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
-                  {knownSizes.length === 0 && <div className="mt-1 font-sans text-[10px] text-danger-fg">Tidak ada size terdaftar untuk MRP ini.</div>}
-                </div>
-                <div>
-                  <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Kids atau Dewasa</div>
-                  <select value={usia} onChange={(e) => setUsia(e.target.value as Usia)} className="input mt-1">
-                    {USIA_OPTIONS.map((u) => (
-                      <option key={u} value={u}>
-                        {u}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <div className="mt-2.5 flex gap-2">
-                <button
-                  onClick={submitRework}
-                  disabled={!toSize.trim() || submitting}
-                  className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {submitting ? "Menyimpan…" : "Simpan Rework"}
-                </button>
-                <button
-                  onClick={() => setReworking(null)}
-                  disabled={submitting}
-                  className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-2 font-sans text-xs font-semibold text-action-primary disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Batal
-                </button>
-              </div>
-            </div>
-          )}
+              );
+            })()}
         </div>
       )}
 

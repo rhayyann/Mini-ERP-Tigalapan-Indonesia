@@ -13,6 +13,7 @@ import {
   formatPcs,
   invoiceBadge,
   materialReceivedForMaklon,
+  mrpDetailFor,
   rollArrivalProgress,
   rollArrivalStatus,
   rollArrivalStatusBadge,
@@ -20,7 +21,7 @@ import {
 import { countGoodReceiveEligibleForMrp, pendingMarker } from "@/lib/shell/badges";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
-type DraftCode = { codeRoll: string; codeLot: string };
+type DraftCode = { codeRoll: string };
 
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -45,18 +46,10 @@ function generateCodeRoll(taken: Set<string>): string {
   return code;
 }
 
-/** Format contoh: 818 (3 digit). */
-function generateCodeLot(taken: Set<string>): string {
-  let code = "";
-  do {
-    code = String(100 + Math.floor(Math.random() * 900));
-  } while (taken.has(code));
-  return code;
-}
-
 function ReceivingContent({ vendorId }: { vendorId: string }) {
   const invoices = useMrpStore((s) => s.invoices);
   const maklonPOs = useMrpStore((s) => s.maklonPOs);
+  const mrpDetails = useMrpStore((s) => s.mrpDetails);
   const advanceMaklonProduction = useMrpStore((s) => s.advanceMaklonProduction);
   const markRollArrived = useMrpStore((s) => s.markRollArrived);
   const receiveRawMaterialAddBuy = useMrpStore((s) => s.receiveRawMaterialAddBuy);
@@ -99,25 +92,24 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
   const colorOptions = selectedInvoice?.colorEntries ?? [];
   const selectedColor = colorOptions.find((c) => c.warna + "|" + c.lengan === selectedColorKey) ?? null;
 
-  // Auto-generate Code Roll & Code Lot per roll (unik dalam batch ini) begitu warna dipilih —
-  // demi kebutuhan simulasi supaya tidak perlu input manual. Tetap bisa diedit sebelum "Tandai
-  // diterima". Ditandai berdasarkan rollArrivals (bukan rollReceipts lagi) — roll sudah dianggap
-  // "selesai di sini" begitu ditandai diterima, tidak perlu menunggu ditimbang (itu di Cutting).
+  // Auto-generate Code Roll per roll (unik dalam batch ini) begitu warna dipilih — demi kebutuhan
+  // simulasi supaya tidak perlu input manual. Tetap bisa diedit sebelum "Tandai diterima".
+  // Ditandai berdasarkan rollArrivals (bukan rollReceipts lagi) — roll sudah dianggap "selesai di
+  // sini" begitu ditandai diterima, tidak perlu menunggu ditimbang (itu di Cutting).
+  // Item revisi 2026-09-08: Code Lot TIDAK LAGI di-auto-generate/diinput di sini — sudah diinput
+  // Procurement saat Paying Voucher (ColorEntry.lots), ditampilkan read-only di tabel di bawah.
   useEffect(() => {
     if (!selectedColor || !selectedInvoice) return;
     setDraftCode((prev) => {
       const usedRoll = new Set(Object.values(prev).map((c) => c.codeRoll).filter(Boolean));
-      const usedLot = new Set(Object.values(prev).map((c) => c.codeLot).filter(Boolean));
       const next = { ...prev };
       let changed = false;
       selectedColor.rolls.forEach((_, idx) => {
         const arrival = selectedInvoice.rollArrivals[selectedColorKey]?.[idx];
         if (arrival || next[idx]) return;
         const codeRoll = generateCodeRoll(usedRoll);
-        const codeLot = generateCodeLot(usedLot);
         usedRoll.add(codeRoll);
-        usedLot.add(codeLot);
-        next[idx] = { codeRoll, codeLot };
+        next[idx] = { codeRoll };
         changed = true;
       });
       return changed ? next : prev;
@@ -147,8 +139,8 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
 
   function markArrived(idx: number) {
     if (!selectedInvoice || !selectedColor) return;
-    const code = draftCode[idx] ?? { codeRoll: "", codeLot: "" };
-    markRollArrived(selectedInvoice.id, selectedColor.warna, selectedColor.lengan, idx, code.codeRoll || undefined, code.codeLot || undefined);
+    const code = draftCode[idx] ?? { codeRoll: "" };
+    markRollArrived(selectedInvoice.id, selectedColor.warna, selectedColor.lengan, idx, code.codeRoll || undefined);
   }
 
   // Item 2 (feedback batch 2026-09-07): status RECEIVING tidak bedakan "baru mulai" dari "sudah
@@ -216,10 +208,12 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-9 gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
+          {/* Item revisi 2026-09-08 (owner: "Hilangkan saja untuk kolom warna" — terlalu padat
+              untuk PO multi-warna, apalagi sekarang detail per-warna sudah ada di ringkasan roll
+              + qty pendek/panjang begitu PO ini dipilih, lihat di bawah). */}
+          <div className="grid grid-cols-8 gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
             <span>No PO</span>
             <span>Supplier</span>
-            <span>Warna</span>
             <span>Status</span>
             <span className="text-right">Roll diterima</span>
             <span>Tanggal Kirim</span>
@@ -233,10 +227,9 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
           {mrpInvoices.map((i) => {
             const progress = rollArrivalProgress(i);
             return (
-              <div key={i.id} className="grid grid-cols-9 items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0">
+              <div key={i.id} className="grid grid-cols-8 items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0">
                 <span className="font-mono font-medium">{i.poId}</span>
                 <span>{i.supplier}</span>
-                <span>{i.colorEntries.map((c) => c.warna).join(", ")}</span>
                 {/* Item revisi 2026-09-06: sebelumnya 2 pill (status invoice + status kedatangan
                     roll) tampil berdampingan di baris yang sama — dobel & membingungkan menurut
                     owner ("tidak perlu ada dua statusnya tampil, buat saja jadi satu"). Cukup 1
@@ -293,11 +286,57 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
             <div className="mt-1 font-sans text-xs text-text-muted">
               {selectedInvoice.supplier} · No. invoice supplier: {selectedInvoice.noInvoiceVendor || "—"}
             </div>
+            {/* Item revisi 2026-09-08 (owner, Gambar 3: "buat untuk bisa select dropdown list mrp
+                atau po jadi akan ada informasi detail warna yang diterima itu ada berapa roll,
+                berapa qty totalnya untuk panjang dan pendek") -- ringkasan per warna: roll
+                total/diterima + qty pendek/panjang (pcs) dari aduan pola MRP ini, vendor ini.
+                Qty pendek/panjang murni informasi (dari aduan pola produksi, bukan dari roll
+                material itu sendiri yang cuma dihitung dalam kg) -- bantu vendor tahu berapa
+                banyak yang HARUS diproduksi dari warna ini begitu materialnya lengkap diterima. */}
+            {colorOptions.length > 0 && (
+              <div className="mt-3 overflow-hidden rounded-md border border-[#E4E8EE]">
+                <div className="grid grid-cols-5 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                  <span>Warna</span>
+                  <span className="text-right">Roll (diterima/total)</span>
+                  <span className="text-right">Qty Pendek (pcs)</span>
+                  <span className="text-right">Qty Panjang (pcs)</span>
+                  <span />
+                </div>
+                {(() => {
+                  const aduanRows = mrpDetailFor(selectedInvoice.mrpId, mrpDetails)?.aduanRows.filter((a) => a.vendor === vendorId) ?? [];
+                  const warnaList = Array.from(new Set(colorOptions.map((c) => c.warna)));
+                  return warnaList.map((warna) => {
+                    const colorsForWarna = colorOptions.filter((c) => c.warna === warna);
+                    const totalRoll = colorsForWarna.reduce((s, c) => s + c.rolls.length, 0);
+                    const arrivedRoll = colorsForWarna.reduce((s, c) => {
+                      const key = c.warna + "|" + c.lengan;
+                      return s + c.rolls.filter((_, idx) => selectedInvoice.rollArrivals[key]?.[idx]).length;
+                    }, 0);
+                    const complete = totalRoll > 0 && arrivedRoll === totalRoll;
+                    const qtyPendek = aduanRows.filter((a) => a.warna === warna && a.lengan === "PENDEK").reduce((s, a) => s + a.qty, 0);
+                    const qtyPanjang = aduanRows.filter((a) => a.warna === warna && a.lengan === "PANJANG").reduce((s, a) => s + a.qty, 0);
+                    return (
+                      <div key={warna} className="grid grid-cols-5 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                        <span className="font-medium">{warna}</span>
+                        <span className={"text-right font-mono " + (complete ? "text-success-fg" : "")}>
+                          {arrivedRoll}/{totalRoll}
+                        </span>
+                        <span className="text-right font-mono">{qtyPendek > 0 ? formatPcs(qtyPendek) : "—"}</span>
+                        <span className="text-right font-mono">{qtyPanjang > 0 ? formatPcs(qtyPanjang) : "—"}</span>
+                        <span className="flex justify-end">{complete && <span title="Semua roll warna ini sudah diterima">✅</span>}</span>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            )}
+
             <div className="mt-3 font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">Pilih warna</div>
             <div className="mt-1.5 flex flex-wrap gap-2">
               {colorOptions.map((c) => {
                 const key = c.warna + "|" + c.lengan;
                 const arrivedCount = c.rolls.filter((_, idx) => selectedInvoice.rollArrivals[key]?.[idx]).length;
+                const complete = c.rolls.length > 0 && arrivedCount === c.rolls.length;
                 return (
                   <button
                     key={key}
@@ -308,6 +347,10 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                       (selectedColorKey === key ? "border-action-primary bg-action-primary text-white" : "border-[#CBD5DF] bg-white text-action-primary")
                     }
                   >
+                    {/* Item revisi 2026-09-08 (owner, Gambar 4: "Tambahkan simbol atau icon centang
+                        hijau pada card warna jika sudah lengkap untuk menandai roll sudah
+                        diterima") */}
+                    {complete && <span className="mr-1">✅</span>}
                     {c.warna} · {c.lengan} ({arrivedCount}/{c.rolls.length} diterima)
                   </button>
                 );
@@ -326,22 +369,26 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                 Tandai roll diterima — {selectedColor.warna} · {selectedColor.lengan}
               </div>
               <div
-                className="grid min-w-[760px] gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
-                style={{ gridTemplateColumns: "minmax(70px,0.6fr) minmax(150px,1.3fr) minmax(110px,0.9fr) minmax(150px,1.2fr)" }}
+                className="grid min-w-[860px] gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
+                style={{ gridTemplateColumns: "minmax(70px,0.5fr) minmax(150px,1.2fr) minmax(100px,0.9fr) minmax(110px,0.8fr) minmax(150px,1.2fr)" }}
               >
                 <span>Roll</span>
                 <span>Code Roll</span>
+                <span>Code Lot</span>
                 <span className="text-right">Berat kotor (kg)</span>
                 <span>Status</span>
               </div>
               {selectedColor.rolls.map((grossKg, idx) => {
                 const arrival = selectedInvoice.rollArrivals[selectedColorKey]?.[idx] ?? null;
-                const code = draftCode[idx] ?? { codeRoll: arrival?.codeRoll ?? "", codeLot: arrival?.codeLot ?? "" };
+                const code = draftCode[idx] ?? { codeRoll: arrival?.codeRoll ?? "" };
+                // Code Lot sekarang murni informasi dari Procurement (diinput saat Paying
+                // Voucher, lihat ColorEntry.lots) — read-only di sini, bukan lagi diisi vendor.
+                const codeLot = selectedColor.lots?.[idx]?.trim() || "";
                 return (
                   <div
                     key={idx}
-                    className="grid min-w-[760px] items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0"
-                    style={{ gridTemplateColumns: "minmax(70px,0.6fr) minmax(150px,1.3fr) minmax(110px,0.9fr) minmax(150px,1.2fr)" }}
+                    className="grid min-w-[860px] items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0"
+                    style={{ gridTemplateColumns: "minmax(70px,0.5fr) minmax(150px,1.2fr) minmax(100px,0.9fr) minmax(110px,0.8fr) minmax(150px,1.2fr)" }}
                   >
                     <span className="font-mono font-medium">Roll {idx + 1}</span>
                     {arrival ? (
@@ -354,6 +401,7 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                         placeholder="Code roll"
                       />
                     )}
+                    <span className="font-mono text-[11px] text-text-muted">{codeLot || "—"}</span>
                     <span className="text-right font-mono">{formatDecimal(grossKg)}</span>
                     <span className="flex items-center gap-2.5">
                       {arrival ? (

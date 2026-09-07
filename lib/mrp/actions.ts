@@ -39,6 +39,7 @@ import {
   weightVariance,
   movableRollCountForInvoice,
   warnaLenganGroupsWithFg,
+  reworkSizeAllowed,
 } from "./derive";
 import { ENTITAS_LIST } from "./seed";
 import type { ParsedMrpImport } from "./parseImport";
@@ -573,7 +574,13 @@ export async function bookInvoiceAction(
     const colorId = `${invoiceId}-${c.warna}-${c.lengan}`;
     await db.from("raw_material_invoice_colors").insert({ id: colorId, invoice_id: invoiceId, warna: c.warna, lengan: c.lengan, harga_per_roll: c.hargaPerRoll });
     if (c.rolls.length > 0) {
-      await db.from("raw_material_invoice_rolls").insert(c.rolls.map((grossKg, idx) => ({ invoice_color_id: colorId, roll_index: idx, gross_kg: grossKg })));
+      // Item revisi 2026-09-08 (owner: "Belum ada input kode lot per rollnya"): kode lot sekarang
+      // diinput Procurement DI SINI (paying-voucher-wizard.tsx, ColorEntry.lots -- paralel index
+      // ke rolls) alih-alih di-generate random nanti di Good Receive vendor (lihat catatan di
+      // markRollArrivedAction & receiving/page.tsx).
+      await db
+        .from("raw_material_invoice_rolls")
+        .insert(c.rolls.map((grossKg, idx) => ({ invoice_color_id: colorId, roll_index: idx, gross_kg: grossKg, code_lot: c.lots?.[idx]?.trim() || null })));
     }
   }
   if (input.addBuys.length > 0) {
@@ -748,7 +755,10 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
           net_kg: null,
           received_at: null,
           code_roll: null,
-          code_lot: null,
+          // code_lot SENGAJA TIDAK direset (item revisi 2026-09-08) -- sejak kode lot diinput
+          // Procurement saat Paying Voucher (data lot fisik dari supplier), bukan lagi vendor
+          // produksi saat Good Receive, kode lot TIDAK terikat ke vendor produksi mana pun --
+          // pindah vendor tidak mengubah roll fisik/lot aslinya, jadi tidak perlu direset.
           claim_resolved_note: null,
           claim_resolved_at: null,
           claim_retur_note: null,
@@ -1063,15 +1073,16 @@ export async function setInvoicesDeliveryAction(invoiceIds: string[], deliveryDa
 /** Tandai 1 roll FISIK DITERIMA di Good Receive — TIDAK menimbang (lihat
  *  receiveRawMaterialRollAction untuk itu, sekarang dipanggil dari halaman Cutting). Ini yang
  *  memindahkan status invoice DELIVERY → RECEIVING (dulu dipicu oleh penimbangan roll pertama). */
-export async function markRollArrivedAction(invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, codeRoll?: string, codeLot?: string): Promise<void> {
+export async function markRollArrivedAction(invoiceId: string, warna: string, lengan: Lengan, rollIndex: number, codeRoll?: string): Promise<void> {
   const vendorId = await requireVendorSession();
   const db = supabaseServer();
   const colorId = `${invoiceId}-${warna}-${lengan}`;
-  const { error } = await db
-    .from("raw_material_invoice_rolls")
-    .update({ received_at: today(), code_roll: codeRoll ?? null, code_lot: codeLot ?? null })
-    .eq("invoice_color_id", colorId)
-    .eq("roll_index", rollIndex);
+  // Item revisi 2026-09-08: TIDAK LAGI menyentuh code_lot di sini -- sejak kode lot diinput
+  // Procurement saat Paying Voucher (bookInvoiceAction), bukan lagi di-generate random vendor di
+  // Good Receive, roll ini SUDAH punya code_lot dari awal (atau memang kosong untuk invoice lama
+  // dari sebelum field ini ada) -- menyentuhnya di sini cuma berisiko MENIMPA nilai yang benar
+  // dengan `null` kalau vendor tidak kirim apa pun.
+  const { error } = await db.from("raw_material_invoice_rolls").update({ received_at: today(), code_roll: codeRoll ?? null }).eq("invoice_color_id", colorId).eq("roll_index", rollIndex);
   if (error) throw new Error(error.message);
 
   const { data: inv } = await db.from("raw_material_invoices").select("id,status,received_at").eq("id", invoiceId).single();
@@ -2371,6 +2382,12 @@ export async function reworkRejectSizeAction(input: { mrpId: string; vendorProdu
   if (input.lengan === "PENDEK" && input.toLengan === "PANJANG") {
     throw new Error("Rework PENDEK ke PANJANG tidak valid — lengan yang sudah dipotong pendek tidak bisa dipanjangkan lagi.");
   }
+  // Item revisi 2026-09-08 (owner: "Yang bisa dirework adalah size yang sama ukurannya dengan
+  // juga yang ada dibawah size yang ingin dirework tersebut") -- guard yang sama dengan lengan di
+  // atas, dicek ulang server-side (UI production-rework-tab.tsx sudah memfilter dropdown-nya).
+  if (!reworkSizeAllowed(input.fromSize, input.toSize)) {
+    throw new Error(`Rework ${input.fromSize} ke ${input.toSize} tidak valid — size tujuan cuma boleh sama atau lebih kecil dari size asal.`);
+  }
   const db = supabaseServer();
   const sourceGroupKey = `${input.mrpId}|${input.warna}|${input.lengan}`;
   const outputGroupKey = `${input.mrpId}|${input.warna}|${input.toLengan}`;
@@ -2490,10 +2507,22 @@ export async function confirmFgDoneAction(groupKey: string, mrpId: string, vendo
   const db = supabaseServer();
   const scope = await fetchProductionScopeForMrp(db, mrpId, vendorProduksi);
 
-  const hasCutBatches = scope.batches.some((b) => b.mrpId === mrpId && b.warna === warna && b.lengan === lengan && b.cuttingAt);
+  const groupBatches = scope.batches.filter((b) => b.mrpId === mrpId && b.warna === warna && b.lengan === lengan && b.cuttingAt);
+  const hasCutBatches = groupBatches.length > 0;
   const baseline = actualCutSizesForGroup(mrpId, warna, lengan, scope.batches);
   if (hasCutBatches && Object.keys(baseline).length === 0) {
     throw new Error('Isi "Input Hasil Cutting" untuk semua roll grup ini dulu — reject dihitung dari hasil cutting aktual, bukan dari target PO/MRP.');
+  }
+  // Item revisi 2026-09-08 (owner: FG yang sudah "Selesai Produksi"/"Final" tidak pernah muncul
+  // di Pengiriman -- BUG NYATA): tombol "Selesai Produksi" di UI sudah di-disable kalau ada roll
+  // grup ini yang belum "Tutup Roll" (lihat allRollsClosed di production-result-panel.tsx), tapi
+  // server ini TIDAK PERNAH menegakkan ulang -- ada celah data bisa jadi fg_confirmed_at (bahkan
+  // done_at) terisi padahal roll-nya sendiri belum closedAt, dan roll yang belum closedAt memang
+  // TIDAK PERNAH shippable (closedUnshippedRollsForMrp murni basis ProductionBatch.closedAt,
+  // tidak peduli status grup) -- FG jadi "terkunci selesai" tapi mustahil dikirim. Ditegakkan
+  // ulang di sini (defense-in-depth, pola sama seperti guard hasCutBatches di atas).
+  if (groupBatches.some((b) => !b.closedAt)) {
+    throw new Error('Tutup semua roll grup ini dulu ("Tutup Roll" di tab Finish Good) sebelum bisa "Selesai Produksi" -- roll yang belum ditutup tidak akan pernah shippable di Pengiriman.');
   }
 
   await recomputeAutoRejectForGroup(db, groupKey, mrpId, vendorProduksi, warna, lengan, scope);

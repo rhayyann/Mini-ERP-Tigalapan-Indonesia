@@ -493,7 +493,15 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     for (const c of colors) {
       const colorKey = `${c.warna}|${c.lengan}`;
       const rolls = (rollsByColor[c.id] ?? []).sort((a, b) => a.roll_index - b.roll_index);
-      colorEntries.push({ warna: c.warna, lengan: c.lengan, hargaPerRoll: Number(c.harga_per_roll), rolls: rolls.map((r) => Number(r.gross_kg)) });
+      // lots: kode lot per roll (item revisi 2026-09-08) -- SEKARANG diisi Procurement saat Paying
+      // Voucher (lihat bookInvoiceAction), bukan lagi di-generate random di Good Receive vendor.
+      colorEntries.push({
+        warna: c.warna,
+        lengan: c.lengan,
+        hargaPerRoll: Number(c.harga_per_roll),
+        rolls: rolls.map((r) => Number(r.gross_kg)),
+        lots: rolls.map((r) => r.code_lot ?? ""),
+      });
       // received_at = ditandai diterima (Good Receive, lihat markRollArrivedAction) — TIDAK lagi
       // berarti "sudah ditimbang" (itu net_kg, sekarang diisi dari Cutting lewat
       // receiveRawMaterialRollAction). Satu roll bisa "arrived" (received_at ada) tapi belum

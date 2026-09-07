@@ -366,18 +366,27 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                             Belum ada roll tercutting untuk grup ini.
                           </div>
                         )}
-                        <div className="flex flex-col gap-2.5">
+                        <div className="flex flex-col gap-3">
                           {groupBatches.map((b) => {
                             const rollTarget = b.sizeQty ?? {};
                             const isClosed = !!b.closedAt;
                             const draft = fgSizeDraft[b.id] ?? rollTarget;
                             const totalTarget = Object.values(rollTarget).reduce((a, c) => a + c, 0);
                             const totalDraft = Object.values(draft).reduce((a, c) => a + (c || 0), 0);
+                            // Item revisi 2026-09-08 (owner: "tampilan UI-nya sangat tidak presisi
+                            // dan buruk dilihat" -- perbaiki lagi): `grid-cols-3` dulu MEREGANGKAN
+                            // tiap pasangan size+qty ke 1/3 lebar baris berapa pun jumlah size-nya
+                            // (2 size = 2 kolom terisi + 1 kosong, jarak label↔input jadi lebar &
+                            // tidak presisi). Diganti `flex flex-wrap` dengan tiap size jadi CHIP
+                            // sendiri (label+input menempel rapat, lebar mengikuti konten) — sejajar
+                            // rapi berapa pun jumlah size-nya, sama pola dengan modal Input Hasil
+                            // Cutting (production-cutting-tab.tsx).
                             return (
                               <div key={b.id} className="overflow-hidden rounded-md border border-[#CFE0EF] bg-white">
-                                <div className="flex items-center justify-between gap-2 border-b border-[#EEF1F4] bg-[#F7F9FB] px-3 py-1.5">
+                                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#EEF1F4] bg-[#F7F9FB] px-3 py-2">
                                   <span className="font-sans text-[11.5px] font-medium text-[#31414F]">
-                                    Roll {b.codeRoll || b.id} <span className="font-mono text-[10.5px] text-text-muted">({totalTarget} pcs hasil cutting)</span>
+                                    Roll <span className="font-mono">{b.codeRoll || b.id}</span>{" "}
+                                    <span className="font-mono text-[10.5px] text-text-muted">({totalTarget} pcs hasil cutting)</span>
                                   </span>
                                   {isClosed ? (
                                     <StatusPill tone="success">Roll ditutup</StatusPill>
@@ -387,23 +396,23 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                                     </Button>
                                   )}
                                 </div>
-                                <div className="grid grid-cols-3 gap-x-3 gap-y-1.5 px-3 py-2">
+                                <div className="flex flex-wrap gap-3 px-3 py-2.5">
                                   {Object.keys(rollTarget).length === 0 && (
-                                    <span className="col-span-3 font-sans text-[11px] text-text-muted">Roll ini belum punya hasil cutting.</span>
+                                    <span className="font-sans text-[11px] text-text-muted">Roll ini belum punya hasil cutting.</span>
                                   )}
                                   {Object.entries(rollTarget).map(([size, tQty]) => (
-                                    <div key={size} className="flex items-center justify-between gap-2 font-sans text-[11.5px] text-[#31414F]">
-                                      <span className="font-mono font-medium">{size}</span>
+                                    <div key={size} className="flex flex-col">
+                                      <span className="whitespace-nowrap font-sans text-[10px] font-medium text-text-muted">{size}</span>
                                       {isClosed ? (
-                                        <span className="font-mono text-text-muted">
-                                          {b.fgSizeQty?.[size] ?? 0} / {tQty}
+                                        <span className="mt-1 font-mono text-[11.5px] font-medium text-[#31414F]">
+                                          {b.fgSizeQty?.[size] ?? 0} <span className="text-text-muted">/ {tQty}</span>
                                         </span>
                                       ) : (
                                         <NumberInput
                                           value={draft[size] ?? tQty}
                                           decimals={0}
                                           onChange={(v) => setFgSizeDraft((prev) => ({ ...prev, [b.id]: { ...(prev[b.id] ?? rollTarget), [size]: v } }))}
-                                          className="input w-[80px] text-right"
+                                          className="input mt-1 w-[92px] text-right"
                                         />
                                       )}
                                     </div>
