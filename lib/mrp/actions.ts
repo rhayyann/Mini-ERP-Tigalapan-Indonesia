@@ -1833,6 +1833,19 @@ export async function applyVendorDepositAction(supplier: string, amount: number,
   if (insErr) throw new Error(`Gagal mencatat pemakaian saldo deposit: ${insErr.message}`);
 }
 
+/** Revisi 2026-09-07: halaman Saldo Deposit Vendor tadinya murni read-only (lihat komentar di
+ *  app/finance/vendor-deposit/page.tsx) -- ditambahkan supaya Finance bisa membersihkan baris
+ *  ledger yang keliru/yatim (mis. sisa dari "Reset Data" sebelum vendor_deposits ikut dihapus di
+ *  resetAllAction, atau salah catat manual) tanpa perlu reset seluruh aplikasi. Hapus PERMANEN 1
+ *  baris ledger (CREDIT atau DEBIT) -- tidak ada guard "sudah dipakai/belum" karena saldo SELALU
+ *  dihitung live dari SUM seluruh baris (vendorDepositBalance), jadi menghapus baris otomatis
+ *  mengoreksi saldo berjalan tanpa perlu migrasi/kompensasi baris lain. */
+export async function deleteVendorDepositEntryAction(id: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "finance");
+  const { error } = await supabaseServer().from("vendor_deposits").delete().eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
 /** Fetch aduan_pola_rows (+sizes) untuk SATU mrpId -- targeted, dipakai
  *  fetchProductionScopeForMrp maupun closePoWithReasonAction/reassignMaterialToSupplierAction di
  *  bawah (dua-duanya cuma butuh potongan .aduanRows ini, bukan MrpDetail penuh). */
@@ -2707,6 +2720,12 @@ export async function resetAllAction(): Promise<void> {
   // di supabase/migrations/0001_init.sql).
   await db.from("mrp").delete().neq("id", "");
   await db.from("notifications").delete().neq("id", "");
+  // BUG FIX 2026-09-07: vendor_deposits (saldo deposit vendor, migration 0018) SENGAJA standalone
+  // -- tidak beracuan FK ke mrp/raw_material_invoices sama sekali (source_claim_id/source_invoice_id
+  // cuma teks bebas, bukan constraint), jadi TIDAK ikut cascade terhapus waktu mrp dihapus di atas.
+  // Baris ledger-nya jadi "yatim" (menunjuk ke invoice/klaim yang sudah tidak ada) tapi tetap
+  // dihitung ke saldo berjalan supplier itu -- itu sebabnya saldo lama tetap muncul setelah reset.
+  await db.from("vendor_deposits").delete().neq("id", "");
   // Master data (bukan vendors_produksi) -- persis initialState lama (semua balik ke []).
   await db.from("harga_maklon").delete().neq("id", "");
   await db.from("harga_kain").delete().neq("id", "");
