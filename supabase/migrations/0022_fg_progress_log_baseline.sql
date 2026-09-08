@@ -1,0 +1,12 @@
+-- Item revisi 2026-09-08 (owner: input Finish Good "seperti sebelumnya" -- per size, terakumulasi
+-- ke target total, bisa "Simpan progres" kapan saja, dan tiap simpan tercatat ke riwayat untuk
+-- pencatatan berkala). Digabung dengan sistem "HPP per roll" (migration 0020) yang sudah ada --
+-- bukan menggantikannya -- lihat lib/mrp/actions.ts (saveFgProgressAction, closeProductionBatchAction,
+-- logFgProgressDelta).
+--
+-- Kolom ini SERVER-ONLY (tidak pernah dikirim/dibaca client) -- baseline "apa yang sudah tercatat
+-- ke production_results (riwayat)" per roll, supaya tiap kali progres disimpan cuma bagian yang
+-- BARU (delta) yang di-log sebagai baris riwayat baru -- mencegah dobel-hitung waktu roll itu
+-- akhirnya ditutup (closeProductionBatchAction) setelah sebelumnya sempat "Simpan progres"
+-- beberapa kali.
+alter table production_batches add column if not exists fg_logged_snapshot jsonb not null default '{}'::jsonb;
