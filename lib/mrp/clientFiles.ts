@@ -21,12 +21,14 @@
  *  Blob + `URL.createObjectURL` (skema `blob:` TIDAK kena blokir yang sama) sebelum di-window.open.
  *  Blob URL sengaja di-revoke belakangan (bukan langsung) supaya tab baru sempat selesai memuat
  *  isinya dulu. */
-export function viewAndDownloadFile(dataUrl: string) {
+/** Konversi data URI -> blob: URL (skema yang tidak kena blokir `window.open` seperti data:).
+ *  Return null kalau formatnya tidak terduga -- caller fallback ke `window.open(dataUrl)` apa
+ *  adanya. Diekstrak dari `viewAndDownloadFile` (item revisi 2026-09-08) supaya bisa dipakai
+ *  ulang oleh `fillPreviewWindow` -- lihat catatan di sana soal kenapa keduanya perlu jalur
+ *  konversi yang sama tapi TIDAK sama-sama manggil `window.open`. */
+function dataUrlToBlobUrl(dataUrl: string): string | null {
   const commaIdx = dataUrl.indexOf(",");
-  if (commaIdx === -1) {
-    window.open(dataUrl, "_blank");
-    return;
-  }
+  if (commaIdx === -1) return null;
   const meta = dataUrl.slice(5, commaIdx); // buang prefix "data:"
   const isBase64 = meta.endsWith(";base64");
   const mime = isBase64 ? meta.slice(0, -";base64".length) : meta.split(";")[0];
@@ -34,14 +36,53 @@ export function viewAndDownloadFile(dataUrl: string) {
     const binary = isBase64 ? atob(dataUrl.slice(commaIdx + 1)) : decodeURIComponent(dataUrl.slice(commaIdx + 1));
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mime || "application/octet-stream" }));
-    window.open(blobUrl, "_blank");
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    return URL.createObjectURL(new Blob([bytes], { type: mime || "application/octet-stream" }));
   } catch {
+    return null;
+  }
+}
+
+export function viewAndDownloadFile(dataUrl: string) {
+  const blobUrl = dataUrlToBlobUrl(dataUrl);
+  if (!blobUrl) {
     // Fallback kalau data URI-nya tidak terduga formatnya -- lebih baik coba apa adanya
     // (mungkin masih kena blokir, tapi tidak lebih buruk dari sebelumnya) daripada diam saja.
     window.open(dataUrl, "_blank");
+    return;
   }
+  window.open(blobUrl, "_blank");
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+}
+
+/** Item revisi 2026-09-08 (bug fix "Bukti Pembayaran tidak bisa diklik"): buka tab kosong
+ *  SEKARANG, secara SINKRON di dalam onClick handler -- SEBELUM `await` Server Action apa pun --
+ *  supaya browser masih menganggap tab ini "dipicu langsung oleh klik user". `window.open()`
+ *  yang dipanggil SETELAH `await` (mis. fetch bukti pembayaran on-demand karena datanya sengaja
+ *  tidak ikut snapshot awal, lihat getInvoicePaymentProofAction/getMaterialClaimPhotoAction)
+ *  kehilangan status "user gesture" itu di browser modern dan DIAM-DIAM diblokir popup blocker --
+ *  inilah sebabnya tombol "Bukti Pembayaran"/"Bukti Klaim" kelihatan seperti tidak melakukan
+ *  apa-apa waktu diklik, padahal fetch-nya sendiri sukses. Isi tab ini belakangan lewat
+ *  `fillPreviewWindow` begitu data selesai di-fetch. */
+export function openPreviewWindow(): Window | null {
+  return window.open("", "_blank");
+}
+
+/** Isi tab yang SUDAH dibuka (dari `openPreviewWindow`, dipanggil SEBELUM await) dengan file
+ *  hasil fetch on-demand. Kalau `win` null (jarang -- tetap diblokir meski sudah dicoba lebih
+ *  awal, mis. browser yang memblokir SEMUA popup tanpa kecuali), fallback ke
+ *  `viewAndDownloadFile` biasa -- masih mungkin diblokir, tapi tidak lebih buruk dari sebelumnya. */
+export function fillPreviewWindow(win: Window | null, dataUrl: string) {
+  if (!win) {
+    viewAndDownloadFile(dataUrl);
+    return;
+  }
+  const blobUrl = dataUrlToBlobUrl(dataUrl);
+  if (!blobUrl) {
+    win.location.href = dataUrl;
+    return;
+  }
+  win.location.href = blobUrl;
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
 }
 
 /** Ukuran string base64 APA ADANYA (1 karakter base64 = 1 byte ASCII di payload yang benar-benar

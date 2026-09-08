@@ -435,9 +435,18 @@ export function PayingVoucherWizard({
               <div className="font-sans text-[10px] text-text-muted">Remark</div>
               <input value={b.remark} onChange={(e) => updateAddBuy(b.id, { remark: e.target.value })} className="input mt-0.5" />
             </div>
-            <Button onClick={() => removeAddBuy(b.id)} variant="danger" size="xs">
-              Hapus
-            </Button>
+            {/* Item revisi 2026-09-08 (owner: "Buat ukuran button Hapus sama ukurannya dengan
+                kotak input") -- dulu Button ini langsung di grid tanpa div pembungkus/label
+                seperti 6 kolom lain, jadi `items-end` menyejajarkan ke bawah tapi tombolnya
+                sendiri (size="xs") jauh lebih pendek dari `.input`. Dibungkus + label spacer
+                kosong (biar ikut didorong turun sama seperti kolom lain) + size="md" + w-full
+                supaya tinggi & lebarnya sama persis dengan kotak input di sebelahnya. */}
+            <div>
+              <div className="font-sans text-[10px] text-text-muted">&nbsp;</div>
+              <Button onClick={() => removeAddBuy(b.id)} variant="danger" size="md" className="mt-0.5 w-full">
+                Hapus
+              </Button>
+            </div>
           </div>
         ))}
       </div>

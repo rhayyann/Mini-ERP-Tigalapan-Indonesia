@@ -2168,6 +2168,12 @@ export async function closeProductionBatchAction(batchId: string, fgSizeQty: Rec
   const { data: meta } = await db.from("production_group_meta").select("fg_confirmed_at").eq("group_key", groupKey).maybeSingle();
   if (meta?.fg_confirmed_at) throw new Error(`Grup ${batch.warna} · ${batch.lengan} sudah "Selesai Produksi" — tidak bisa menutup roll baru di grup ini.`);
 
+  // Replace (bukan tambah) -- hapus dulu baris progres yang mungkin sudah tersimpan dari
+  // "Simpan progres" (saveFgProgressAction, di bawah) sebelum roll ini ditutup, supaya tidak
+  // menumpuk baris duplikat per size (production_batch_fg_sizes tidak punya unique constraint
+  // per size, murni riwayat insert -- lihat catatan sama di saveFgProgressAction).
+  const { error: delErr } = await db.from("production_batch_fg_sizes").delete().eq("production_batch_id", batchId);
+  if (delErr) throw new Error(delErr.message);
   const rows = Object.entries(fgSizeQty).filter(([, qty]) => qty > 0);
   if (rows.length > 0) {
     const { error: sizeErr } = await db.from("production_batch_fg_sizes").insert(rows.map(([size, qty]) => ({ production_batch_id: batchId, size, qty })));
@@ -2194,6 +2200,36 @@ export async function closeProductionBatchAction(batchId: string, fgSizeQty: Rec
   if (rows.length > 0) await db.from("production_result_sizes").insert(rows.map(([size, qty]) => ({ production_result_id: resultId, size, qty })));
 
   await maybeAdvanceMaklonToDelivery(batch.mrp_id, batch.vendor_produksi);
+}
+
+/** Item revisi 2026-09-08 (owner: "apa tidak bisa untuk saat input misal hari ini berapa terus
+ *  simpan nanti akan tersave... akan lanjut lagi untuk memenuhi target") -- simpan progres FG 1
+ *  roll TANPA menutup roll (beda dari closeProductionBatchAction yang final, set `closed_at` &
+ *  mencatat `production_results`/`production_result_sizes` buat riwayat/reject). Sebelum ini
+ *  draft qty per size MURNI React state di browser (fgSizeDraft di production-result-panel.tsx)
+ *  -- hilang begitu refresh/pindah halaman, jadi kalau 1 roll butuh beberapa hari untuk selesai
+ *  dikerjakan, progres hari-hari sebelumnya tidak pernah benar2 tersimpan. Sekarang tersimpan ke
+ *  production_batch_fg_sizes betulan, dibaca lagi sebagai draft awal begitu grup dibuka ulang
+ *  (lihat production-result-panel.tsx). */
+export async function saveFgProgressAction(batchId: string, sizeQty: Record<string, number>): Promise<void> {
+  await requireVendorSession();
+  const db = supabaseServer();
+  const { data: batch } = await db.from("production_batches").select("id,cutting_at,closed_at").eq("id", batchId).single();
+  if (!batch) throw new Error("Roll tidak ditemukan.");
+  if (!batch.cutting_at) throw new Error("Roll ini belum dicutting — isi Hasil Cutting dulu di tab Cutting.");
+  if (batch.closed_at) throw new Error("Roll ini sudah ditutup — tidak bisa diubah lagi.");
+
+  // Replace (bukan tambah) -- hapus dulu baris progres LAMA batch ini sebelum insert yang baru,
+  // supaya "Simpan progres" berkali-kali tidak menumpuk baris duplikat per size (tabel ini tidak
+  // punya unique constraint per size, murni riwayat insert -- lihat catatan sama di
+  // closeProductionBatchAction).
+  const { error: delErr } = await db.from("production_batch_fg_sizes").delete().eq("production_batch_id", batchId);
+  if (delErr) throw new Error(delErr.message);
+  const rows = Object.entries(sizeQty).filter(([, qty]) => qty > 0);
+  if (rows.length > 0) {
+    const { error: insErr } = await db.from("production_batch_fg_sizes").insert(rows.map(([size, qty]) => ({ production_batch_id: batchId, size, qty })));
+    if (insErr) throw new Error(insErr.message);
+  }
 }
 
 export async function submitProductionResultAction(input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; kind: "FG" | "REJECT"; sizeQty: Record<string, number>; note?: string }): Promise<void> {

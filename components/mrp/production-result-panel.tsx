@@ -90,12 +90,21 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
   // Revisi 2026-09-07 (HPP per roll) -- "Tutup Roll" per ProductionBatch (roll), lihat
   // closeProductionBatchAction. Menggantikan input size bebas per grup untuk kind="FG".
   const closeProductionBatch = useMrpStore((s) => s.closeProductionBatch);
+  // Revisi 2026-09-08 -- "Simpan progres" (belum menutup roll), lihat saveFgProgressAction.
+  const saveFgProgress = useMrpStore((s) => s.saveFgProgress);
 
   const [selectedMrpId, setSelectedMrpId] = useState("");
   const [expandedGroupKey, setExpandedGroupKey] = useState("");
   // Qty FG aktual per roll, keyed by ProductionBatch id -> { size: qty } -- prefill dari
-  // batch.sizeQty (hasil cutting AKTUAL roll itu) begitu grup di-expand, lihat toggleGroup.
+  // batch.fgSizeQty (progres yang sudah "Simpan progres" sebelumnya) atau batch.sizeQty (hasil
+  // cutting AKTUAL roll itu, kalau belum pernah disimpan) begitu grup di-expand, lihat toggleGroup.
   const [fgSizeDraft, setFgSizeDraft] = useState<Record<string, Record<string, number>>>({});
+  // Item revisi 2026-09-08 (owner: "apa tidak bisa juga inputnya nanti itu by size dari totalan?
+  // ... outputnya nanti bisa tetap ditracking per roll") -- input total per size di level grup,
+  // MURNI client-side (cuma mengisi fgSizeDraft di atas begitu "Isi ke roll" diklik), TIDAK
+  // langsung menyimpan ke server -- roll TETAP sumber kebenaran, tetap di-review/Simpan/Tutup
+  // satu-satu seperti biasa. Lihat distributeSizeTotals di bawah.
+  const [sizeTotalDraft, setSizeTotalDraft] = useState<Record<string, number>>({});
   const [expandedPoId, setExpandedPoId] = useState("");
   // Bug fix (2026-09-06): confirmFgDone/undoFgConfirm dulu dipanggil fire-and-forget (tanpa
   // .catch) -- kalau server menolak (mis. baseline hasil cutting dikira kosong, lihat fix di
@@ -128,6 +137,7 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
     } else {
       setExpandedGroupKey(key);
       setFgSizeDraft({});
+      setSizeTotalDraft({});
     }
   }
 
@@ -358,19 +368,86 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                       <div className="border-b border-[#CFE0EF] bg-info-bg p-4">
                         <div className="mb-2.5 font-sans text-[11px] leading-[1.5] text-info-fg">
                           Revisi 2026-09-07: Finish Good sekarang dicatat PER ROLL (bukan lagi total bebas per warna/lengan) — supaya HPP bisa ditelusuri sampai ke
-                          roll bahan baku yang tepat. Isi qty FG aktual tiap roll (default = hasil cutting roll itu sendiri), lalu <b>Tutup Roll</b> begitu final.
-                          &quot;Selesai Produksi&quot; grup ini baru aktif setelah SEMUA roll ditutup.
+                          roll bahan baku yang tepat. Isi qty FG aktual tiap roll (default = progres tersimpan terakhir, atau hasil cutting roll itu kalau belum
+                          pernah diisi), lalu <b>Simpan progres</b> kapan saja (bisa dilanjut lagi nanti) atau <b>Tutup Roll</b> begitu final. &quot;Selesai
+                          Produksi&quot; grup ini baru aktif setelah SEMUA roll ditutup.
                         </div>
                         {groupBatches.length === 0 && (
                           <div className="rounded-md border border-[#CFE0EF] bg-white px-3 py-3 text-center font-sans text-[11.5px] text-text-muted">
                             Belum ada roll tercutting untuk grup ini.
                           </div>
                         )}
+                        {(() => {
+                          // Item revisi 2026-09-08 (owner: "apa tidak bisa juga inputnya nanti itu
+                          // by size dari totalan? ... outputnya nanti bisa tetap ditracking per
+                          // roll") -- union size dari roll yang MASIH TERBUKA saja (roll yang sudah
+                          // ditutup FG-nya final, tidak ikut jadi target auto-isi).
+                          const openBatches = groupBatches.filter((b) => !b.closedAt);
+                          const sizesOpen = Array.from(new Set(openBatches.flatMap((b) => Object.keys(b.sizeQty ?? {}))));
+                          if (openBatches.length === 0 || sizesOpen.length === 0) return null;
+                          function distributeSizeTotals() {
+                            setFgSizeDraft((prev) => {
+                              const next = { ...prev };
+                              for (const size of sizesOpen) {
+                                const total = sizeTotalDraft[size];
+                                if (total == null) continue; // size yang tidak diisi di sini tidak disentuh draft roll-nya
+                                let sisa = total;
+                                for (const b of openBatches) {
+                                  const rollTarget = b.sizeQty ?? {};
+                                  const capacity = rollTarget[size] ?? 0;
+                                  if (capacity <= 0) continue;
+                                  const isi = Math.max(0, Math.min(sisa, capacity));
+                                  const draftBefore = next[b.id] ?? b.fgSizeQty ?? rollTarget;
+                                  next[b.id] = { ...draftBefore, [size]: isi };
+                                  sisa -= isi;
+                                }
+                              }
+                              return next;
+                            });
+                          }
+                          const totalCapacity: Record<string, number> = {};
+                          for (const size of sizesOpen) totalCapacity[size] = openBatches.reduce((a, b) => a + (b.sizeQty?.[size] ?? 0), 0);
+                          const overflow = sizesOpen.filter((size) => (sizeTotalDraft[size] ?? 0) > totalCapacity[size]);
+                          return (
+                            <div className="mb-3 overflow-hidden rounded-md border border-[#A8C5DF] bg-white">
+                              <div className="border-b border-[#EEF1F4] bg-[#F7F9FB] px-3 py-2 font-sans text-[11px] font-semibold text-[#31414F]">
+                                Isi cepat by size — otomatis dibagi ke roll yang masih terbuka (roll pertama diisi penuh dulu)
+                              </div>
+                              <div className="flex flex-wrap items-end gap-3 px-3 py-2.5">
+                                {sizesOpen.map((size) => (
+                                  <div key={size} className="flex flex-col">
+                                    <span className="whitespace-nowrap font-sans text-[10px] font-medium text-text-muted">
+                                      {size} <span className="text-[9px]">(maks {totalCapacity[size]})</span>
+                                    </span>
+                                    <NumberInput
+                                      value={sizeTotalDraft[size] ?? 0}
+                                      decimals={0}
+                                      onChange={(v) => setSizeTotalDraft((prev) => ({ ...prev, [size]: v }))}
+                                      className="input mt-1 w-[92px] text-right"
+                                    />
+                                  </div>
+                                ))}
+                                <Button onClick={distributeSizeTotals} variant="accent" size="sm">
+                                  Isi ke roll →
+                                </Button>
+                              </div>
+                              {overflow.length > 0 && (
+                                <div className="border-t border-[#F0DFC2] bg-warning-bg px-3 py-1.5 font-sans text-[10.5px] text-warning-fg">
+                                  Size {overflow.join(", ")} melebihi kapasitas roll terbuka — kelebihannya tidak ikut terisi ke roll mana pun.
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                         <div className="flex flex-col gap-3">
                           {groupBatches.map((b) => {
                             const rollTarget = b.sizeQty ?? {};
                             const isClosed = !!b.closedAt;
-                            const draft = fgSizeDraft[b.id] ?? rollTarget;
+                            // Draft awal: progres yang SUDAH tersimpan (b.fgSizeQty, dari "Simpan
+                            // progres" sebelumnya) -- fallback ke hasil cutting (rollTarget) HANYA
+                            // kalau roll ini belum pernah disimpan sama sekali.
+                            const savedOrTarget = b.fgSizeQty && Object.keys(b.fgSizeQty).length > 0 ? b.fgSizeQty : rollTarget;
+                            const draft = fgSizeDraft[b.id] ?? savedOrTarget;
                             const totalTarget = Object.values(rollTarget).reduce((a, c) => a + c, 0);
                             const totalDraft = Object.values(draft).reduce((a, c) => a + (c || 0), 0);
                             // Item revisi 2026-09-08 (owner: "tampilan UI-nya sangat tidak presisi
@@ -391,9 +468,24 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                                   {isClosed ? (
                                     <StatusPill tone="success">Roll ditutup</StatusPill>
                                   ) : (
-                                    <Button onClick={() => runAction(b.id, closeProductionBatch(b.id, draft))} disabled={isPending(b.id)} variant="primary" size="xs">
-                                      {isPending(b.id) ? "Menutup…" : `Tutup Roll (${totalDraft})`}
-                                    </Button>
+                                    <span className="flex items-center gap-1.5">
+                                      <Button
+                                        onClick={() => runAction(b.id + "-save", saveFgProgress(b.id, draft))}
+                                        disabled={isPending(b.id + "-save") || isPending(b.id)}
+                                        variant="accent"
+                                        size="xs"
+                                      >
+                                        {isPending(b.id + "-save") ? "Menyimpan…" : "Simpan progres"}
+                                      </Button>
+                                      <Button
+                                        onClick={() => runAction(b.id, closeProductionBatch(b.id, draft))}
+                                        disabled={isPending(b.id) || isPending(b.id + "-save")}
+                                        variant="primary"
+                                        size="xs"
+                                      >
+                                        {isPending(b.id) ? "Menutup…" : `Tutup Roll (${totalDraft})`}
+                                      </Button>
+                                    </span>
                                   )}
                                 </div>
                                 <div className="flex flex-wrap gap-3 px-3 py-2.5">
@@ -411,7 +503,7 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                                         <NumberInput
                                           value={draft[size] ?? tQty}
                                           decimals={0}
-                                          onChange={(v) => setFgSizeDraft((prev) => ({ ...prev, [b.id]: { ...(prev[b.id] ?? rollTarget), [size]: v } }))}
+                                          onChange={(v) => setFgSizeDraft((prev) => ({ ...prev, [b.id]: { ...(prev[b.id] ?? savedOrTarget), [size]: v } }))}
                                           className="input mt-1 w-[92px] text-right"
                                         />
                                       )}
