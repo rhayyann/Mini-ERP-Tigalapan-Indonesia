@@ -41,7 +41,7 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
   // sama sekali sebelum ini): pola sama seperti submitResting di production-cutting-tab.tsx.
   const [submitting, setSubmitting] = useState(false);
 
-  const mrpIds = mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults);
+  const mrpIds = mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults, productionGroupMeta);
   // Grup yang sudah "Selesai Produksi" dikunci (lihat markProductionGroupDoneAction) -- tidak
   // ditampilkan lagi sebagai baris "sisa reject" yang bisa di-rework, supaya tidak mengarahkan
   // vendor ke aksi yang pasti akan ditolak server (buka kunci dulu di tab Final Produksi kalau
@@ -109,7 +109,7 @@ export function ProductionReworkTab({ vendorId }: { vendorId: string }) {
           {mrpIds.map((id) => (
             <option key={id} value={id}>
               {id}
-              {pendingMarker(countRemainingRejectGroupsForMrp(id, vendorId, productionBatches, productionResults), "warna/lengan ada sisa reject")}
+              {pendingMarker(countRemainingRejectGroupsForMrp(id, vendorId, productionBatches, productionResults, productionGroupMeta), "warna/lengan ada sisa reject")}
             </option>
           ))}
         </select>

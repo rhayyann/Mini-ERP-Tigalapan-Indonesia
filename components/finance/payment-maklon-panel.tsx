@@ -137,7 +137,7 @@ export function PaymentMaklonPanel() {
     },
     {
       key: "dueDate",
-      label: "Due Date",
+      label: "Tanggal Pembayaran",
       default: true,
       render: (inv) => (
         <span onClick={(e) => e.stopPropagation()}>

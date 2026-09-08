@@ -36,7 +36,7 @@ function ProductionContent({ vendorId }: { vendorId: string }) {
   // Reject SENGAJA baru badge begitu Finish Good sudah mulai dilaporkan untuk grup itu — sebelum
   // ada input FG sama sekali, belum ada dasar bilang ada reject (lihat catatan di badges.ts).
   const rejectBadge = countRejectActionableGroups(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails);
-  const reworkBadge = countRemainingRework(vendorId, productionBatches, productionResults);
+  const reworkBadge = countRemainingRework(vendorId, productionBatches, productionResults, productionGroupMeta);
   const finalBadge = countProductionFinalReady(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails);
 
   const TABS: { key: Tab; label: string; badge: number }[] = [

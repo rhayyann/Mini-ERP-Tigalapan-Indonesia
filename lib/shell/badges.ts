@@ -129,11 +129,12 @@ export function countVendorProduksiActionable(
   productionBatches: ProductionBatch[],
   productionResults: ProductionResult[],
   invoices: RawMaterialInvoice[],
+  productionGroupMeta: ProductionGroupMeta[],
   claimDicts: ClaimResolutionDicts = {}
 ): number {
   const awaitingWeigh = pendingWeighRollsCount(vendorId, invoices, productionBatches, undefined, claimDicts);
   const awaitingCuttingUpdate = productionBatches.filter((b) => b.vendorProduksi === vendorId && !b.cuttingAt).length;
-  const mrpWithRemainingReject = mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults).length;
+  const mrpWithRemainingReject = mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults, productionGroupMeta).length;
   return awaitingWeigh + awaitingCuttingUpdate + mrpWithRemainingReject;
 }
 
@@ -237,6 +238,9 @@ export function countFgShortfallGroupsForMrp(
  *  reject-nya baru benar-benar dihitung & tersimpan di titik itu -- lihat confirmFgDoneAction)
  *  DAN masih ada sisa reject yang belum dirework/dibuang ke sisa. Sebelum fg-confirmed, belum ada
  *  dasar bilang "reject perlu ditindak" -- angkanya belum tersimpan sama sekali. */
+// BUG FIX (2026-09-09, live-verified): begitu grup dikunci Final Produksi (`g.done`), sisa reject
+// yang tercatat memang sudah tidak bisa ditindak lagi (rework ditolak server begitu doneAt
+// terisi) -- jadi tidak lagi dihitung "perlu aksi" di sini, sama seperti mrpIdsWithRemainingReject.
 export function countRejectActionableGroups(
   vendorId: string,
   productionBatches: ProductionBatch[],
@@ -244,7 +248,7 @@ export function countRejectActionableGroups(
   productionGroupMeta: ProductionGroupMeta[],
   mrpDetails: MrpDetail[]
 ): number {
-  return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails).filter((g) => g.fgConfirmed && g.sisaReject > 0).length;
+  return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails).filter((g) => g.fgConfirmed && !g.done && g.sisaReject > 0).length;
 }
 
 /** Item 3.2 — scoping 1 MRP dari countRejectActionableGroups di atas, dipakai marker dropdown
@@ -257,7 +261,7 @@ export function countRejectActionableGroupsForMrp(
   productionGroupMeta: ProductionGroupMeta[],
   mrpDetails: MrpDetail[]
 ): number {
-  return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails, mrpId).filter((g) => g.fgConfirmed && g.sisaReject > 0).length;
+  return productionGroupGaps(vendorId, productionBatches, productionResults, productionGroupMeta, mrpDetails, mrpId).filter((g) => g.fgConfirmed && !g.done && g.sisaReject > 0).length;
 }
 
 /** Roll dengan alert yield <99% yang belum ditindaklanjuti — badge menu Yield Alert (portal
@@ -270,18 +274,36 @@ export function countProductionYieldUnresolved(
   return productionYieldAlertsList(productionBatches, mrpDetails, productionYieldResolutions).filter((r) => !r.resolved).length;
 }
 
-/** MRP dengan sisa reject yang belum di-rework — badge tab Rework. */
-export function countRemainingRework(vendorId: string, productionBatches: ProductionBatch[], productionResults: ProductionResult[]): number {
-  return mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults).length;
+/** MRP dengan sisa reject yang belum di-rework — badge tab Rework. Grup yang sudah dikunci Final
+ *  Produksi (`doneAt` terisi) dikecualikan oleh `mrpIdsWithRemainingReject` sendiri (lihat
+ *  catatannya di lib/mrp/derive.ts) — rework memang sudah tidak mungkin lagi untuk grup begitu. */
+export function countRemainingRework(
+  vendorId: string,
+  productionBatches: ProductionBatch[],
+  productionResults: ProductionResult[],
+  productionGroupMeta: ProductionGroupMeta[]
+): number {
+  return mrpIdsWithRemainingReject(vendorId, productionBatches, productionResults, productionGroupMeta).length;
 }
 
 /** Item 3.2 — scoping 1 MRP dari countRemainingRework di atas, dipakai marker dropdown "pilih
  *  MRP" di components/mrp/production-rework-tab.tsx. Beda unit dari counterpart-nya: di sini
  *  dihitung PER warna/lengan yang masih ada sisa reject (bukan per-MRP), sama dengan test di
  *  dalam mrpIdsWithRemainingReject (lihat lib/mrp/derive.ts). */
-export function countRemainingRejectGroupsForMrp(mrpId: string, vendorId: string, productionBatches: ProductionBatch[], productionResults: ProductionResult[]): number {
+export function countRemainingRejectGroupsForMrp(
+  mrpId: string,
+  vendorId: string,
+  productionBatches: ProductionBatch[],
+  productionResults: ProductionResult[],
+  productionGroupMeta: ProductionGroupMeta[]
+): number {
   return cutWarnaLenganGroups(mrpId, vendorId, productionBatches).filter((g) => {
     const groupKey = mrpId + "|" + g.warna + "|" + g.lengan;
+    // BUG FIX (2026-09-09): konsisten dengan mrpIdsWithRemainingReject/countRejectActionableGroups
+    // -- grup yang sudah dikunci Final Produksi tidak lagi dihitung "perlu aksi" di sini juga,
+    // supaya marker dropdown ini tidak nyala sendirian sementara badge tab sudah padam (lihat
+    // catatan "Post-Tester-round-1 fix" di countCuttingAwaitingUpdateForMrp untuk pola yang sama).
+    if (productionGroupMeta.find((m) => m.groupKey === groupKey)?.doneAt) return false;
     const sisaReject = Object.values(cumulativeSizeQtyForGroup(groupKey, "REJECT", productionResults)).reduce((a, b) => a + b, 0);
     return sisaReject > 0;
   }).length;
