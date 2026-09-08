@@ -12,6 +12,7 @@ import {
   invoiceCategoryLabel,
   invoiceProductionStatus,
   invoiceYieldSummary,
+  koliBreakdownForLine,
   maklonPoInvoiceLockedBy,
   mrpMetaFor,
   productionYieldByWarna,
@@ -70,6 +71,10 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
   const [expandedInvoiceId, setExpandedInvoiceId] = useState("");
   const [expandedMrpKey, setExpandedMrpKey] = useState("");
   const [expandedWarnaKey, setExpandedWarnaKey] = useState("");
+  // Item feedback 2026-09-09 ("Vendor bisa klik detail nanti data per row untuk lihat detail qty
+  // per nomor koli di warna itu") -- expand baris eligible di tabel "Create Invoice" untuk lihat
+  // rincian per koli pengiriman.
+  const [expandedEligibleKey, setExpandedEligibleKey] = useState("");
 
   function toggleLine(key: string, maxQty: number) {
     setSelected((prev) => {
@@ -134,7 +139,7 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
             {lockedByMaklonCount} baris disembunyikan — sudah ditagih via Invoice Maklon (per PO).
           </div>
         )}
-        <div className="grid grid-cols-8 gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
+        <div className="grid grid-cols-9 gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
           <span />
           <span>No MRP</span>
           <span>Kategori</span>
@@ -143,6 +148,7 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
           <span className="text-right">Sudah dikirim, belum diinvoice</span>
           <span className="text-right">Qty diinvoice</span>
           <span className="text-right">Harga maklon / pc</span>
+          <span />
         </div>
         {eligible.length === 0 && (
           <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">
@@ -153,41 +159,70 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
           const key = lineKey(mrpId, warna, lengan, usia);
           const checked = selected.has(key);
           const mrp = mrpMetaFor(mrpId, mrpDetails, staticMrps);
+          const eligibleExpanded = expandedEligibleKey === key;
+          const koliRows = eligibleExpanded ? koliBreakdownForLine(mrpId, warna, lengan, usia, vendorId, deliveryKolis) : [];
           return (
-            <div key={key} className="grid grid-cols-8 items-center gap-x-3 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0">
-              <button
-                onClick={() => toggleLine(key, uninvoicedQty)}
-                className={"h-3.5 w-3.5 flex-none rounded-[3px] border " + (checked ? "border-accent-blue bg-accent-blue" : "border-[#B8C4D0]")}
-              />
-              <span className="font-mono">{mrpId}</span>
-              <span>{invoiceCategoryLabel(mrp, usia)}</span>
-              <span>{warna}</span>
-              <span>{lengan}</span>
-              <span className="text-right font-mono">{formatPcs(uninvoicedQty)}</span>
-              <span className="flex justify-end">
-                {checked ? (
-                  <NumberInput
-                    value={qtyByLine[key] ?? 0}
-                    decimals={0}
-                    onChange={(v) => setQtyByLine((prev) => ({ ...prev, [key]: Math.max(0, Math.min(v, uninvoicedQty)) }))}
-                    className="input w-[100px] text-right"
-                  />
-                ) : (
-                  "—"
-                )}
-              </span>
-              <span className="flex justify-end">
-                {checked ? (
-                  <NumberInput
-                    value={rateByLine[key] ?? 0}
-                    decimals={0}
-                    onChange={(v) => setRateByLine((prev) => ({ ...prev, [key]: Math.max(0, v) }))}
-                    className="input w-[110px] text-right"
-                  />
-                ) : (
-                  "—"
-                )}
-              </span>
+            <div key={key} className="border-b border-[#F1F4F7] last:border-b-0">
+              <div className="grid grid-cols-9 items-center gap-x-3 px-4 py-[11px] font-sans text-xs text-[#31414F]">
+                <button
+                  onClick={() => toggleLine(key, uninvoicedQty)}
+                  className={"h-3.5 w-3.5 flex-none rounded-[3px] border " + (checked ? "border-accent-blue bg-accent-blue" : "border-[#B8C4D0]")}
+                />
+                <span className="font-mono">{mrpId}</span>
+                <span>{invoiceCategoryLabel(mrp, usia)}</span>
+                <span>{warna}</span>
+                <span>{lengan}</span>
+                <span className="text-right font-mono">{formatPcs(uninvoicedQty)}</span>
+                <span className="flex justify-end">
+                  {checked ? (
+                    <NumberInput
+                      value={qtyByLine[key] ?? 0}
+                      decimals={0}
+                      onChange={(v) => setQtyByLine((prev) => ({ ...prev, [key]: Math.max(0, Math.min(v, uninvoicedQty)) }))}
+                      className="input w-[100px] text-right"
+                    />
+                  ) : (
+                    "—"
+                  )}
+                </span>
+                <span className="flex justify-end">
+                  {checked ? (
+                    <NumberInput
+                      value={rateByLine[key] ?? 0}
+                      decimals={0}
+                      onChange={(v) => setRateByLine((prev) => ({ ...prev, [key]: Math.max(0, v) }))}
+                      className="input w-[110px] text-right"
+                    />
+                  ) : (
+                    "—"
+                  )}
+                </span>
+                <span className="text-right">
+                  <button onClick={() => setExpandedEligibleKey(eligibleExpanded ? "" : key)} className="font-sans text-[11px] font-semibold text-action-primary">
+                    {eligibleExpanded ? "Sembunyikan" : "Detail →"}
+                  </button>
+                </span>
+              </div>
+              {eligibleExpanded && (
+                <div className="bg-[#FAFBFC] px-6 py-3">
+                  <div className="grid grid-cols-3 gap-2 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                    <span>No Koli</span>
+                    <span>Tanggal Kirim</span>
+                    <span className="text-right">Qty</span>
+                  </div>
+                  {koliRows.length === 0 ? (
+                    <div className="py-2 font-sans text-[11.5px] text-text-muted">Tidak ada data koli.</div>
+                  ) : (
+                    koliRows.map((k) => (
+                      <div key={k.koliId} className="grid grid-cols-3 items-center gap-2 border-t border-[#F1F4F7] py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                        <span className="font-mono">{k.noKoli}</span>
+                        <span className="font-mono">{k.deliveredAt ? formatDate(k.deliveredAt) : "—"}</span>
+                        <span className="text-right font-mono">{formatPcs(k.qty)}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

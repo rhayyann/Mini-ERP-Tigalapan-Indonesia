@@ -91,7 +91,7 @@ export default function FinanceLaporanHppPage() {
   // ekspedisi seperti sebelumnya) per baris invoice yang grupnya belum py roll ber-closedAt (MRP
   // lama, sebelum fitur ini ada), jadi histori tidak hilang/kosong.
   const rows: HppTableRow[] = relevantInvoices.flatMap((inv) =>
-    hppRowsForInvoicePerRoll(inv, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis).map((r, i) => ({
+    hppRowsForInvoicePerRoll(inv, relevantInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis).map((r, i) => ({
       ...r,
       rowId: inv.id + "-" + i,
     }))
