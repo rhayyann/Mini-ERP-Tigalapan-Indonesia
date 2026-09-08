@@ -397,6 +397,20 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                             totalCapacity[size] = openBatches.reduce((a, b) => a + Math.max(0, (b.sizeQty?.[size] ?? 0) - (b.fgSizeQty?.[size] ?? 0)), 0);
                           }
                           const overflow = sizesOpen.filter((size) => (sizeTotalDraft[size] ?? 0) > totalCapacity[size]);
+                          // BUG FIX (ditemukan lewat live-test): fallback awal HARUS ikutkan
+                          // SEMUA size roll itu (persisted kalau ada, else full target) -- sama
+                          // persis `savedOrTarget` yang dipakai kartu roll di bawah. Sebelumnya
+                          // fallback ke `b.fgSizeQty ?? {}` doang -- untuk roll yang BELUM PERNAH
+                          // disimpan (fgSizeQty kosong), `touched[b.id]` jadi cuma berisi size yang
+                          // disentuh quicksave INI SAJA (mis. cuma {M: 45}) -- size lain (mis. XL)
+                          // yang di kartu roll TERLIHAT terisi angka target (fallback tampilan
+                          // `draft[size] ?? tQty`) diam-diam TIDAK IKUT TERSIMPAN begitu quicksave
+                          // ini menimpa fgSizeDraft roll itu -- risiko kehilangan data kalau
+                          // sesudahnya user langsung klik "Tutup Roll" percaya pada angka yang
+                          // TERLIHAT di layar.
+                          function defaultSizeQtyFor(b: (typeof openBatches)[number]): Record<string, number> {
+                            return b.fgSizeQty && Object.keys(b.fgSizeQty).length > 0 ? b.fgSizeQty : (b.sizeQty ?? {});
+                          }
                           async function saveSizeTotals() {
                             // Distribusi (roll pertama dulu, isi sisa kapasitasnya) LANGSUNG jadi
                             // sizeQty absolute baru per roll yang tersentuh, lalu disimpan
@@ -408,7 +422,7 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                               if (sisa <= 0) continue;
                               for (const b of openBatches) {
                                 if (sisa <= 0) break;
-                                const already = touched[b.id] ?? b.fgSizeQty ?? {};
+                                const already = touched[b.id] ?? defaultSizeQtyFor(b);
                                 const remaining = Math.max(0, (b.sizeQty?.[size] ?? 0) - (already[size] ?? 0));
                                 if (remaining <= 0) continue;
                                 const isi = Math.min(sisa, remaining);
