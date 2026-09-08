@@ -2151,16 +2151,76 @@ export async function startProductionBatchAction(input: { mrpId: string; aduanRo
   if (error) throw new Error(error.message);
 }
 
+/** Item revisi 2026-09-08 (owner: input FG "seperti sebelumnya" -- per size, terakumulasi ke
+ *  target, tiap "Simpan progres" tercatat ke riwayat) -- dipanggil dari saveFgProgressAction DAN
+ *  closeProductionBatchAction supaya SEMUA jalur simpan (per-roll manual maupun quick-fill by
+ *  size di level grup) sama-sama tercatat ke ProductionResult (dibaca FgProgressHistory di
+ *  production-result-panel.tsx, tidak diubah).
+ *
+ *  KENAPA DELTA, bukan insert `newSizeQty` apa adanya: cumulativeSizeQtyForGroup (progress bar,
+ *  target reject, HPP) MENJUMLAHKAN SEMUA baris production_results kind FG per groupKey -- kalau
+ *  tiap "Simpan progres" insert FULL qty, lalu roll itu akhirnya ditutup dan insert FULL qty lagi,
+ *  angkanya dobel. `batch.fg_logged_snapshot` (migration 0022) adalah baseline "apa yang sudah
+ *  tercatat ke riwayat" per roll -- cuma SELISIH (delta positif) sejak baseline itu yang di-log
+ *  sebagai baris baru, lalu baseline di-update ke `newSizeQty`.
+ *
+ *  Note format HARUS PERSIS `"Roll " + (codeRoll ?? batchId)` (sama utk delta antara maupun
+ *  final) -- isRollClosureResult (derive.ts) mengecualikan baris dgn prefix ini dari pool
+ *  shippable "Isi Koli" (fix PR #37: roll yang belum ditutup tidak boleh kelihatan shippable).
+ *  Baris ini TETAP ikut kehitung di cumulativeSizeQtyForGroup (progress bar/reject) -- basis
+ *  shippable roll murni ProductionBatch.closedAt, tidak disentuh di sini. */
+async function logFgProgressDelta(
+  db: SupabaseClient,
+  batch: { id: string; mrp_id: string; vendor_produksi: string; warna: string; lengan: string; code_roll: string | null; fg_logged_snapshot: Record<string, number> | null },
+  newSizeQty: Record<string, number>
+): Promise<void> {
+  const baseline = batch.fg_logged_snapshot ?? {};
+  const sizes = new Set([...Object.keys(baseline), ...Object.keys(newSizeQty)]);
+  const deltaRows = Array.from(sizes)
+    .map((size) => [size, (newSizeQty[size] ?? 0) - (baseline[size] ?? 0)] as const)
+    .filter(([, delta]) => delta > 0);
+
+  if (deltaRows.length > 0) {
+    const groupKey = `${batch.mrp_id}|${batch.warna}|${batch.lengan}`;
+    const { data: maklon } = await db.from("maklon_pos").select("id").eq("mrp_id", batch.mrp_id).eq("vendor_produksi", batch.vendor_produksi).maybeSingle();
+    const resultId = await nextReadableId("PR");
+    const { error: resultErr } = await db.from("production_results").insert({
+      id: resultId,
+      group_key: groupKey,
+      mrp_id: batch.mrp_id,
+      vendor_produksi: batch.vendor_produksi,
+      po_id: maklon?.id ?? "",
+      warna: batch.warna,
+      lengan: batch.lengan,
+      kind: "FG",
+      recorded_at: nowIso(),
+      note: `Roll ${batch.code_roll ?? batch.id}`,
+    });
+    if (resultErr) throw new Error(resultErr.message);
+    const { error: sizeErr } = await db.from("production_result_sizes").insert(deltaRows.map(([size, qty]) => ({ production_result_id: resultId, size, qty })));
+    if (sizeErr) throw new Error(sizeErr.message);
+  }
+  // Baseline SELALU diupdate ke nilai baru (termasuk kalau ada size yang justru berkurang/koreksi
+  // -- tidak di-log sebagai riwayat negatif, cukup baseline-nya turun) supaya delta berikutnya
+  // dihitung dari kondisi TERKINI, bukan angka lama.
+  const { error: baselineErr } = await db.from("production_batches").update({ fg_logged_snapshot: newSizeQty }).eq("id", batch.id);
+  if (baselineErr) throw new Error(baselineErr.message);
+}
+
 /** "Tutup Roll" (HPP per roll, migration 0020) -- kunci hasil Finish Good AKTUAL 1 roll SPESIFIK
  *  (fgSizeQty, tabel baru production_batch_fg_sizes -- beda dari production_batch_sizes yang itu
- *  TARGET cutting), lalu DUAL-WRITE 1 ProductionResult kind FG (groupKey warna+lengan, note "Roll
- *  {codeRoll}") persis pola submitProductionResultAction di bawah -- supaya semua alur lama yang
- *  baca pool production_results (tab Reject/Rework, badge, "Selesai Produksi" tahap 1/2, Pengiriman
- *  Rework) tetap jalan tanpa disentuh sama sekali. Lihat plan HPP per roll untuk desain lengkap. */
+ *  TARGET cutting), lalu log ke riwayat lewat logFgProgressDelta (di atas) -- supaya semua alur
+ *  lama yang baca pool production_results (tab Reject/Rework, badge, "Selesai Produksi" tahap 1/2,
+ *  Pengiriman Rework) tetap jalan tanpa disentuh sama sekali. Lihat plan HPP per roll untuk desain
+ *  lengkap. */
 export async function closeProductionBatchAction(batchId: string, fgSizeQty: Record<string, number>): Promise<void> {
   await requireVendorSession();
   const db = supabaseServer();
-  const { data: batch } = await db.from("production_batches").select("id,mrp_id,vendor_produksi,warna,lengan,code_roll,cutting_at,closed_at").eq("id", batchId).single();
+  const { data: batch } = await db
+    .from("production_batches")
+    .select("id,mrp_id,vendor_produksi,warna,lengan,code_roll,cutting_at,closed_at,fg_logged_snapshot")
+    .eq("id", batchId)
+    .single();
   if (!batch) throw new Error("Roll tidak ditemukan.");
   if (!batch.cutting_at) throw new Error("Roll ini belum dicutting — isi Hasil Cutting dulu di tab Cutting.");
   if (batch.closed_at) return;
@@ -2182,22 +2242,9 @@ export async function closeProductionBatchAction(batchId: string, fgSizeQty: Rec
   const { error } = await db.from("production_batches").update({ closed_at: today() }).eq("id", batchId);
   if (error) throw new Error(error.message);
 
-  const { data: maklon } = await db.from("maklon_pos").select("id").eq("mrp_id", batch.mrp_id).eq("vendor_produksi", batch.vendor_produksi).maybeSingle();
-  const resultId = await nextReadableId("PR");
-  const { error: resultErr } = await db.from("production_results").insert({
-    id: resultId,
-    group_key: groupKey,
-    mrp_id: batch.mrp_id,
-    vendor_produksi: batch.vendor_produksi,
-    po_id: maklon?.id ?? "",
-    warna: batch.warna,
-    lengan: batch.lengan,
-    kind: "FG",
-    recorded_at: nowIso(),
-    note: `Roll ${batch.code_roll ?? batchId}`,
-  });
-  if (resultErr) throw new Error(resultErr.message);
-  if (rows.length > 0) await db.from("production_result_sizes").insert(rows.map(([size, qty]) => ({ production_result_id: resultId, size, qty })));
+  // Log ke riwayat -- HANYA delta yang belum pernah tercatat (mis. dari "Simpan progres"
+  // sebelumnya), bukan `fgSizeQty` penuh lagi -- lihat catatan panjang di logFgProgressDelta.
+  await logFgProgressDelta(db, batch, fgSizeQty);
 
   await maybeAdvanceMaklonToDelivery(batch.mrp_id, batch.vendor_produksi);
 }
@@ -2214,15 +2261,24 @@ export async function closeProductionBatchAction(batchId: string, fgSizeQty: Rec
 export async function saveFgProgressAction(batchId: string, sizeQty: Record<string, number>): Promise<void> {
   await requireVendorSession();
   const db = supabaseServer();
-  const { data: batch } = await db.from("production_batches").select("id,cutting_at,closed_at").eq("id", batchId).single();
+  const { data: batch } = await db
+    .from("production_batches")
+    .select("id,mrp_id,vendor_produksi,warna,lengan,code_roll,cutting_at,closed_at,fg_logged_snapshot")
+    .eq("id", batchId)
+    .single();
   if (!batch) throw new Error("Roll tidak ditemukan.");
   if (!batch.cutting_at) throw new Error("Roll ini belum dicutting — isi Hasil Cutting dulu di tab Cutting.");
   if (batch.closed_at) throw new Error("Roll ini sudah ditutup — tidak bisa diubah lagi.");
 
+  // Log ke riwayat DULU (delta terhadap fg_logged_snapshot) -- lihat catatan panjang di
+  // logFgProgressDelta -- baru replace production_batch_fg_sizes, supaya kalau insert riwayat
+  // gagal, state tersimpan (fg_logged_snapshot & production_batch_fg_sizes) tidak sempat berubah.
+  await logFgProgressDelta(db, batch, sizeQty);
+
   // Replace (bukan tambah) -- hapus dulu baris progres LAMA batch ini sebelum insert yang baru,
   // supaya "Simpan progres" berkali-kali tidak menumpuk baris duplikat per size (tabel ini tidak
-  // punya unique constraint per size, murni riwayat insert -- lihat catatan sama di
-  // closeProductionBatchAction).
+  // punya unique constraint per size, murni snapshot nilai TERKINI -- beda dari production_results
+  // yang murni riwayat delta, lihat logFgProgressDelta).
   const { error: delErr } = await db.from("production_batch_fg_sizes").delete().eq("production_batch_id", batchId);
   if (delErr) throw new Error(delErr.message);
   const rows = Object.entries(sizeQty).filter(([, qty]) => qty > 0);
