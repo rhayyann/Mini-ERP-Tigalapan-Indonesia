@@ -2393,6 +2393,15 @@ async function fetchProductionScopeForMrp(
       cuttingAt: b.cutting_at ?? undefined,
       createdAt: b.created_at,
       codeRoll: b.code_roll ?? undefined,
+      // BUG FIX (2026-09-09, owner: "Selesai Produksi" SELALU gagal dengan error "Tutup semua
+      // roll grup ini dulu" walau semua roll sudah benar-benar "Tutup Roll"): `closedAt` dulu
+      // TIDAK PERNAH dipetakan di sini sama sekali -- padahal `select("*")` di atas SUDAH ikut
+      // `closed_at`, cuma tidak pernah dibaca ke object yang di-return. Akibatnya guard
+      // `groupBatches.some((b) => !b.closedAt)` di confirmFgDoneAction SELALU true (closedAt
+      // selalu undefined di sini), jadi "Selesai Produksi" tidak akan PERNAH bisa berhasil sejak
+      // guard itu ditambahkan (item 9, PR #38) -- lubang ini sudah ada dari situ, bukan regresi
+      // dari perubahan sesi ini.
+      closedAt: b.closed_at ?? undefined,
       // Pola sama persis dengan lib/mrp/repo/snapshot.ts -- undefined (bukan {}) kalau belum ada
       // hasil aduan sama sekali, supaya `!b.sizeQty` di actualCutSizesForGroup (derive.ts) tetap
       // konsisten membedakan "belum diisi" vs "diisi tapi semua size kebetulan 0".

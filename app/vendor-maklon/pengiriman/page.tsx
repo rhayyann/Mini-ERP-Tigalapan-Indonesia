@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { VendorAuthGuard } from "@/components/mrp/vendor-auth-guard";
 import { useMrpStore } from "@/lib/mrp/store";
 import { usePendingActions } from "@/lib/mrp/usePendingActions";
-import { availableFgToShip, closedUnshippedRollsForMrp, ekspedisiPrice, formatDate, formatDecimal, formatRupiah, mrpIdsWithUnpackedFg } from "@/lib/mrp/derive";
+import { availableFgToShip, closedUnshippedRollsForMrp, ekspedisiPrice, formatDate, formatDecimal, formatRupiah, mrpIdsWithClosedRolls, mrpIdsWithUnpackedFg } from "@/lib/mrp/derive";
 import { countPengirimanPendingForMrp, pendingMarker } from "@/lib/shell/badges";
 import { EKSPEDISI_LIST, VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { AvailableFgRow } from "@/lib/mrp/derive";
@@ -89,7 +89,12 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   const setKoliWeight = useMrpStore((s) => s.setKoliWeight);
   const markKoliDelivered = useMrpStore((s) => s.markKoliDelivered);
 
-  const mrpIds = mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs);
+  // BUG FIX (2026-09-09): union dengan mrpIdsWithClosedRolls -- lihat catatan panjang di
+  // definisinya (lib/mrp/derive.ts). Tanpa ini, MRP yang FG-nya semua lewat jalur "Tutup Roll"
+  // (paling umum sekarang) tidak akan pernah muncul di dropdown ini sama sekali.
+  const mrpIds = Array.from(
+    new Set([...mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs), ...mrpIdsWithClosedRolls(vendorId, productionBatches, deliveryKolis, maklonPOs)])
+  );
 
   const [mrpId, setMrpId] = useState("");
   const [noKoli, setNoKoli] = useState("");

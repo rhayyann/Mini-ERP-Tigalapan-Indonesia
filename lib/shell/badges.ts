@@ -8,6 +8,7 @@ import {
   invoiceFullyArrived,
   maklonPoInvoiceLockedBy,
   materialClaimsList,
+  mrpIdsWithClosedRolls,
   mrpIdsWithRemainingReject,
   mrpIdsWithUnpackedFg,
   pendingWeighRollsCount,
@@ -341,9 +342,16 @@ export function countVendorPengirimanReady(
   productionResults: ProductionResult[],
   deliveryKolis: DeliveryKoli[],
   productionGroupMeta: ProductionGroupMeta[],
-  maklonPOs: MaklonPO[]
+  maklonPOs: MaklonPO[],
+  productionBatches: ProductionBatch[]
 ): number {
-  return mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs).length;
+  // BUG FIX (2026-09-09): union dengan mrpIdsWithClosedRolls -- lihat catatan panjang di
+  // definisinya (lib/mrp/derive.ts). Tanpa ini, badge sidebar Pengiriman tidak pernah naik untuk
+  // MRP yang FG-nya semua lewat jalur "Tutup Roll" (paling umum sekarang).
+  return new Set([
+    ...mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs),
+    ...mrpIdsWithClosedRolls(vendorId, productionBatches, deliveryKolis, maklonPOs),
+  ]).size;
 }
 
 // Item 20: Reject bukan lagi shippable -- source cuma FG & REWORK, sama seperti mrpIdsWithUnpackedFg.

@@ -2066,6 +2066,23 @@ export function mrpIdsWithUnpackedFg(
   );
 }
 
+/** BUG FIX (2026-09-09, owner: "kenapa yang finish good dan sudah selesai produksi itu tidak
+ *  masuk datanya ke halaman pengiriman?"): `mrpIdsWithUnpackedFg` di atas (basis dropdown "Pilih
+ *  MRP" DAN badge sidebar Pengiriman) cuma baca `availableFgToShip`/`fgProducedBySize`, yang
+ *  SENGAJA mengecualikan hasil roll (`isRollClosureResult`, fix PR #37 -- roll yang belum ditutup
+ *  tidak boleh shippable lewat pool umum). Basis shippable UTAMA sejak fitur "HPP per roll"
+ *  (migration 0020) justru `closedUnshippedRollsForMrp` (murni `ProductionBatch.closedAt`) --
+ *  tapi fungsi itu TIDAK PERNAH diikutkan ke `mrpIdsWithUnpackedFg`. Akibatnya: MRP yang SEMUA
+ *  FG-nya lewat jalur roll (paling umum sekarang) tidak akan PERNAH muncul di dropdown/badge
+ *  Pengiriman -- roll-nya sendiri sebenarnya sudah shippable, cuma MRP-nya tidak pernah bisa
+ *  dipilih karena tidak pernah kelihatan. Dipakai di-UNION dengan `mrpIdsWithUnpackedFg` di kedua
+ *  pemanggilnya (pengiriman/page.tsx & lib/shell/badges.ts), bukan menggantikannya -- MRP dengan
+ *  rework/sisa FG lama (jalur pool umum) tetap harus ikut muncul juga. */
+export function mrpIdsWithClosedRolls(vendorProduksi: string, batches: ProductionBatch[], deliveryKolis: DeliveryKoli[], maklonPOs: MaklonPO[]): string[] {
+  const candidateMrpIds = Array.from(new Set(batches.filter((b) => b.vendorProduksi === vendorProduksi && b.closedAt).map((b) => b.mrpId)));
+  return candidateMrpIds.filter((mrpId) => closedUnshippedRollsForMrp(mrpId, vendorProduksi, batches, deliveryKolis, maklonPOs).length > 0);
+}
+
 export type DeliveredQtyRow = { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; qty: number };
 
 function invoiceLineKey(mrpId: string, warna: string, lengan: Lengan, usia?: Usia): string {
