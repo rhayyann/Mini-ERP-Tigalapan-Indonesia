@@ -242,6 +242,8 @@ type FlowActions = {
   submitProductionResult: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; kind: "FG" | "REJECT"; sizeQty: Record<string, number>; note?: string }) => Promise<void>;
   /** "Tutup Roll" (HPP per roll) -- lihat closeProductionBatchAction di lib/mrp/actions.ts. */
   closeProductionBatch: (batchId: string, fgSizeQty: Record<string, number>) => Promise<void>;
+  /** "Simpan progres" (belum menutup roll) -- lihat saveFgProgressAction di lib/mrp/actions.ts. */
+  saveFgProgress: (batchId: string, sizeQty: Record<string, number>) => Promise<void>;
   createDeliveryKoli: (input: {
     mrpId: string;
     vendorProduksi: string;
@@ -793,6 +795,10 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   },
   closeProductionBatch: async (batchId, fgSizeQty) => {
     await actions.closeProductionBatchAction(batchId, fgSizeQty);
+    backgroundRefresh();
+  },
+  saveFgProgress: async (batchId, sizeQty) => {
+    await actions.saveFgProgressAction(batchId, sizeQty);
     backgroundRefresh();
   },
   createDeliveryKoli: async (input) => {

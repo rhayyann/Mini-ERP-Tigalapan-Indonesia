@@ -16,12 +16,23 @@ import type { RawMaterialInvoice } from "@/lib/mrp/types";
 // material, tidak ada kontrol upload di sisi Procurement.
 import { getInvoicePaymentProofAction } from "@/lib/mrp/actions";
 // Revisi 2026-09-06: preview+download konsisten di semua modul -- lihat komentar di file ini.
-import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
+// Revisi 2026-09-08 (bug fix popup blocked): openPreviewWindow/fillPreviewWindow -- lihat
+// catatan panjang di lib/mrp/clientFiles.ts.
+import { viewAndDownloadFile, openPreviewWindow, fillPreviewWindow } from "@/lib/mrp/clientFiles";
 
 async function viewPaymentProof(invoiceId: string) {
-  const proof = await getInvoicePaymentProofAction(invoiceId);
-  if (!proof) return;
-  viewAndDownloadFile(proof.dataUrl);
+  const win = openPreviewWindow();
+  try {
+    const proof = await getInvoicePaymentProofAction(invoiceId);
+    if (!proof) {
+      win?.close();
+      return;
+    }
+    fillPreviewWindow(win, proof.dataUrl);
+  } catch (err) {
+    win?.close();
+    throw err;
+  }
 }
 
 /** Panel "Invoice Material" — konten diekstrak dari halaman lama Paying Voucher (Invoice)

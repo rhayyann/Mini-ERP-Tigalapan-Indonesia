@@ -25,7 +25,9 @@ import type { RawMaterialInvoice } from "@/lib/mrp/types";
 // "Lihat bukti".
 import { getInvoicePaymentProofAction } from "@/lib/mrp/actions";
 // Revisi 2026-09-06: preview+download konsisten di semua modul -- lihat komentar di file ini.
-import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
+// Revisi 2026-09-08 (bug fix popup blocked): openPreviewWindow/fillPreviewWindow -- lihat
+// catatan panjang di lib/mrp/clientFiles.ts.
+import { viewAndDownloadFile, openPreviewWindow, fillPreviewWindow } from "@/lib/mrp/clientFiles";
 
 // Round-2 fix (Tester bug 2): batas HARUS dicek pada ukuran hasil ENCODE base64, bukan
 // `file.size` mentah -- base64 menggembungkan ukuran kira-kira +33%, jadi file 1.5 MB mentah jadi
@@ -52,9 +54,18 @@ function dataUrlEncodedBytes(dataUrl: string): number {
 const MAX_PROOF_ENCODED_BYTES = 1.5 * 1024 * 1024; // batas ASLI hasil-encode -- margin ~500 KB di bawah limit 2 MB body Server Action
 
 async function viewPaymentProof(invoiceId: string) {
-  const proof = await getInvoicePaymentProofAction(invoiceId);
-  if (!proof) return;
-  viewAndDownloadFile(proof.dataUrl);
+  const win = openPreviewWindow();
+  try {
+    const proof = await getInvoicePaymentProofAction(invoiceId);
+    if (!proof) {
+      win?.close();
+      return;
+    }
+    fillPreviewWindow(win, proof.dataUrl);
+  } catch (err) {
+    win?.close();
+    throw err;
+  }
 }
 
 /** Panel "Payment" (material) — konten diekstrak dari halaman lama /finance/payment,

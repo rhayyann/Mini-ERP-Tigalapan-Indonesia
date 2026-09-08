@@ -14,12 +14,23 @@ import type { Lengan, RawMaterialInvoice } from "@/lib/mrp/types";
 // pembayaran TETAP fetch on-demand (getInvoicePaymentProofAction, sekarang juga mengizinkan
 // vendor tujuan invoice-nya sendiri -- lihat lib/mrp/actions.ts).
 import { getInvoicePaymentProofAction } from "@/lib/mrp/actions";
-import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
+// Revisi 2026-09-08 (bug fix popup blocked): openPreviewWindow/fillPreviewWindow -- lihat
+// catatan panjang di lib/mrp/clientFiles.ts.
+import { viewAndDownloadFile, openPreviewWindow, fillPreviewWindow } from "@/lib/mrp/clientFiles";
 
 async function viewPaymentProof(invoiceId: string) {
-  const proof = await getInvoicePaymentProofAction(invoiceId);
-  if (!proof) return;
-  viewAndDownloadFile(proof.dataUrl);
+  const win = openPreviewWindow();
+  try {
+    const proof = await getInvoicePaymentProofAction(invoiceId);
+    if (!proof) {
+      win?.close();
+      return;
+    }
+    fillPreviewWindow(win, proof.dataUrl);
+  } catch (err) {
+    win?.close();
+    throw err;
+  }
 }
 
 const REMARK_BY_STATUS: Record<string, string> = {

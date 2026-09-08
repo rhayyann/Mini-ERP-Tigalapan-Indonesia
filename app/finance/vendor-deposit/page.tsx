@@ -11,7 +11,9 @@ import { formatDateTime, formatRupiah, vendorDepositBalance, vendorDepositEntrie
 // snapshot (payload PDF/foto besar) -- fetch on-demand saat tombol diklik, pola SAMA seperti
 // payment-panel.tsx (viewPaymentProof) & material-claims/page.tsx (viewClaimPhoto).
 import { getInvoicePaymentProofAction, getMaterialClaimPhotoAction } from "@/lib/mrp/actions";
-import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
+// Revisi 2026-09-08 (bug fix popup blocked): openPreviewWindow/fillPreviewWindow -- lihat
+// catatan panjang di lib/mrp/clientFiles.ts.
+import { viewAndDownloadFile, openPreviewWindow, fillPreviewWindow } from "@/lib/mrp/clientFiles";
 import type { RawMaterialInvoice, VendorDepositEntry } from "@/lib/mrp/types";
 
 /** `sourceClaimId` disimpan dgn format yang sama seperti key klaim di seluruh app
@@ -47,15 +49,33 @@ function relevantContextFor(e: VendorDepositEntry, invoices: RawMaterialInvoice[
 }
 
 async function viewBuktiTransfer(invoiceId: string) {
-  const proof = await getInvoicePaymentProofAction(invoiceId);
-  if (!proof) return;
-  viewAndDownloadFile(proof.dataUrl);
+  const win = openPreviewWindow();
+  try {
+    const proof = await getInvoicePaymentProofAction(invoiceId);
+    if (!proof) {
+      win?.close();
+      return;
+    }
+    fillPreviewWindow(win, proof.dataUrl);
+  } catch (err) {
+    win?.close();
+    throw err;
+  }
 }
 
 async function viewBuktiKlaim(claimKey: string) {
-  const photo = await getMaterialClaimPhotoAction(claimKey);
-  if (!photo) return;
-  viewAndDownloadFile(photo.dataUrl);
+  const win = openPreviewWindow();
+  try {
+    const photo = await getMaterialClaimPhotoAction(claimKey);
+    if (!photo) {
+      win?.close();
+      return;
+    }
+    fillPreviewWindow(win, photo.dataUrl);
+  } catch (err) {
+    win?.close();
+    throw err;
+  }
 }
 
 type SupplierDepositRow = { supplier: string; balance: number; entryCount: number };

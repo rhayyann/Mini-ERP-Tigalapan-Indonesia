@@ -166,13 +166,28 @@ export default function MaterialTrackingPage() {
   // Dibatasi ke 6 kolom default (+ No. MRP di firstColumn = 7 total) — sebelumnya 10 kolom
   // sekaligus nyala bikin tabel penuh & baris jadi bertumpuk-tumpuk (3 kolom tanggal terpisah,
   // dsb). Sisanya tetap bisa dinyalakan lewat "Kolom" kalau perlu audit detail per tanggal.
+  // Item revisi 2026-09-08 (owner: "kasih sama urutan kolom untuk [Roll Diterima] dan [Status]"
+  // -- dikonfirmasi via AskUserQuestion): "Roll Diterima" (dulu posisi ke-4) direname jadi
+  // "Status Material (Roll)" & dipindah ke tepat SEBELUM "Status" (posisi terakhir) supaya kedua
+  // kolom terkait status ini bersebelahan, bukan terpisah jauh seperti sebelumnya. `key` internal
+  // TETAP "rollDiterima" (cuma label & posisi yang berubah) -- render function tidak disentuh.
   const columns: ColumnDef<TrackingRow>[] = [
     { key: "noPo", label: "No PO", default: true, render: (r) => <span className="font-mono font-medium">{r.poId}</span> },
     { key: "supplierVendor", label: "Supplier → Vendor", default: true, render: (r) => r.supplierVendor },
     { key: "roll", label: "Roll", default: true, align: "right", render: (r) => r.roll },
+    { key: "nilai", label: "Nilai", default: true, align: "right", render: (r) => (r.nilai != null ? formatRupiah(r.nilai) : "—") },
+    { key: "warna", label: "Warna", default: true, render: (r) => r.warna },
+    { key: "entitas", label: "Entitas", default: false, render: (r) => r.entitas },
+    { key: "kodeTransaksi", label: "Kode Transaksi", default: false, render: (r) => <span className="font-mono">{r.kodeTransaksi ?? "—"}</span> },
+    { key: "tglMrp", label: "Tanggal MRP", default: false, render: (r) => formatDate(r.tglMrp) },
+    { key: "tglInvoice", label: "Tanggal Invoice", default: false, render: (r) => formatDate(r.tglInvoice) },
+    { key: "tglPayment", label: "Tanggal Payment", default: false, render: (r) => formatDate(r.tglPayment) },
+    { key: "tglDelivery", label: "Tanggal Delivery", default: false, render: (r) => formatDate(r.tglDelivery) },
+    { key: "tglReceiving", label: "Tanggal Receiving", default: false, render: (r) => formatDate(r.tglReceiving) },
+    { key: "tglProduksi", label: "Tanggal Proses Produksi", default: false, render: (r) => formatDate(r.tglProduksi) },
     {
       key: "rollDiterima",
-      label: "Roll Diterima",
+      label: "Status Material (Roll)",
       default: true,
       align: "right",
       render: (r) => {
@@ -188,16 +203,6 @@ export default function MaterialTrackingPage() {
         );
       },
     },
-    { key: "nilai", label: "Nilai", default: true, align: "right", render: (r) => (r.nilai != null ? formatRupiah(r.nilai) : "—") },
-    { key: "warna", label: "Warna", default: true, render: (r) => r.warna },
-    { key: "entitas", label: "Entitas", default: false, render: (r) => r.entitas },
-    { key: "kodeTransaksi", label: "Kode Transaksi", default: false, render: (r) => <span className="font-mono">{r.kodeTransaksi ?? "—"}</span> },
-    { key: "tglMrp", label: "Tanggal MRP", default: false, render: (r) => formatDate(r.tglMrp) },
-    { key: "tglInvoice", label: "Tanggal Invoice", default: false, render: (r) => formatDate(r.tglInvoice) },
-    { key: "tglPayment", label: "Tanggal Payment", default: false, render: (r) => formatDate(r.tglPayment) },
-    { key: "tglDelivery", label: "Tanggal Delivery", default: false, render: (r) => formatDate(r.tglDelivery) },
-    { key: "tglReceiving", label: "Tanggal Receiving", default: false, render: (r) => formatDate(r.tglReceiving) },
-    { key: "tglProduksi", label: "Tanggal Proses Produksi", default: false, render: (r) => formatDate(r.tglProduksi) },
     {
       key: "status",
       label: "Status",

@@ -17,12 +17,23 @@ import { getMaterialClaimPhotoAction } from "@/lib/mrp/actions";
 // Revisi 2026-09-06: viewAndDownloadFile sekarang dipakai bareng di semua modul (Procurement/
 // Finance/Vendor Produksi) untuk preview+download file -- fungsi ini sebelumnya dipakai jadi
 // acuan pola-nya (lihat lib/mrp/clientFiles.ts), sekarang ditarik jadi satu fungsi bersama.
-import { viewAndDownloadFile } from "@/lib/mrp/clientFiles";
+// Revisi 2026-09-08 (bug fix popup blocked): openPreviewWindow/fillPreviewWindow -- lihat
+// catatan panjang di lib/mrp/clientFiles.ts.
+import { openPreviewWindow, fillPreviewWindow } from "@/lib/mrp/clientFiles";
 
 async function viewClaimPhoto(claimKey: string) {
-  const photo = await getMaterialClaimPhotoAction(claimKey);
-  if (!photo) return;
-  viewAndDownloadFile(photo.dataUrl);
+  const win = openPreviewWindow();
+  try {
+    const photo = await getMaterialClaimPhotoAction(claimKey);
+    if (!photo) {
+      win?.close();
+      return;
+    }
+    fillPreviewWindow(win, photo.dataUrl);
+  } catch (err) {
+    win?.close();
+    throw err;
+  }
 }
 
 function BuktiFotoCell({ claimKey, hasPhoto }: { claimKey: string; hasPhoto: boolean }) {
