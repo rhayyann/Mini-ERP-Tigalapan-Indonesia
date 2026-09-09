@@ -247,24 +247,49 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
     });
   }
 
-  const activeStages: string[] = ["PARTIAL_WAITING_MATERIAL", "FULL_WAITING_MATERIAL", "PRODUCTION", "PARTIAL_PRODUCTION"];
-  const readyMrpIds = maklonPOs
-    .filter((p) => p.vendorProduksi === vendorId && p.approved && activeStages.includes(p.status) && materialReceivedForMaklon(p.mrpId, vendorId, invoices))
-    .map((p) => p.mrpId);
-  const readyMrps = mrpDetails.filter((d) => readyMrpIds.includes(d.mrp.id));
-
-  const selectedDetail = mrpDetails.find((d) => d.mrp.id === selectedMrpId);
-  const aduanRows = (selectedDetail?.aduanRows ?? []).filter((a) => a.vendor === vendorId);
-
   // Item 12/13: 3 daftar terpisah (lihat catatan panjang di derive.ts) -- pendingRows (belum
   // ditimbang/perlu timbang ulang), unconfirmedRows (sudah ditimbang, belum "Konfirmasi"),
-  // confirmedRows (sudah dikonfirmasi, read-only + bisa ajukan claim).
+  // confirmedRows (sudah dikonfirmasi, read-only + bisa ajukan claim). Dipindah ke atas
+  // readyMrpIds (dulu di bawahnya) supaya bisa dipakai fix di bawah.
   const claimDicts = {
     resolutions: materialClaimResolutions,
     returRequests: materialClaimReturRequests,
     returDeliveries: materialClaimReturDeliveries,
     returReceipts: materialClaimReturReceipts,
   };
+
+  const activeStages: string[] = ["PARTIAL_WAITING_MATERIAL", "FULL_WAITING_MATERIAL", "PRODUCTION", "PARTIAL_PRODUCTION"];
+  // BUG FIX (2026-09-09, user-reported: "kenapa hilang list MRP-nya? padahal masih ada beberapa
+  // yang belum saya masukkan ke finish good ... karena ada beberapa roll yang saya masukkan
+  // sampai ke tahap akhir (payment dan invoice)"): status PO maklon bisa auto-advance LEWAT
+  // "PRODUCTION" (maybeAdvanceMaklonToDelivery, lib/mrp/actions.ts) begitu grup warna/lengan yang
+  // SUDAH sempat cutting semuanya mencapai target -- tapi kalau ada roll LAIN untuk MRP yang sama
+  // yang belum sempat ditimbang/di-cutting SAMA SEKALI saat itu terjadi, statusnya tetap pindah
+  // (lihat fix maklonProductionFullyDone di lib/mrp/derive.ts). Begitu status sudah lewat
+  // "PRODUCTION", MRP itu HILANG SELAMANYA dari dropdown ini (basis lama cuma baca status resmi
+  // PO) -- padahal pekerjaan nyata (roll yang belum ditimbang/dicutting) masih ada & masih perlu
+  // diproses vendor di sini. Sekarang MRP TETAP muncul kalau memang masih ada roll yang belum
+  // ditimbang (pendingWeighRolls) ATAU sudah ditimbang tapi belum diisi hasil cutting-nya
+  // (batchNeedsCuttingInput) untuk MRP itu -- terlepas dari status resmi PO-nya.
+  const readyMrpIds = Array.from(
+    new Set(
+      maklonPOs
+        .filter(
+          (p) =>
+            p.vendorProduksi === vendorId &&
+            p.approved &&
+            ((activeStages.includes(p.status) && materialReceivedForMaklon(p.mrpId, vendorId, invoices)) ||
+              pendingWeighRolls(p.mrpId, vendorId, invoices, productionBatches, claimDicts).length > 0 ||
+              productionBatches.some((b) => b.mrpId === p.mrpId && b.vendorProduksi === vendorId && batchNeedsCuttingInput(b)))
+        )
+        .map((p) => p.mrpId)
+    )
+  );
+  const readyMrps = mrpDetails.filter((d) => readyMrpIds.includes(d.mrp.id));
+
+  const selectedDetail = mrpDetails.find((d) => d.mrp.id === selectedMrpId);
+  const aduanRows = (selectedDetail?.aduanRows ?? []).filter((a) => a.vendor === vendorId);
+
   const pendingRows = selectedMrpId ? pendingWeighRolls(selectedMrpId, vendorId, invoices, productionBatches, claimDicts) : [];
   const unconfirmedRows = selectedMrpId ? weighedUnconfirmedRolls(selectedMrpId, vendorId, invoices, productionBatches) : [];
   const confirmedRows = selectedMrpId ? confirmedWeighedRolls(selectedMrpId, vendorId, invoices, productionBatches) : [];
