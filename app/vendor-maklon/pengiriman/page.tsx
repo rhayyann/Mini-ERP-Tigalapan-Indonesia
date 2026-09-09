@@ -93,7 +93,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   // definisinya (lib/mrp/derive.ts). Tanpa ini, MRP yang FG-nya semua lewat jalur "Tutup Roll"
   // (paling umum sekarang) tidak akan pernah muncul di dropdown ini sama sekali.
   const mrpIds = Array.from(
-    new Set([...mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs), ...mrpIdsWithClosedRolls(vendorId, productionBatches, deliveryKolis, maklonPOs)])
+    new Set([...mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs), ...mrpIdsWithClosedRolls(vendorId, productionBatches, deliveryKolis, maklonPOs, productionGroupMeta)])
   );
 
   const [mrpId, setMrpId] = useState("");
@@ -195,7 +195,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   // Revisi 2026-09-07 (HPP per roll) -- roll (ProductionBatch) FG yang sudah "Tutup Roll" & belum
   // masuk koli manapun, untuk MRP yang lagi dipilih di form ini. `editingKoliId` diteruskan supaya
   // roll yang SUDAH ada di koli yang sedang di-edit tetap kelihatan/bisa dipilih.
-  const closedRolls = mrpId ? closedUnshippedRollsForMrp(mrpId, vendorId, productionBatches, deliveryKolis, maklonPOs, editingKoliId ?? undefined) : [];
+  const closedRolls = mrpId ? closedUnshippedRollsForMrp(mrpId, vendorId, productionBatches, deliveryKolis, maklonPOs, productionGroupMeta, editingKoliId ?? undefined) : [];
 
   // Item revisi 2026-09-07 (owner: aksi vendor produksi terasa lambat -- tidak ada tanda loading
   // sama sekali sebelum ini): dulu fungsi ini TIDAK async & TIDAK menunggu createDeliveryKoli/

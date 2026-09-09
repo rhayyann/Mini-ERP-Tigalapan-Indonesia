@@ -372,7 +372,7 @@ export function countVendorPengirimanReady(
   // MRP yang FG-nya semua lewat jalur "Tutup Roll" (paling umum sekarang).
   return new Set([
     ...mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs),
-    ...mrpIdsWithClosedRolls(vendorId, productionBatches, deliveryKolis, maklonPOs),
+    ...mrpIdsWithClosedRolls(vendorId, productionBatches, deliveryKolis, maklonPOs, productionGroupMeta),
   ]).size;
 }
 
