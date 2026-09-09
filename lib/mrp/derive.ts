@@ -1722,7 +1722,23 @@ export function cumulativeSizeQtyForGroup(groupKey: string, kind: ProductionResu
  *  mencapai target qty Finish Good-nya — dipakai untuk auto-advance status PO maklon dari
  *  PRODUCTION ke DELIVERY begitu semua target tercapai (bukan tombol manual lagi). Kalau
  *  belum ada satupun grup yang di-cutting, atau targetnya belum diketahui (mis. aduan pola
- *  belum lengkap), dianggap belum selesai. */
+ *  belum lengkap), dianggap belum selesai.
+ *
+ *  BUG FIX (2026-09-09, user-reported: "kenapa hilang list MRP-nya ... padahal masih ada
+ *  beberapa yang belum saya masukkan ke finish good ... karena ada beberapa roll yang saya
+ *  masukkan sampai ke tahap akhir (payment dan invoice)"): `cutWarnaLenganGroups` di bawah cuma
+ *  mengembalikan grup warna/lengan yang SUDAH py `cuttingAt` -- roll yang MASIH resting (belum
+ *  sempat cutting sama sekali) tidak pernah ikut diperiksa `groups.every(...)`. Akibatnya: begitu
+ *  SEMUA grup yang SUDAH selesai cutting+FG mencapai target (mis. karena sudah dikirim & full
+ *  diinvoice), fungsi ini menganggap PO ini "selesai total" & auto-advance status ke DELIVERY --
+ *  padahal ada roll BARU (baru masuk resting SETELAH grup2 lain kelar) yang belum sempat
+ *  diproses sama sekali. Begitu status PO pindah dari PRODUCTION, MRP ini hilang dari dropdown
+ *  "pilih MRP" di SEMUA tab Produksi (readyMrpIds di masing2 tab cuma terima status PRODUCTION/
+ *  *_WAITING_MATERIAL) -- vendor jadi tidak bisa lagi input apa pun untuk roll baru itu, meski
+ *  datanya sendiri masih kelihatan di tabel "Material dalam produksi" (query terpisah, tidak
+ *  digembok status PO). Fix: roll yang masih resting (belum cuttingAt) untuk mrpId+vendor ini
+ *  membuat fungsi langsung return false (belum selesai), sebelum sempat cuma melihat grup yang
+ *  sudah cutting saja. */
 export function maklonProductionFullyDone(
   mrpId: string,
   vendorProduksi: string,
@@ -1730,6 +1746,9 @@ export function maklonProductionFullyDone(
   batches: ProductionBatch[],
   results: ProductionResult[]
 ): boolean {
+  const hasUncutBatch = batches.some((b) => b.mrpId === mrpId && b.vendorProduksi === vendorProduksi && !b.cuttingAt);
+  if (hasUncutBatch) return false;
+
   const groups = cutWarnaLenganGroups(mrpId, vendorProduksi, batches);
   if (groups.length === 0) return false;
   return groups.every((g) => {
