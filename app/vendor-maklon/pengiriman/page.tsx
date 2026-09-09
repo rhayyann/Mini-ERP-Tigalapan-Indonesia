@@ -498,24 +498,38 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
 
       <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
         <div className="border-b border-border-subtle px-4 py-3 font-sans text-[13px] font-semibold text-text-primary">Riwayat pengiriman</div>
-        <div className="grid grid-cols-6 gap-x-2 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
+        <div className="overflow-x-auto">
+          <div className="min-w-[900px]">
+        <div className="grid grid-cols-7 gap-x-2 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
           <span>No MRP</span>
           <span>No Koli</span>
           <span>Ekspedisi</span>
           <span className="text-right">Berat (kg)</span>
+          <span className="text-right">Ongkir</span>
           <span>Tanggal delivery</span>
           <span>Isi</span>
         </div>
         {delivered.length === 0 && <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">Belum ada koli terkirim.</div>}
         {delivered.map((k) => {
           const isExpanded = expandedKoli.has(k.id);
+          // Item feedback 2026-09-09 ("tambahkan di riwayat pengiriman ... harga ekspedisi yang
+          // dipilih"): harga ekspedisi RIIL yang dipakai koli ini -- sama persis basis yang dipakai
+          // Laporan HPP (hppRowsForInvoicePerRoll, lib/mrp/derive.ts): `ongkirBatch` KALAU vendor
+          // isi manual (nilai riil dari invoice ekspedisi), kalau tidak fallback ke tarif ekspedisi
+          // x berat koli (ekspedisiPrice) -- sama formula dengan "Estimasi ongkir" di tabel "Koli
+          // belum dikirim" di atas, cuma di sini sudah final/terkirim.
+          const ongkir = k.ongkirBatch ?? (k.ekspedisi && (k.beratKoli ?? 0) > 0 ? ekspedisiPrice(k.ekspedisi, k.beratKoli ?? 0) : null);
           return (
             <Fragment key={k.id}>
-              <div className="grid grid-cols-6 items-center gap-x-2 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0">
+              <div className="grid grid-cols-7 items-center gap-x-2 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0">
                 <span className="font-mono">{k.mrpId}</span>
                 <span className="font-mono font-medium">{k.noKoli}</span>
                 <span>{k.ekspedisi}</span>
                 <span className="text-right font-mono">{formatDecimal(k.beratKoli ?? 0)}</span>
+                <span className="text-right font-mono text-[11px]" title={k.ongkirBatch != null ? "Diisi manual (nilai riil invoice ekspedisi)" : "Otomatis: tarif ekspedisi × berat koli"}>
+                  {ongkir != null ? formatRupiah(ongkir) : "—"}
+                  {k.ongkirBatch != null && <span className="text-text-muted"> (manual)</span>}
+                </span>
                 <span className="font-mono text-[11px] text-text-muted">{formatDate(k.deliveredAt)}</span>
                 <button
                   onClick={() => toggleKoliExpanded(k.id)}
@@ -538,6 +552,8 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
             </Fragment>
           );
         })}
+          </div>
+        </div>
       </div>
     </AppShell>
   );
