@@ -2049,19 +2049,36 @@ export function availableFgToShip(
  *  user) -- begitu masuk 1 koli (DeliveryKoli.sourceBatchIds), tidak muncul lagi di sini. Rework
  *  TETAP pakai availableFgToShip pool lama di atas (tidak py roll asal, lihat plan HPP per roll).
  *  `excludeKoliId` sama polanya dengan availableFgToShip -- supaya saat EDIT 1 koli, roll yang
- *  SUDAH ada di koli itu sendiri tetap kelihatan (bukan dianggap "sudah terkirim di koli lain"). */
+ *  SUDAH ada di koli itu sendiri tetap kelihatan (bukan dianggap "sudah terkirim di koli lain").
+ *
+ *  REVISI (2026-09-09, owner: "ubah agar kunci atau close dulu baru bisa dikirim" -- screenshot
+ *  ABU MUDA · PENDEK sudah bisa dipilih di Pengiriman padahal "Selesai Produksi" tahap 1 belum
+ *  diklik sama sekali untuk warna itu): dulu roll langsung shippable begitu ditutup, TANPA peduli
+ *  status grup warna/lengannya -- beda sendiri dari jalur Rework/sisa FG lama (`availableFgToShip`
+ *  di atas) yang SUDAH mewajibkan `fgConfirmedAt` (tahap 1) lebih dulu. Sekarang disamakan: roll
+ *  juga baru shippable setelah grup warna/lengannya "Selesai Produksi" (tahap 1) -- BUKAN tahap 2
+ *  "Final Produksi" (`doneAt`), yang memang bukan gerbang Pengiriman (lihat halaman Final Produksi
+ *  vendor & catatan `mrpIdsWithUnpackedFg`). */
 export function closedUnshippedRollsForMrp(
   mrpId: string,
   vendorProduksi: string,
   batches: ProductionBatch[],
   deliveryKolis: DeliveryKoli[],
   maklonPOs: MaklonPO[],
+  productionGroupMeta: ProductionGroupMeta[],
   excludeKoliId?: string
 ): ProductionBatch[] {
   const maklonPO = maklonPOs.find((p) => p.mrpId === mrpId && p.vendorProduksi === vendorProduksi);
   if (maklonPO?.closedAt) return [];
   const shippedElsewhere = new Set(deliveryKolis.filter((k) => k.id !== excludeKoliId).flatMap((k) => k.sourceBatchIds ?? []));
-  return batches.filter((b) => b.mrpId === mrpId && b.vendorProduksi === vendorProduksi && b.closedAt && !shippedElsewhere.has(b.id));
+  return batches.filter(
+    (b) =>
+      b.mrpId === mrpId &&
+      b.vendorProduksi === vendorProduksi &&
+      b.closedAt &&
+      !shippedElsewhere.has(b.id) &&
+      productionGroupMetaFor(mrpId + "|" + b.warna + "|" + b.lengan, productionGroupMeta)?.fgConfirmedAt
+  );
 }
 
 export function mrpIdsWithUnpackedFg(
@@ -2091,9 +2108,15 @@ export function mrpIdsWithUnpackedFg(
  *  dipilih karena tidak pernah kelihatan. Dipakai di-UNION dengan `mrpIdsWithUnpackedFg` di kedua
  *  pemanggilnya (pengiriman/page.tsx & lib/shell/badges.ts), bukan menggantikannya -- MRP dengan
  *  rework/sisa FG lama (jalur pool umum) tetap harus ikut muncul juga. */
-export function mrpIdsWithClosedRolls(vendorProduksi: string, batches: ProductionBatch[], deliveryKolis: DeliveryKoli[], maklonPOs: MaklonPO[]): string[] {
+export function mrpIdsWithClosedRolls(
+  vendorProduksi: string,
+  batches: ProductionBatch[],
+  deliveryKolis: DeliveryKoli[],
+  maklonPOs: MaklonPO[],
+  productionGroupMeta: ProductionGroupMeta[]
+): string[] {
   const candidateMrpIds = Array.from(new Set(batches.filter((b) => b.vendorProduksi === vendorProduksi && b.closedAt).map((b) => b.mrpId)));
-  return candidateMrpIds.filter((mrpId) => closedUnshippedRollsForMrp(mrpId, vendorProduksi, batches, deliveryKolis, maklonPOs).length > 0);
+  return candidateMrpIds.filter((mrpId) => closedUnshippedRollsForMrp(mrpId, vendorProduksi, batches, deliveryKolis, maklonPOs, productionGroupMeta).length > 0);
 }
 
 export type DeliveredQtyRow = { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; qty: number };
