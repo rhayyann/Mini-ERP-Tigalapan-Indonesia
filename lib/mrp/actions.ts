@@ -1374,7 +1374,16 @@ export async function updateBatchToCuttingAction(batchId: string, cuttingAt: str
     groupKey = `${batchRow.mrp_id}|${batchRow.warna}|${batchRow.lengan}`;
     const { data: meta } = await db.from("production_group_meta").select("fg_confirmed_at,done_at").eq("group_key", groupKey).maybeSingle();
     if (meta?.done_at) {
-      throw new Error(`Grup ${batchRow.warna} · ${batchRow.lengan} sudah "Selesai Produksi" (Final Produksi) -- hasil cutting tidak bisa diedit lagi.`);
+      // BUG FIX (2026-09-09, user-reported: "kenapa tidak bisa input hasil cutting?" -- roll BARU
+      // muncul untuk warna/lengan yang grupnya SUDAH terlanjur dikunci Final Produksi, mis. karena
+      // sebagian sudah sampai tahap payment/invoice sebelum roll baru ini ada, lihat fix
+      // maklonProductionFullyDone/readyMrpIds di lib/mrp/derive.ts & production-cutting-tab.tsx):
+      // dulu pesan ini TIDAK menyebutkan jalan keluarnya (harus "Buka kunci" dulu di Final Produksi)
+      // -- pesan generik begini sendirian juga sempat GAGAL sampai ke user (saveGroup di
+      // production-cutting-tab.tsx tidak menangkap error sama sekali, lihat fix di file itu).
+      throw new Error(
+        `Grup ${batchRow.warna} · ${batchRow.lengan} sudah "Selesai Produksi" (Final Produksi) -- hasil cutting tidak bisa diedit lagi. Buka kunci dulu di tab Final Produksi ("Buka kunci ↺") kalau memang masih ada roll baru untuk warna/lengan ini yang perlu diproses.`
+      );
     }
   }
 
