@@ -2968,16 +2968,63 @@ export function hppRowsForInvoicePerRoll(
 
   // Baris yang grup warna+lengannya belum punya roll ber-closedAt & terkirim sama sekali (MRP
   // lama), ATAU porsi qty yang melebihi pool roll groupKey ini (mis. hasil rework yang tidak
-  // terikat roll manapun) -- fallback ke jalur pool lama APA ADANYA (termasuk denda/reward).
+  // terikat roll manapun) -- fallback ke jalur pool lama APA ADANYA (termasuk denda/reward) untuk
+  // biaya produksi/COGS bahan (TIDAK terpengaruh bug ongkir di bawah, aman dipakai apa adanya).
   if (legacyLines.length > 0) {
     const legacyInv: VendorInvoice = { ...inv, lines: legacyLines };
     const ongkirTotal = autoOngkirForInvoice(legacyInv, deliveryKolis);
     const legacyRows = hppRowsForInvoice(legacyInv, ongkirTotal, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis);
+
+    // BUG FIX (2026-09-09, user-reported): `autoOngkirForInvoice` (dipakai `ongkirTotal` di atas)
+    // menjumlahkan ongkir SEMUA koli milik mrpId ini apa adanya -- benar untuk invoice yang 100%
+    // legacy (tidak ada roll sama sekali), tapi SALAH begitu groupKey-nya JUGA punya baris roll
+    // (kasus baru sejak fix duplikasi HPP di atas): koli yang ongkirnya SUDAH lunas "dipakai" penuh
+    // oleh baris roll (lihat perhitungan roll di atas -- `koliOngkirTotal / totalPcsInKoli` per pc)
+    // ikut kepool lagi di sini, jadi porsi ongkirnya "dibagi ulang" ke baris legacy padahal sudah
+    // kepakai di baris roll -- totalnya jadi TIDAK SAMA dengan jumlah ongkir riil semua koli (live-
+    // verified: Rp 474.000 di Riwayat Pengiriman vendor vs Rp 416.600 di Laporan HPP).
+    //
+    // Fix: hitung ulang ongkir baris legacy per koli, PRORATA berdasar porsi pcs koli itu yang
+    // BUKAN dari roll (`nonRollPcs`) -- bukan exclude-semua-atau-tidak-sama-sekali, supaya kalau
+    // suatu saat 1 koli berisi CAMPURAN item dari roll & item legacy/rework (mungkin lewat "Isi
+    // koli (Rework & sisa FG lama)" di halaman Pengiriman) porsi ongkirnya tetap kebagi benar ke
+    // kedua sisi, bukan hilang atau dobel. Dihitung LANGSUNG dari productionBatches+deliveryKolis
+    // (bukan dari baris roll yang sudah di-emit di atas) supaya TIDAK bergantung invoice mana yang
+    // sedang diproses saat ini -- 1 roll bisa jadi baru diklaim rollPortion-nya oleh invoice LAIN
+    // (lihat alokasi FIFO di atas), jadi baris roll UNTUK roll itu belum tentu ikut ke-emit di
+    // pemanggilan fungsi ini secara khusus, padahal koli-nya tetap harus dianggap "sudah kepakai".
+    // Untuk invoice yang groupKey-nya 100% legacy (tidak ada roll sama sekali), tiap koli terkait
+    // otomatis nonRollPcs = totalPcsInKoli (rollCoveredPcs = 0) -- identik dengan ongkirTotal/
+    // totalPcsInKoli yang sudah dihitung hppRowsForInvoice di atas (no-op, aman).
+    const legacyMrpIds = new Set(legacyLines.map((l) => l.mrpId));
+    const relevantKolis = deliveryKolis.filter((k) => k.vendorProduksi === inv.vendorProduksi && legacyMrpIds.has(k.mrpId));
+    let correctOngkirTotal = 0;
+    let correctTotalPcs = 0;
+    for (const k of relevantKolis) {
+      const totalPcsInKoli = k.items.reduce((s, it) => s + it.qty, 0);
+      if (totalPcsInKoli <= 0) continue;
+      const koliOngkirTotal = k.ongkirBatch ?? ekspedisiPrice(k.ekspedisi, k.beratKoli ?? 0);
+      const rollCoveredPcs = Math.min(
+        totalPcsInKoli,
+        (k.sourceBatchIds ?? []).reduce((s, rollId) => {
+          const roll = productionBatches.find((b) => b.id === rollId);
+          return s + (roll ? Object.values(roll.fgSizeQty ?? {}).reduce((a, b) => a + b, 0) : 0);
+        }, 0)
+      );
+      const nonRollPcs = totalPcsInKoli - rollCoveredPcs;
+      correctOngkirTotal += koliOngkirTotal * (nonRollPcs / totalPcsInKoli);
+      correctTotalPcs += nonRollPcs;
+    }
+    const correctOngkirPerPc = correctTotalPcs > 0 ? correctOngkirTotal / correctTotalPcs : 0;
+
     for (const r of legacyRows) {
       // Kalau groupKey ini SUDAH punya roll (baris roll di atas sudah menampilkan reject bersih
       // untuk grup ini), reject di baris legacy dinolkan supaya tidak dobel-tampil angka net yang
       // sama di 2 baris berbeda -- lihat catatan di atas.
       if (groupKeyHasRolls.get(r.mrpId + "|" + r.warna + "|" + r.lengan)) r.reject = 0;
+      r.hppPerItem = r.hppPerItem - r.ongkirPerItem + correctOngkirPerPc;
+      r.ongkirPerItem = correctOngkirPerPc;
+      r.totalOngkirRow = correctOngkirPerPc * r.fg;
     }
     rows.push(...legacyRows);
   }
