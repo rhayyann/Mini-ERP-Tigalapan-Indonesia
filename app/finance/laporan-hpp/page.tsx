@@ -13,6 +13,8 @@ type HppTableRow = HppRow & { rowId: string };
 type MrpHppSummary = {
   mrpId: string;
   mrpLabel: string;
+  vendorProduksi: string;
+  vendorLabel: string;
   totalFg: number;
   avgHpp: number;
   totalBiayaProduksi: number;
@@ -21,18 +23,22 @@ type MrpHppSummary = {
   itemRows: HppTableRow[];
 };
 
-/** Tabel detail per item untuk 1 MRP — dipakai sebagai isi expand baris MRP (pola sama seperti
- *  dropdown MRP di PPIC/SCM). "Item yang dihitung" mencakup FG maupun Rework — kolom Rework
- *  ditampilkan eksplisit di samping FG (pcs hasil rework yang MENDARAT di lengan/size yang sama
- *  seperti baris invoice aslinya sudah otomatis ikut kehitung sebagai bagian dari FG). */
+/** Tabel detail per item untuk 1 MRP+vendor — dipakai sebagai isi expand baris MRP (pola sama
+ *  seperti dropdown MRP di PPIC/SCM). "Item yang dihitung" mencakup FG maupun Rework — kolom
+ *  Rework ditampilkan eksplisit di samping FG (pcs hasil rework yang MENDARAT di lengan/size yang
+ *  sama seperti baris invoice aslinya sudah otomatis ikut kehitung sebagai bagian dari FG).
+ *  Kolom "Batch Koli" (feedback 2026-09-09: "saya ingin ada ... batch pengiriman") menunjukkan
+ *  koli pengiriman spesifik asal baris ini — kosong untuk baris pool lama (MRP tanpa roll
+ *  tracking sama sekali) yang menggabungkan >1 koli sekaligus, lihat HppRow.noKoli. */
 function MrpHppDetailTable({ rows }: { rows: HppTableRow[] }) {
   return (
     <div className="overflow-x-auto rounded-md border border-[#E4E9EE] bg-white">
-      <table className="w-full min-w-[900px] border-collapse">
+      <table className="w-full min-w-[980px] border-collapse">
         <thead>
           <tr className="border-b border-[#E4E9EE] bg-[#F2F5F8] font-sans text-[10px] font-semibold uppercase tracking-wider text-text-muted">
             <th className="px-3 py-2 text-left">Warna / lengan</th>
             <th className="px-3 py-2 text-left">Item</th>
+            <th className="px-3 py-2 text-left">Batch koli</th>
             <th className="px-3 py-2 text-right">FG</th>
             <th className="px-3 py-2 text-right">Reject</th>
             <th className="px-3 py-2 text-right">Rework</th>
@@ -50,6 +56,7 @@ function MrpHppDetailTable({ rows }: { rows: HppTableRow[] }) {
                 {r.warna} · {r.lengan}
               </td>
               <td className="px-3 py-1.5">{r.item}</td>
+              <td className="px-3 py-1.5 font-mono text-text-muted">{r.noKoli ?? "—"}</td>
               <td className="px-3 py-1.5 text-right font-mono">{formatPcs(r.fg)}</td>
               <td className="px-3 py-1.5 text-right font-mono">{formatPcs(r.reject)}</td>
               <td className="px-3 py-1.5 text-right font-mono text-rework-fg">{formatPcs(r.rework)}</td>
@@ -104,17 +111,34 @@ export default function FinanceLaporanHppPage() {
   const totalHppWeighted = rows.reduce((s, r) => s + r.hppPerItem * r.fg, 0);
   const avgHpp = totalFg > 0 ? totalHppWeighted / totalFg : 0;
 
-  // Restrukturisasi: list MRP dulu (1 baris = 1 MRP, angka teragregasi), klik buat expand ke
-  // tabel detail seluruh item MRP itu — sebelumnya langsung 1 tabel flat semua item semua MRP.
+  // Restrukturisasi: list MRP+vendor dulu (1 baris = 1 MRP+vendor, angka teragregasi), klik buat
+  // expand ke tabel detail seluruh item grup itu — sebelumnya langsung 1 tabel flat semua item
+  // semua MRP. Item feedback 2026-09-09 ("Di PO ini mengakomodir atau mengumpulkan data dari
+  // berbagai vendor produksi kan?"): BENAR -- 1 MRP/PO Produksi bisa dipecah ke lebih dari 1
+  // vendor (lihat aduanRows per warna/lengan, lib/mrp/derive.ts) -- dulu grouping cuma pakai
+  // mrpId, jadi kalau 1 MRP punya >1 vendor angkanya keblend jadi 1 baris tanpa ada cara
+  // membedakan mana punya vendor mana. Sekarang di-group per (mrpId + vendorProduksi).
   const mrpMap = new Map<string, MrpHppSummary>();
   for (const r of rows) {
-    const cur = mrpMap.get(r.mrpId) ?? { mrpId: r.mrpId, mrpLabel: r.mrpLabel, totalFg: 0, avgHpp: 0, totalBiayaProduksi: 0, totalCogsBahan: 0, totalOngkir: 0, itemRows: [] };
+    const key = r.mrpId + "|" + r.vendorProduksi;
+    const cur = mrpMap.get(key) ?? {
+      mrpId: r.mrpId,
+      mrpLabel: r.mrpLabel,
+      vendorProduksi: r.vendorProduksi,
+      vendorLabel: VENDOR_PRODUKSI[r.vendorProduksi]?.name ?? r.vendorProduksi,
+      totalFg: 0,
+      avgHpp: 0,
+      totalBiayaProduksi: 0,
+      totalCogsBahan: 0,
+      totalOngkir: 0,
+      itemRows: [],
+    };
     cur.totalFg += r.fg;
     cur.totalBiayaProduksi += r.biayaProduksiTotal;
     cur.totalCogsBahan += r.cogsBahan;
     cur.totalOngkir += r.totalOngkirRow;
     cur.itemRows.push(r);
-    mrpMap.set(r.mrpId, cur);
+    mrpMap.set(key, cur);
   }
   const mrpRows: MrpHppSummary[] = Array.from(mrpMap.values()).map((m) => {
     const weighted = m.itemRows.reduce((s, r) => s + r.hppPerItem * r.fg, 0);
@@ -122,6 +146,7 @@ export default function FinanceLaporanHppPage() {
   });
 
   const mrpColumns: ColumnDef<MrpHppSummary>[] = [
+    { key: "vendor", label: "Vendor Produksi", default: true, render: (m) => m.vendorLabel },
     { key: "totalFg", label: "Total FG", default: true, align: "right", render: (m) => formatPcs(m.totalFg) },
     { key: "avgHpp", label: "Rata-rata HPP/pc", default: true, align: "right", render: (m) => formatRupiah(m.avgHpp) },
     { key: "biayaProduksi", label: "Total Biaya Produksi", default: true, align: "right", render: (m) => formatRupiah(m.totalBiayaProduksi) },
@@ -149,7 +174,7 @@ export default function FinanceLaporanHppPage() {
         subtitle="Klik baris untuk lihat rincian per item (warna/lengan/size)"
         columns={mrpColumns}
         rows={mrpRows}
-        keyOf={(m) => m.mrpId}
+        keyOf={(m) => m.mrpId + "|" + m.vendorProduksi}
         firstColumnLabel="No. MRP"
         firstColumnRender={(m) => <span className="font-mono">{m.mrpLabel || m.mrpId}</span>}
         renderExpanded={(m) => <MrpHppDetailTable rows={m.itemRows} />}
