@@ -2580,6 +2580,11 @@ function findRawMaterialRollForBatch(batch: ProductionBatch, rawInvoices: RawMat
 
 export type HppRow = {
   invoiceId: string;
+  vendorProduksi: string;
+  /** No koli pengiriman asal baris ini -- diisi kalau baris ini bisa ditelusuri ke SATU koli
+   *  spesifik (baris roll & baris rework baru, lib/mrp/derive.ts hppRowsForInvoicePerRoll).
+   *  Kosong untuk baris pool lama (hppRowsForInvoice) yang menggabungkan >1 koli sekaligus. */
+  noKoli?: string;
   mrpId: string;
   mrpLabel: string;
   warna: string;
@@ -2742,6 +2747,7 @@ export function hppRowsForInvoice(
     const hppPerItem = biayaProduksiPerItem + cogsBahanPerItem + ongkirPerPc;
     return {
       invoiceId: inv.id,
+      vendorProduksi: inv.vendorProduksi,
       mrpId: d.mrpId,
       mrpLabel: d.mrpLabel,
       warna: d.warna,
@@ -2810,7 +2816,26 @@ export function hppRowsForInvoice(
  *  yang sudah dirework. Baris legacy/pool yang muncul BERBARENGAN dengan roll untuk groupKey yang
  *  sama (brace `groupKeyHasRolls`) di-nolkan reject-nya (supaya tidak dobel-tampil angka net yang
  *  sama di 2 baris berbeda — `s.reject` dari hppRowsForInvoice adalah angka GROUP yang identik
- *  dengan yang sudah dijumlah dari netting per-roll) — rework tetap tampil apa adanya di sana. */
+ *  dengan yang sudah dijumlah dari netting per-roll) — rework tetap tampil apa adanya di sana.
+ *
+ *  BUG FIX (2026-09-09, user-reported lewat live screenshot Laporan HPP): qty hasil rework
+ *  ("legacyPortion" di atas) dulu jatuh ke `hppRowsForInvoice`, yang MENYEBAR fg-nya ke SEMUA size
+ *  grup secara proporsional (`lineShare`, heuristik lama) -- padahal size ASLI qty rework itu SUDAH
+ *  DIKETAHUI PERSIS (tercatat di size tujuan rework, `production_results`, DAN di item koli
+ *  pengiriman yang membawanya). Live case: rework 30 pcs size M SEHARUSNYA cuma muncul di size M,
+ *  bukan tersebar ke M/XL/S/2XL. Fix: baris size ASLI dari `production_results` (kind FG, note
+ *  "Rework dari...") diikuti sampai ke KOLI PENGIRIMAN yang membawanya (item `kind==="REWORK"` di
+ *  `deliveryKolis`, size & koli-nya sudah tercatat asli di sana) -- dibangun jadi "rework chunk"
+ *  (paralel dengan "roll chunk" di atas, dialokasikan FIFO lintas-invoice dengan cara yang SAMA),
+ *  jadi baris rework HPP sekarang: (a) size-nya PERSIS sama seperti yang dikirim, (b) tahu koli
+ *  pengiriman asalnya (`noKoli`), (c) COGS bahan = 0 (kain rework itu REJECT dari roll lain yang
+ *  biaya bahannya SUDAH sepenuhnya terserap ke baris FG roll asal itu -- dihitung lagi di sini
+ *  akan dobel-hitung bahan yang sama), (d) ongkir dihitung dari koli SPESIFIK yang membawanya
+ *  (`koliOngkirTotal / totalPcsInKoli`, formula SAMA seperti baris roll -- bukan lagi pool
+ *  campur-semua-koli-mrpId yang jadi akar bug ongkir sebelumnya). `hppRowsForInvoice` (pool lama)
+ *  sekarang HANYA jadi fallback untuk sisa qty yang genuinely tidak ketemu di roll pool ATAUPUN
+ *  rework pool (data lama/anomali) -- seharusnya jarang/tidak pernah kejadian untuk groupKey yang
+ *  sudah pakai roll tracking. */
 export function hppRowsForInvoicePerRoll(
   inv: VendorInvoice,
   allVendorInvoices: VendorInvoice[],
@@ -2827,6 +2852,7 @@ export function hppRowsForInvoicePerRoll(
   const groupKeyHasRolls = new Map<string, boolean>();
 
   type RollChunk = { roll: ProductionBatch; size: string; fgQty: number; cuttingQty: number; rejectQty: number; reworkQty: number };
+  type ReworkChunk = { koli: DeliveryKoli; size: string; usia?: Usia; qty: number };
 
   for (const line of inv.lines) {
     const groupKey = line.mrpId + "|" + line.warna + "|" + line.lengan;
@@ -2861,20 +2887,46 @@ export function hppRowsForInvoicePerRoll(
     const totalRollFgForGroup = chunks.reduce((s, c) => s + c.fgQty, 0);
     groupKeyHasRolls.set(groupKey, totalRollFgForGroup > 0);
 
-    // Berapa banyak pool roll groupKey ini SUDAH diklaim invoice lain yang urutannya lebih dulu.
+    // Chunk kanonik hasil REWORK yang sudah terkirim -- size & koli asalnya diambil LANGSUNG dari
+    // item koli pengiriman (kind==="REWORK", sudah tercatat asli di sana), BUKAN disebar
+    // proporsional lewat heuristik lama (lihat catatan bug fix di atas fungsi). Urutan array
+    // deliveryKolis/k.items sudah deterministik (fix ORDER BY PR #39), jadi alokasi FIFO di bawah
+    // konsisten tiap dipanggil ulang untuk groupKey yang sama.
+    const reworkChunks: ReworkChunk[] = [];
+    for (const k of deliveryKolis) {
+      if (k.vendorProduksi !== inv.vendorProduksi || k.mrpId !== line.mrpId || !k.deliveredAt) continue;
+      for (const it of k.items) {
+        if (it.kind === "REWORK" && it.warna === line.warna && it.lengan === line.lengan && it.qty > 0) {
+          reworkChunks.push({ koli: k, size: it.size, usia: it.usia, qty: it.qty });
+        }
+      }
+    }
+    const totalReworkForGroup = reworkChunks.reduce((s, c) => s + c.qty, 0);
+
+    // Berapa banyak pool (roll DULU, baru rework -- diperlakukan sebagai SATU pool berkelanjutan)
+    // groupKey ini SUDAH diklaim invoice lain yang urutannya lebih dulu.
+    const totalPool = totalRollFgForGroup + totalReworkForGroup;
     const invoicesForGroup = allVendorInvoices
       .filter((o) => o.status !== "REVISION" && o.vendorProduksi === inv.vendorProduksi)
       .flatMap((o) => o.lines.filter((l) => l.mrpId === line.mrpId && l.warna === line.warna && l.lengan === line.lengan).map((l) => ({ invId: o.id, submittedAt: o.submittedAt, qty: l.qty })));
     const priorQty = invoicesForGroup
       .filter((e) => e.submittedAt < inv.submittedAt || (e.submittedAt === inv.submittedAt && e.invId < inv.id))
       .reduce((s, e) => s + e.qty, 0);
-    const before = Math.min(priorQty, totalRollFgForGroup);
-    const after = Math.min(priorQty + line.qty, totalRollFgForGroup);
-    const rollPortion = Math.max(0, after - before);
-    const legacyPortion = line.qty - rollPortion;
+    const before = Math.min(priorQty, totalPool);
+    const after = Math.min(priorQty + line.qty, totalPool);
+    const combinedPortion = Math.max(0, after - before);
+    const trueLegacyPortion = line.qty - combinedPortion;
 
-    if (legacyPortion > 0) legacyLines.push({ ...line, qty: legacyPortion });
-    if (rollPortion <= 0) continue;
+    if (trueLegacyPortion > 0) legacyLines.push({ ...line, qty: trueLegacyPortion });
+    if (combinedPortion <= 0) continue;
+
+    // Dalam window [before,after) gabungan, pisahkan lagi jadi porsi roll (ruang
+    // [0,totalRollFgForGroup)) dan porsi rework (ruang [totalRollFgForGroup,totalPool), digeser
+    // -totalRollFgForGroup supaya reworkChunks bisa di-slice dengan basis 0 yang sama seperti chunks).
+    const rollBefore = Math.min(before, totalRollFgForGroup);
+    const rollAfter = Math.min(after, totalRollFgForGroup);
+    const reworkBefore = Math.max(0, before - totalRollFgForGroup);
+    const reworkAfter = Math.max(0, after - totalRollFgForGroup);
 
     const mrp = mrpMetaFor(line.mrpId, mrpDetails, staticMrps);
     const meta = productionGroupMetaFor(groupKey, productionGroupMeta);
@@ -2883,15 +2935,15 @@ export function hppRowsForInvoicePerRoll(
     const statusLabel = status ? (status.label === "DELAY" ? "Delay" : status.label === "ONTIME" ? "Ontime" : "Lebih Cepat") : "—";
     const jumlahRoll = productionBatches.filter((b) => b.mrpId === line.mrpId && b.warna === line.warna && b.lengan === line.lengan).reduce((s, b) => s + b.qtyRoll, 0);
 
-    // Ambil chunk pada rentang qty [before, after) -- kalau batas jatuh di tengah 1 chunk, chunk
-    // itu dipecah proporsional (qty & turunannya diskalakan takeQty/fgQty, rate PER PC tidak
-    // berubah).
+    // Ambil chunk roll pada rentang qty [rollBefore, rollAfter) -- kalau batas jatuh di tengah 1
+    // chunk, chunk itu dipecah proporsional (qty & turunannya diskalakan takeQty/fgQty, rate PER
+    // PC tidak berubah).
     let pos = 0;
     for (const c of chunks) {
       const chunkStart = pos;
       pos += c.fgQty;
-      const takeStart = Math.max(before, chunkStart);
-      const takeEnd = Math.min(after, pos);
+      const takeStart = Math.max(rollBefore, chunkStart);
+      const takeEnd = Math.min(rollAfter, pos);
       if (takeEnd <= takeStart) continue;
       const takeQty = takeEnd - takeStart;
       const portion = takeQty / c.fgQty;
@@ -2934,6 +2986,8 @@ export function hppRowsForInvoicePerRoll(
       const reworkQty = c.reworkQty * portion;
       rows.push({
         invoiceId: inv.id,
+        vendorProduksi: inv.vendorProduksi,
+        noKoli: koli?.noKoli,
         mrpId: line.mrpId,
         mrpLabel: `${line.mrpId} ${mrp?.kategori ?? ""}`.trim(),
         warna: line.warna,
@@ -2961,6 +3015,63 @@ export function hppRowsForInvoicePerRoll(
         biayaProduksiPerItem,
         ongkirPerItem: ongkirPerPc,
         totalOngkirRow: ongkirPerPc * fgQty,
+        hppPerItem,
+      });
+    }
+
+    // Ambil chunk rework pada rentang qty [reworkBefore, reworkAfter) -- size & koli asal PERSIS
+    // dari item koli pengiriman (bukan disebar proporsional seperti dulu). COGS bahan = 0 (lihat
+    // catatan panjang di atas fungsi -- kainnya REJECT yang biayanya sudah terserap penuh ke baris
+    // FG roll asalnya, dihitung lagi di sini akan dobel-hitung bahan yang sama). Ongkir dihitung
+    // dari koli SPESIFIK yang membawanya, formula SAMA seperti baris roll di atas.
+    let rpos = 0;
+    for (const c of reworkChunks) {
+      const chunkStart = rpos;
+      rpos += c.qty;
+      const takeStart = Math.max(reworkBefore, chunkStart);
+      const takeEnd = Math.min(reworkAfter, rpos);
+      if (takeEnd <= takeStart) continue;
+      const takeQty = takeEnd - takeStart;
+
+      const totalPcsInKoli = c.koli.items.reduce((s, it) => s + it.qty, 0);
+      const koliOngkirTotal = c.koli.ongkirBatch ?? ekspedisiPrice(c.koli.ekspedisi, c.koli.beratKoli ?? 0);
+      const ongkirPerPc = totalPcsInKoli > 0 ? koliOngkirTotal / totalPcsInKoli : 0;
+
+      const biayaProduksiPerItem = line.ratePerPc;
+      const hppPerItem = biayaProduksiPerItem + ongkirPerPc;
+      const usiaLabel = c.usia === "KIDS" ? "Kids" : c.usia === "DEWASA" ? "Dewasa" : "";
+
+      rows.push({
+        invoiceId: inv.id,
+        vendorProduksi: inv.vendorProduksi,
+        noKoli: c.koli.noKoli,
+        mrpId: line.mrpId,
+        mrpLabel: `${line.mrpId} ${mrp?.kategori ?? ""}`.trim(),
+        warna: line.warna,
+        lengan: line.lengan,
+        item: `${line.warna} ${HPP_LENGAN_ABBR[line.lengan]} ${c.size} · Rework${usiaLabel ? " (" + usiaLabel + ")" : ""} · koli ${c.koli.noKoli}`,
+        jenis: `${line.lengan} ${c.size}`,
+        qtyPo: takeQty,
+        cutting: takeQty,
+        fg: takeQty,
+        reject: 0,
+        rework: takeQty,
+        statusLabel,
+        yieldPct: 100,
+        maklonRate: line.ratePerPc,
+        jumlahRoll,
+        totalBeratBahan: 0,
+        faktorProduksi: 1,
+        aktualBeratTerpakai: 0,
+        persentase: 0,
+        hargaBahanTotal: 0,
+        cogsBahan: 0,
+        cogsBahanPerItem: 0,
+        pemotonganDenda: 0,
+        biayaProduksiTotal: biayaProduksiPerItem * takeQty,
+        biayaProduksiPerItem,
+        ongkirPerItem: ongkirPerPc,
+        totalOngkirRow: ongkirPerPc * takeQty,
         hppPerItem,
       });
     }
