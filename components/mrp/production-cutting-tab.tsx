@@ -213,6 +213,17 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   // memalsukan timestamp cutting & durasi/badge resting yang diturunkan darinya.
   const [activeCuttingGroupKey, setActiveCuttingGroupKey] = useState<string | null>(null);
   const [cuttingGroupDateDraft, setCuttingGroupDateDraft] = useState(nowLocalDatetime());
+  // BUG FIX (2026-09-09, user-reported: "Kenapa tidak bisa input hasil cutting? ... kenapa di
+  // proses ini tidak membiarkan kita melakukan proses secara parsial?"): saveGroup() dulu
+  // memanggil updateBatchToCutting TANPA try/catch -- kalau server menolak (mis. grup warna/lengan
+  // ini sudah dikunci "Final Produksi", lihat updateBatchToCuttingAction di lib/mrp/actions.ts),
+  // promise-nya cuma jadi unhandled rejection di console browser, modal TETAP TERBUKA tanpa pesan
+  // apa pun -- persis seperti tombol "Simpan" tidak melakukan apa-apa sama sekali. Sekarang
+  // errornya ditangkap & ditampilkan di modal (pola sama seperti weighError/reweighError di atas),
+  // supaya user tahu PERSIS kenapa gagal (mis. perlu "Buka kunci ↺" dulu di tab Final Produksi
+  // untuk grup itu) alih-alih menebak-nebak.
+  const [cuttingGroupError, setCuttingGroupError] = useState<string | null>(null);
+  const [cuttingGroupSaving, setCuttingGroupSaving] = useState(false);
   // Item 14.2: "Isi semua roll tersedia" di form Resting butuh SATU nilai gramasi yang dipakai
   // buat mengisi semua baris otomatis -- baris tetap bisa diedit satu-satu sesudahnya.
   const [fillGramasi, setFillGramasi] = useState(0);
@@ -581,10 +592,12 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
       return next;
     });
     setCuttingGroupDateDraft(nowLocalDatetime());
+    setCuttingGroupError(null);
     setActiveCuttingGroupKey(sessionKey);
   }
   function closeCuttingGroupModal() {
     setActiveCuttingGroupKey(null);
+    setCuttingGroupError(null);
   }
 
   return (
@@ -1227,12 +1240,20 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
           });
           const canSaveGroup = incompleteIds.length === 0;
           async function saveGroup() {
-            if (!canSaveGroup) return;
-            const effectiveDate = toUtcIso(cuttingGroupDateDraft);
-            for (const b of groupBatches) {
-              await updateBatchToCutting(b.id, effectiveDate, cuttingSizeDraft[b.id] ?? {});
+            if (!canSaveGroup || cuttingGroupSaving) return;
+            setCuttingGroupError(null);
+            setCuttingGroupSaving(true);
+            try {
+              const effectiveDate = toUtcIso(cuttingGroupDateDraft);
+              for (const b of groupBatches) {
+                await updateBatchToCutting(b.id, effectiveDate, cuttingSizeDraft[b.id] ?? {});
+              }
+              closeCuttingGroupModal();
+            } catch (err) {
+              setCuttingGroupError(err instanceof Error ? err.message : "Gagal menyimpan hasil cutting.");
+            } finally {
+              setCuttingGroupSaving(false);
             }
-            closeCuttingGroupModal();
           }
           return (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B131B]/45 p-4">
@@ -1302,12 +1323,15 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                     </div>
                   ))}
                 </div>
+                {cuttingGroupError && (
+                  <div className="border-t border-[#F0DFC2] bg-danger-bg px-5 py-2.5 font-sans text-[11px] leading-[1.5] text-danger-fg">{cuttingGroupError}</div>
+                )}
                 <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-3.5">
                   <button onClick={closeCuttingGroupModal} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-[7px] font-sans text-xs font-semibold text-action-primary">
                     Batal
                   </button>
-                  <Button onClick={saveGroup} disabled={!canSaveGroup} variant="success" size="sm">
-                    Simpan
+                  <Button onClick={saveGroup} disabled={!canSaveGroup || cuttingGroupSaving} variant="success" size="sm">
+                    {cuttingGroupSaving ? "Menyimpan…" : "Simpan"}
                   </Button>
                 </div>
               </div>
