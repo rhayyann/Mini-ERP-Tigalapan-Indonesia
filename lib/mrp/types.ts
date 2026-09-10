@@ -132,6 +132,13 @@ export type RollReceipt = {
    *  roll bisa dipilih untuk Resting -- lihat availableCodeRollsForColor/weighedUnconfirmedRolls
    *  di lib/mrp/derive.ts. Null lagi kalau roll ini kena claim baru (harus ditimbang ulang). */
   weighConfirmedAt?: string;
+  /** Item 13 (feedback batch 2026-09-10, migration 0023): claim FISIK (shading/kotor/dll,
+   *  ditemukan vendor saat menghamparkan roll untuk resting) -- BEDA dari claim berat
+   *  (weightVariance-based), roll ini bisa tetap DALAM toleransi berat tapi tetap diklaim karena
+   *  cacat fisik. Diajukan dari production-cutting-tab.tsx (checkbox + foto + catatan pada roll
+   *  yang sudah masuk resting/ProductionBatch), lihat submitCuttingDefectClaimAction. */
+  claimDefectNote?: string;
+  claimDefectAt?: string;
 };
 
 /** Roll yang sudah ditandai FISIK DITERIMA di Good Receive (arrivedAt) — belum tentu sudah

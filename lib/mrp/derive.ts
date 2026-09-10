@@ -882,6 +882,13 @@ export type MaterialClaimRow = {
   /** Ada tidaknya foto bukti berat bersih (item 2/3) -- `!!receipt.claimPhotoAt`. Byte foto
    *  sendiri diambil terpisah lewat getMaterialClaimPhotoAction, tidak ada di sini. */
   hasPhoto: boolean;
+  /** Item 13 (feedback batch 2026-09-10): "BERAT" = selisih berat di luar toleransi (perilaku
+   *  lama, satu-satunya reason sebelum item ini) -- `diffKg`/`pct` bermakna. "FISIK" = cacat
+   *  fisik (shading/kotor/dll) diajukan dari resting/cutting, TIDAK ADA selisih berat (`diffKg`/
+   *  `pct` selalu 0) -- `note` berisi keterangan cacatnya, ditampilkan sebagai ganti kolom
+   *  Selisih di UI. */
+  reason: "BERAT" | "FISIK";
+  note?: string;
 };
 
 /** Tahap alur retur klaim selisih berat — dipakai di halaman Procurement (Klaim Material) DAN
@@ -925,7 +932,14 @@ export function materialClaimsList(invoices: RawMaterialInvoice[]): MaterialClai
         const receipt = receipts[idx];
         if (!receipt) return;
         const variance = weightVariance(grossKg, receipt.netKg);
-        if (!variance.claimable) return;
+        // Item 13 (feedback batch 2026-09-10): roll ini masuk daftar klaim kalau selisih
+        // beratnya claimable (perilaku lama, reason "BERAT") ATAU sudah diklaim FISIK (shading/
+        // kotor/dll, tidak ada selisih berat sama sekali, reason "FISIK") -- lihat
+        // claimDefectAt/submitCuttingDefectClaimAction. Roll yang sudah pernah diklaim fisik TAPI
+        // sudah diresolve (claim_resolved_at, dicek lewat materialClaimStage di UI) TETAP muncul
+        // di sini (sama seperti klaim berat lama) -- stage-nya yang menandakan sudah selesai.
+        if (!variance.claimable && !receipt.claimDefectAt) return;
+        const reason: "BERAT" | "FISIK" = variance.claimable ? "BERAT" : "FISIK";
         out.push({
           key: inv.id + "|" + colorKey + "|" + idx,
           invoiceId: inv.id,
@@ -940,10 +954,12 @@ export function materialClaimsList(invoices: RawMaterialInvoice[]): MaterialClai
           codeLot: receipt.codeLot,
           grossKg,
           netKg: receipt.netKg,
-          diffKg: variance.diff,
-          pct: variance.pct,
+          diffKg: reason === "BERAT" ? variance.diff : 0,
+          pct: reason === "BERAT" ? variance.pct : 0,
           receivedAt: receipt.receivedAt,
           hasPhoto: !!receipt.claimPhotoAt,
+          reason,
+          note: reason === "FISIK" ? receipt.claimDefectNote : undefined,
         });
       });
     }

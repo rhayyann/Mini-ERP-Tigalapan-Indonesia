@@ -522,6 +522,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
               codeLot: r.code_lot ?? undefined,
               claimPhotoAt: r.claim_photo_at ?? undefined,
               weighConfirmedAt: r.weigh_confirmed_at ?? undefined,
+              claimDefectNote: r.claim_defect_note ?? undefined,
+              claimDefectAt: r.claim_defect_at ?? undefined,
             }
       );
       rollArrivals[colorKey] = rolls.map((r) =>

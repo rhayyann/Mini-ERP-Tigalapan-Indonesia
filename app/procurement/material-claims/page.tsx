@@ -118,16 +118,26 @@ export default function MaterialClaimsPage() {
       ),
     },
     {
+      // Item 13 (feedback batch 2026-09-10): kolom ini dulu SELALU angka selisih berat -- sekarang
+      // bisa juga klaim FISIK (shading/kotor/dll, diajukan dari resting/cutting vendor produksi,
+      // TIDAK ADA selisih berat sama sekali) -- tampilkan keterangan cacatnya sebagai ganti, plus
+      // badge "Fisik" supaya beda jelas dari klaim berat.
       key: "selisih",
-      label: "Selisih",
+      label: "Selisih / Keterangan",
       default: true,
       align: "right",
-      render: (r) => (
-        <span className="font-mono font-semibold text-danger-fg">
-          {r.diffKg >= 0 ? "+" : ""}
-          {formatDecimal(r.diffKg)} kg ({r.pct.toFixed(1)}%)
-        </span>
-      ),
+      render: (r) =>
+        r.reason === "FISIK" ? (
+          <span className="flex items-center justify-end gap-1.5">
+            <StatusPill tone="warning">Fisik</StatusPill>
+            <span className="font-sans text-[11px] text-[#31414F]">{r.note || "—"}</span>
+          </span>
+        ) : (
+          <span className="font-mono font-semibold text-danger-fg">
+            {r.diffKg >= 0 ? "+" : ""}
+            {formatDecimal(r.diffKg)} kg ({r.pct.toFixed(1)}%)
+          </span>
+        ),
     },
     // Item 2.5: bukti foto berat bersih yang diupload vendor saat mengajukan claim (item 3).
     { key: "buktiFoto", label: "Bukti foto", default: true, render: (r) => <BuktiFotoCell claimKey={r.key} hasPhoto={r.hasPhoto} /> },
@@ -291,7 +301,9 @@ export default function MaterialClaimsPage() {
       activeHref="/procurement/material-claims"
       breadcrumb={["Dashboard", "Klaim Material"]}
       title="Klaim material"
-      subtitle={`${rows.length} klaim selisih berat KURANG dari toleransi (−2%) — ${unresolvedCount} belum selesai`}
+      // Item 13: subtitle dulu berasumsi SEMUA klaim adalah selisih berat -- sekarang ada juga
+      // klaim fisik (reason "FISIK"), jadi hitung terpisah supaya teksnya tetap akurat.
+      subtitle={`${rows.length} klaim (${rows.filter((r) => r.reason === "BERAT").length} selisih berat KURANG dari toleransi −2%, ${rows.filter((r) => r.reason === "FISIK").length} fisik) — ${unresolvedCount} belum selesai`}
     >
       <div className="flex gap-2 rounded-lg border border-border-subtle bg-surface-card p-1.5">
         {(
@@ -317,8 +329,9 @@ export default function MaterialClaimsPage() {
       {tab === "AKTIF" && (
         <>
           <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-            Daftar ini otomatis berisi semua roll bahan yang diterima vendor produksi dengan selisih berat KURANG dari toleransi (lebih ringan dari invoice).
-            Klik <b>Buat PV Pengganti</b> untuk pesan ulang bahan itu dengan rate & berat terkini — selisih dari nilai PV lama otomatis tercatat sebagai saldo
+            Daftar ini otomatis berisi roll bahan yang diklaim vendor produksi — selisih berat KURANG dari toleransi (lebih ringan dari invoice), ATAU cacat
+            FISIK (shading/kotor/dll, ditemukan vendor saat menghamparkan roll untuk resting/cutting — lihat badge &quot;Fisik&quot;). Klik{" "}
+            <b>Buat PV Pengganti</b> untuk pesan ulang bahan itu dengan rate & berat terkini — selisih dari nilai PV lama otomatis tercatat sebagai saldo
             deposit di supplier itu (lihat Payment di Finance). Link kecil di bawahnya untuk melacak retur fisik (opsional) — begitu vendor timbang ulang
             dengan hasil sesuai toleransi, klaim otomatis tertutup sendiri.
           </div>
