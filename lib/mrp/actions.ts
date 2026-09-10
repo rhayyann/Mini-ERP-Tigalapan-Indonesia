@@ -3013,9 +3013,21 @@ export async function setKoliEkspedisiAction(koliId: string, ekspedisi: string, 
 
 /** Ambil BYTE foto lampiran ekspedisi 1 koli on-demand -- `delivery_koli_ekspedisi_photos` sengaja
  *  DIKELUARKAN dari get_flow_snapshot_raw() (migration 0024, pola sama material_claim_photos)
- *  supaya payloadnya tidak ikut re-download di setiap refresh snapshot. */
+ *  supaya payloadnya tidak ikut re-download di setiap refresh snapshot.
+ *
+ *  Item 2026-09-10 (Procurement "Invoice Vendor" & Finance "Payment Maklon" minta bisa lihat
+ *  lampiran ekspedisi sebelum approve/bayar): dulu HANYA `requireVendorSession()` (cuma dipanggil
+ *  dari Riwayat Pengiriman vendor sendiri) -- sekarang dibuka juga untuk procurement/finance,
+ *  pola SAMA PERSIS `getInvoicePaymentProofAction` di atas (vendor dicek KEPEMILIKAN koli-nya,
+ *  internal role dicek lewat requireAnyInternalRole). */
 export async function getDeliveryKoliEkspedisiPhotoAction(koliId: string): Promise<{ dataUrl: string; fileName?: string } | null> {
-  await requireVendorSession();
+  const session = await requireSession();
+  if (session.vendorId) {
+    const { data: koli } = await supabaseServer().from("delivery_kolis").select("vendor_produksi").eq("id", koliId).maybeSingle();
+    if (koli?.vendor_produksi !== session.vendorId) throw new Error("Forbidden: koli ini bukan milik vendor Anda.");
+  } else {
+    requireAnyInternalRole(session, ["procurement", "finance"]);
+  }
   const db = supabaseServer();
   const { data } = await db.from("delivery_koli_ekspedisi_photos").select("data_url,file_name").eq("delivery_koli_id", koliId).maybeSingle();
   if (!data) return null;

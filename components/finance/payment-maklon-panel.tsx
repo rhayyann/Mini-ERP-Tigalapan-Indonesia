@@ -4,11 +4,13 @@ import { useEffect, useState } from "react";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
+import { KoliEkspedisiCard } from "@/components/mrp/koli-ekspedisi-card";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
   formatDate,
   formatPcs,
   formatRupiah,
+  invoiceKoliBreakdown,
   vendorInvoiceAdjustmentTotal,
   vendorInvoiceBadge,
   vendorInvoiceFinalAmount,
@@ -16,48 +18,135 @@ import {
   vendorInvoiceTotalPaid,
 } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
-import type { VendorInvoice } from "@/lib/mrp/types";
+import type { MrpDetail } from "@/lib/mrp/store";
+import type { DeliveryKoli, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, RawMaterialInvoice, VendorInvoice } from "@/lib/mrp/types";
 
 /** Detail per-warna/lengan dari satu invoice — dropdown expand baris (pola sama dengan tabel
  *  MRP di PPIC), diminta supaya Finance bisa cek rincian tiap kode transaksi tanpa buka halaman
  *  lain. */
-function InvoiceLinesDetail({ inv }: { inv: VendorInvoice }) {
+function InvoiceLinesDetail({
+  inv,
+  vendorInvoices,
+  mrpDetails,
+  staticMrps,
+  productionBatches,
+  productionResults,
+  productionGroupMeta,
+  rawInvoices,
+  deliveryKolis,
+}: {
+  inv: VendorInvoice;
+  vendorInvoices: VendorInvoice[];
+  mrpDetails: MrpDetail[];
+  staticMrps: Mrp[];
+  productionBatches: ProductionBatch[];
+  productionResults: ProductionResult[];
+  productionGroupMeta: ProductionGroupMeta[];
+  rawInvoices: RawMaterialInvoice[];
+  deliveryKolis: DeliveryKoli[];
+}) {
+  // Item 2026-09-10 (feedback: "tampilkan informasi yang lebih detail, meliputi Item, Size,
+  // Kategori Lengan, Qty, serta nominal ... Tambahkan informasi Nama Vendor dan Tanggal
+  // Pengiriman dari ekspedisi ... lampiran ekspedisi ... sebelum melakukan payment") -- reuse
+  // `invoiceKoliBreakdown` (SAMA fungsi yang dipakai Procurement "Invoice Vendor", lihat
+  // catatan panjang di lib/mrp/derive.ts) supaya breakdown per size + info koli di sini SELALU
+  // konsisten dengan yang sudah dicek Procurement, bukan sumber kebenaran kedua yang berbeda.
+  const breakdown = invoiceKoliBreakdown(inv, vendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis);
+  const vendorName = VENDOR_PRODUKSI[inv.vendorProduksi]?.name ?? inv.vendorProduksi;
   return (
-    <table className="w-full border-collapse overflow-hidden rounded-md border border-[#E4E9EE] bg-white">
-      <thead>
-        <tr className="border-b border-[#E4E9EE] bg-[#F2F5F8] font-sans text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-          <th className="px-3 py-2 text-left">MRP</th>
-          <th className="px-3 py-2 text-left">Warna</th>
-          <th className="px-3 py-2 text-left">Lengan</th>
-          <th className="px-3 py-2 text-right">Qty</th>
-          <th className="px-3 py-2 text-right">Rate/pc</th>
-          <th className="px-3 py-2 text-right">Jumlah</th>
-        </tr>
-      </thead>
-      <tbody>
-        {inv.lines.map((l, idx) => (
-          <tr key={idx} className="border-b border-[#EEF1F4] font-sans text-[11.5px] text-[#31414F] last:border-b-0">
-            <td className="px-3 py-1.5 font-mono">{l.mrpId}</td>
-            <td className="px-3 py-1.5">
-              {l.warna}
-              {l.usia ? ` (${l.usia})` : ""}
-            </td>
-            <td className="px-3 py-1.5">{l.lengan}</td>
-            <td className="px-3 py-1.5 text-right font-mono">{formatPcs(l.qty)}</td>
-            <td className="px-3 py-1.5 text-right font-mono">{formatRupiah(l.ratePerPc)}</td>
-            <td className="px-3 py-1.5 text-right font-mono">{formatRupiah(l.amount)}</td>
+    <div className="flex flex-col gap-3">
+      <table className="w-full border-collapse overflow-hidden rounded-md border border-[#E4E9EE] bg-white">
+        <thead>
+          <tr className="border-b border-[#E4E9EE] bg-[#F2F5F8] font-sans text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+            <th className="px-3 py-2 text-left">MRP</th>
+            <th className="px-3 py-2 text-left">Warna</th>
+            <th className="px-3 py-2 text-left">Lengan</th>
+            <th className="px-3 py-2 text-right">Qty</th>
+            <th className="px-3 py-2 text-right">Rate/pc</th>
+            <th className="px-3 py-2 text-right">Jumlah</th>
           </tr>
-        ))}
-        <tr className="bg-[#F7F9FB] font-sans text-[11.5px] font-semibold text-[#31414F]">
-          <td className="px-3 py-1.5" colSpan={3}>
-            Total semua warna
-          </td>
-          <td className="px-3 py-1.5 text-right font-mono">{formatPcs(inv.lines.reduce((s, l) => s + l.qty, 0))}</td>
-          <td className="px-3 py-1.5" />
-          <td className="px-3 py-1.5 text-right font-mono">{formatRupiah(inv.lines.reduce((s, l) => s + l.amount, 0))}</td>
-        </tr>
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {inv.lines.map((l, idx) => (
+            <tr key={idx} className="border-b border-[#EEF1F4] font-sans text-[11.5px] text-[#31414F] last:border-b-0">
+              <td className="px-3 py-1.5 font-mono">{l.mrpId}</td>
+              <td className="px-3 py-1.5">
+                {l.warna}
+                {l.usia ? ` (${l.usia})` : ""}
+              </td>
+              <td className="px-3 py-1.5">{l.lengan}</td>
+              <td className="px-3 py-1.5 text-right font-mono">{formatPcs(l.qty)}</td>
+              <td className="px-3 py-1.5 text-right font-mono">{formatRupiah(l.ratePerPc)}</td>
+              <td className="px-3 py-1.5 text-right font-mono">{formatRupiah(l.amount)}</td>
+            </tr>
+          ))}
+          <tr className="bg-[#F7F9FB] font-sans text-[11.5px] font-semibold text-[#31414F]">
+            <td className="px-3 py-1.5" colSpan={3}>
+              Total semua warna
+            </td>
+            <td className="px-3 py-1.5 text-right font-mono">{formatPcs(inv.lines.reduce((s, l) => s + l.qty, 0))}</td>
+            <td className="px-3 py-1.5" />
+            <td className="px-3 py-1.5 text-right font-mono">{formatRupiah(inv.lines.reduce((s, l) => s + l.amount, 0))}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div className="overflow-hidden rounded-md border border-[#E4E9EE] bg-white">
+        <div className="bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">Rincian per size &amp; pengiriman</div>
+        {breakdown.groups.length === 0 && breakdown.legacyRows.length === 0 && (
+          <div className="border-t border-[#F1F4F7] px-3 py-2 font-sans text-[11.5px] text-text-muted">Belum ada data pengiriman untuk invoice ini.</div>
+        )}
+        <div className="flex flex-col gap-2 border-t border-[#F1F4F7] p-3">
+          {breakdown.groups.map((g) => (
+            <div key={g.koliId} className="flex flex-col gap-1.5">
+              <KoliEkspedisiCard
+                koliId={g.koliId}
+                noKoli={g.noKoli}
+                ekspedisi={g.ekspedisi}
+                deliveredAt={g.deliveredAt}
+                ekspedisiNote={g.ekspedisiNote}
+                ekspedisiNoteAt={g.ekspedisiNoteAt}
+                vendorName={vendorName}
+              />
+              <table className="w-full border-collapse overflow-hidden rounded border border-[#EEF1F4]">
+                <thead>
+                  <tr className="bg-[#FAFBFC] font-sans text-[9.5px] font-medium uppercase tracking-wider text-text-muted">
+                    <th className="px-2.5 py-1 text-left">Item</th>
+                    <th className="px-2.5 py-1 text-left">Size</th>
+                    <th className="px-2.5 py-1 text-left">Kategori Lengan</th>
+                    <th className="px-2.5 py-1 text-right">Qty</th>
+                    <th className="px-2.5 py-1 text-right">Nominal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {g.rows.map((r, idx) => (
+                    <tr key={idx} className="border-t border-[#F1F4F7] font-sans text-[11px] text-[#31414F]">
+                      <td className="px-2.5 py-1">{r.warna}</td>
+                      <td className="px-2.5 py-1 font-mono">{r.size}</td>
+                      <td className="px-2.5 py-1">{r.lengan}</td>
+                      <td className="px-2.5 py-1 text-right font-mono">{formatPcs(r.qty)}</td>
+                      <td className="px-2.5 py-1 text-right font-mono">{formatRupiah(r.nominal)}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-t border-[#F1F4F7] bg-[#FAFBFC] font-sans text-[11px] font-semibold text-[#31414F]">
+                    <td className="px-2.5 py-1" colSpan={3}>
+                      Subtotal koli ini
+                    </td>
+                    <td className="px-2.5 py-1 text-right font-mono">{formatPcs(g.totalQty)}</td>
+                    <td className="px-2.5 py-1 text-right font-mono">{formatRupiah(g.totalNominal)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ))}
+          {breakdown.legacyRows.length > 0 && (
+            <div className="font-sans text-[10.5px] text-text-muted">
+              {formatPcs(breakdown.legacyRows.reduce((s, r) => s + r.qty, 0))} pcs dari data lama (belum tertaut koli, sebelum migrasi pelacakan pengiriman) — lihat tabel ringkas di atas.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -72,6 +161,15 @@ export function PaymentMaklonPanel() {
   const vendorInvoices = useMrpStore((s) => s.vendorInvoices);
   const setVendorInvoiceDueDate = useMrpStore((s) => s.setVendorInvoiceDueDate);
   const payVendorInvoice = useMrpStore((s) => s.payVendorInvoice);
+  // Item 2026-09-10 (feedback: breakdown per size + info pengiriman/ekspedisi di detail invoice)
+  // -- dibutuhkan `invoiceKoliBreakdown` (lihat InvoiceLinesDetail di atas).
+  const mrpDetails = useMrpStore((s) => s.mrpDetails);
+  const staticMrps = useMrpStore((s) => s.staticMrps);
+  const productionBatches = useMrpStore((s) => s.productionBatches);
+  const productionResults = useMrpStore((s) => s.productionResults);
+  const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
+  const rawInvoices = useMrpStore((s) => s.invoices);
+  const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [actionResult, setActionResult] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
@@ -225,7 +323,19 @@ export function PaymentMaklonPanel() {
             <span className="font-mono font-medium">{inv.id}</span>
           </span>
         )}
-        renderExpanded={(inv) => <InvoiceLinesDetail inv={inv} />}
+        renderExpanded={(inv) => (
+          <InvoiceLinesDetail
+            inv={inv}
+            vendorInvoices={vendorInvoices}
+            mrpDetails={mrpDetails}
+            staticMrps={staticMrps}
+            productionBatches={productionBatches}
+            productionResults={productionResults}
+            productionGroupMeta={productionGroupMeta}
+            rawInvoices={rawInvoices}
+            deliveryKolis={deliveryKolis}
+          />
+        )}
         emptyText="Belum ada invoice vendor yang disetujui Procurement."
       />
 
@@ -236,7 +346,19 @@ export function PaymentMaklonPanel() {
         keyOf={(inv) => inv.id}
         firstColumnLabel="No Invoice"
         firstColumnRender={(inv) => <span className="font-mono font-medium">{inv.id}</span>}
-        renderExpanded={(inv) => <InvoiceLinesDetail inv={inv} />}
+        renderExpanded={(inv) => (
+          <InvoiceLinesDetail
+            inv={inv}
+            vendorInvoices={vendorInvoices}
+            mrpDetails={mrpDetails}
+            staticMrps={staticMrps}
+            productionBatches={productionBatches}
+            productionResults={productionResults}
+            productionGroupMeta={productionGroupMeta}
+            rawInvoices={rawInvoices}
+            deliveryKolis={deliveryKolis}
+          />
+        )}
         emptyText="Belum ada invoice vendor yang telah dibayar."
       />
     </>

@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { StatusPill } from "@/components/ui/status-pill";
 import { NumberInput } from "@/components/mrp/number-input";
+import { KoliEkspedisiCard } from "@/components/mrp/koli-ekspedisi-card";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
   autoOngkirForInvoice,
@@ -13,6 +14,7 @@ import {
   formatRupiah,
   hppRowsForInvoice,
   invoiceCategoryLabel,
+  invoiceKoliBreakdown,
   invoiceYieldSummary,
   mrpMetaFor,
   productionYieldByWarna,
@@ -225,6 +227,13 @@ export function InvoiceVendorReviewPanel() {
               const denda = vendorInvoiceAdjustmentTotal(inv, "DENDA");
               const reward = vendorInvoiceAdjustmentTotal(inv, "REWARD");
               const yieldSummary = invoiceYieldSummary(inv, mrpDetails, productionBatches, productionResults);
+              // Item 2026-09-10 (feedback: info lampiran ekspedisi sebelum "Setujui invoice") --
+              // cuma dihitung begitu baris ini di-expand (bukan tiap render semua invoice) supaya
+              // tidak ikut menjalankan hppRowsForInvoicePerRoll (lumayan berat, alokasi FIFO) utk
+              // baris yang collapsed.
+              const koliBreakdown = invExpanded
+                ? invoiceKoliBreakdown(inv, vendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis)
+                : undefined;
               return (
                 <div key={inv.id}>
                   <div
@@ -363,6 +372,38 @@ export function InvoiceVendorReviewPanel() {
                       </div>
                     )}
                   </div>
+
+                  {/* Item 2026-09-10 (feedback: "Tambahkan informasi mengenai lampiran ekspedisi
+                     dari vendor produksi sebelum mengajukan invoice maklon ke finance") -- 1
+                     kartu per koli yang mengirim barang invoice ini (lihat KoliEkspedisiCard),
+                     ditaruh SEBELUM "Setujui invoice" sudah kelihatan di atas supaya Procurement
+                     sempat cek lampiran ekspedisinya dulu sebelum approve. */}
+                  {koliBreakdown && (
+                    <div className="mt-3 rounded-md border border-[#E4E9EE] bg-white p-3">
+                      <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">Lampiran ekspedisi</div>
+                      {koliBreakdown.groups.length === 0 && koliBreakdown.legacyRows.length === 0 && (
+                        <div className="mt-1.5 font-sans text-[11.5px] text-text-muted">Belum ada data pengiriman untuk invoice ini.</div>
+                      )}
+                      <div className="mt-1.5 flex flex-col gap-1.5">
+                        {koliBreakdown.groups.map((g) => (
+                          <KoliEkspedisiCard
+                            key={g.koliId}
+                            koliId={g.koliId}
+                            noKoli={g.noKoli}
+                            ekspedisi={g.ekspedisi}
+                            deliveredAt={g.deliveredAt}
+                            ekspedisiNote={g.ekspedisiNote}
+                            ekspedisiNoteAt={g.ekspedisiNoteAt}
+                          />
+                        ))}
+                      </div>
+                      {koliBreakdown.legacyRows.length > 0 && (
+                        <div className="mt-1.5 font-sans text-[10.5px] text-text-muted">
+                          {formatPcs(koliBreakdown.legacyRows.reduce((s, r) => s + r.qty, 0))} pcs dari data lama (belum tertaut koli, sebelum migrasi pelacakan pengiriman).
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className="mt-3 font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">Lampiran — detail per MRP</div>
                   <div className="mt-2 grid grid-cols-3 gap-2 font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
