@@ -167,9 +167,20 @@ export type MaterialClaimHistory = {
   codeRoll?: string;
   codeLot?: string;
   grossKg: number;
-  claimedNetKg: number;
-  diffKg: number;
-  pct: number;
+  /** Item 2026-09-10 (bug fix: "Buat PV Pengganti" gagal untuk klaim FISIK, migration 0025) --
+   *  `claimedNetKg`/`diffKg`/`pct` cuma berarti untuk klaim BERAT (selisih timbang, `reason`
+   *  "BERAT") -- kosong (`undefined`) untuk klaim FISIK (`reason` "FISIK"), yang pakai
+   *  `defectNote` sebagai gantinya. Dulu kolom-kolom ini NOT NULL di DB (tabel ini awalnya murni
+   *  klaim berat) -- lihat migration 0025. */
+  claimedNetKg?: number;
+  diffKg?: number;
+  pct?: number;
+  /** Sama seperti MaterialClaimRow.reason (lib/mrp/derive.ts) -- default "BERAT" untuk baris
+   *  lama (dibuat sebelum kolom ini ada di migration 0025). */
+  reason: "BERAT" | "FISIK";
+  /** Keterangan cacat fisik (padanan diffKg/pct untuk klaim BERAT) -- cuma terisi untuk klaim
+   *  `reason === "FISIK"`. */
+  defectNote?: string;
   claimedAt: string;
   returNote?: string;
   returRequestedAt?: string;

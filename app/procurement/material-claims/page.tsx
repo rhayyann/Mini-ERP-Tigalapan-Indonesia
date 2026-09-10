@@ -218,16 +218,26 @@ export default function MaterialClaimsPage() {
     { key: "warna", label: "Warna / lengan", default: false, render: (h) => `${h.warna} · ${h.lengan}` },
     { key: "roll", label: "Roll", default: true, render: (h) => `#${h.rollIndex + 1}${h.codeRoll ? " · " + h.codeRoll : ""}` },
     {
+      // BUG FIX (2026-09-10, migration 0025): kolom ini dulu SELALU angka selisih berat -- klaim
+      // FISIK (reason "FISIK", tidak ada diffKg/pct sama sekali sejak migration 0025) akan
+      // tampil "+0.00 kg (0.0%)" yang keliru/menyesatkan (seolah selisih beratnya memang 0).
+      // Cabang sama persis pola kolom "Selisih / Keterangan" di tabel Klaim Aktif di atas.
       key: "selisihAwal",
       label: "Selisih (saat klaim)",
       default: true,
       align: "right",
-      render: (h) => (
-        <span className="font-mono">
-          {h.diffKg >= 0 ? "+" : ""}
-          {formatDecimal(h.diffKg)} kg ({h.pct.toFixed(1)}%)
-        </span>
-      ),
+      render: (h) =>
+        h.reason === "FISIK" ? (
+          <span className="flex items-center justify-end gap-1.5">
+            <StatusPill tone="warning">Fisik</StatusPill>
+            <span className="font-sans text-[11px] text-[#31414F]">{h.defectNote || "—"}</span>
+          </span>
+        ) : (
+          <span className="font-mono">
+            {(h.diffKg ?? 0) >= 0 ? "+" : ""}
+            {formatDecimal(h.diffKg ?? 0)} kg ({(h.pct ?? 0).toFixed(1)}%)
+          </span>
+        ),
     },
     { key: "claimedAt", label: "Tanggal klaim", default: false, render: (h) => formatDate(h.claimedAt) },
     {
