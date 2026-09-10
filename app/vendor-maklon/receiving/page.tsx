@@ -258,24 +258,6 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
         </div>
       )}
 
-      {readyMaklonPOs.length > 0 && (
-        <div className="rounded-lg border border-[#B7DFC5] bg-success-bg px-5 py-4">
-          <div className="font-sans text-[12.5px] font-semibold text-success-fg">Bahan sudah diterima — siap mulai produksi</div>
-          <div className="mt-2.5 flex flex-col gap-2">
-            {readyMaklonPOs.map((p) => (
-              <div key={p.id} className="flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-white px-3.5 py-2.5">
-                <span className="font-sans text-xs text-[#31414F]">
-                  <span className="font-mono font-medium">{p.id}</span> — {formatPcs(p.qty)} pcs
-                </span>
-                <Button onClick={() => advanceMaklonProduction(p.id)} variant="primary" size="xs">
-                  Mulai Produksi →
-                </Button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {selectedInvoice && (
         <>
           <div className="rounded-lg border border-border-subtle bg-surface-card px-4 py-3.5">
@@ -300,7 +282,12 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                   <span className="text-right">Roll (diterima/total)</span>
                   <span className="text-right">Qty Pendek (pcs)</span>
                   <span className="text-right">Qty Panjang (pcs)</span>
-                  <span />
+                  {/* Item 7 (feedback batch 2026-09-10, owner: "Apa bisa ada nama header untuk
+                     yang simbol centang itu? dan ada simbol yang menggambarkan kalau belum
+                     diterima") -- dulu kolom ini tanpa label & KOSONG TOTAL sampai warna itu
+                     lengkap diterima, jadi ✅-nya kesannya "muncul dari mana-mana". Sekarang ada
+                     header "Status" + state awal eksplisit ("○ Belum") sebelum berubah jadi ✅. */}
+                  <span className="text-right">Status</span>
                 </div>
                 {(() => {
                   const aduanRows = mrpDetailFor(selectedInvoice.mrpId, mrpDetails)?.aduanRows.filter((a) => a.vendor === vendorId) ?? [];
@@ -323,7 +310,15 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                         </span>
                         <span className="text-right font-mono">{qtyPendek > 0 ? formatPcs(qtyPendek) : "—"}</span>
                         <span className="text-right font-mono">{qtyPanjang > 0 ? formatPcs(qtyPanjang) : "—"}</span>
-                        <span className="flex justify-end">{complete && <span title="Semua roll warna ini sudah diterima">✅</span>}</span>
+                        <span className="flex justify-end">
+                          {complete ? (
+                            <span title="Semua roll warna ini sudah diterima">✅</span>
+                          ) : (
+                            <span className="text-text-muted" title="Belum semua roll warna ini diterima">
+                              ○ Belum
+                            </span>
+                          )}
+                        </span>
                       </div>
                     );
                   });
@@ -349,8 +344,9 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
                   >
                     {/* Item revisi 2026-09-08 (owner, Gambar 4: "Tambahkan simbol atau icon centang
                         hijau pada card warna jika sudah lengkap untuk menandai roll sudah
-                        diterima") */}
-                    {complete && <span className="mr-1">✅</span>}
+                        diterima"). Item 7 (feedback batch 2026-09-10): tambah state awal eksplisit
+                        ("○") sebelum lengkap, supaya ✅ tidak kesannya muncul tiba-tiba. */}
+                    <span className="mr-1">{complete ? "✅" : "○"}</span>
                     {c.warna} · {c.lengan} ({arrivedCount}/{c.rolls.length} diterima)
                   </button>
                 );
@@ -454,6 +450,28 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
             </div>
           )}
         </>
+      )}
+
+      {/* Item 8/9 (feedback batch 2026-09-10, owner: "container notif untuk mulai produksi
+         mungkin ditempatkan dibagian paling bawah halaman") -- dipindah ke bawah (dulu di antara
+         daftar PO material & detail invoice terpilih). Kondisi render TIDAK berubah -- begitu
+         "Mulai Produksi" diklik, PO itu pindah status & otomatis hilang dari readyMaklonPOs. */}
+      {readyMaklonPOs.length > 0 && (
+        <div className="rounded-lg border border-[#B7DFC5] bg-success-bg px-5 py-4">
+          <div className="font-sans text-[12.5px] font-semibold text-success-fg">Bahan sudah diterima — siap mulai produksi</div>
+          <div className="mt-2.5 flex flex-col gap-2">
+            {readyMaklonPOs.map((p) => (
+              <div key={p.id} className="flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-white px-3.5 py-2.5">
+                <span className="font-sans text-xs text-[#31414F]">
+                  <span className="font-mono font-medium">{p.id}</span> — {formatPcs(p.qty)} pcs
+                </span>
+                <Button onClick={() => advanceMaklonProduction(p.id)} variant="primary" size="xs">
+                  Mulai Produksi →
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </AppShell>
   );

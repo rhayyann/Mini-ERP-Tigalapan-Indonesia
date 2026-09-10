@@ -66,6 +66,21 @@ let redirectingForAuthError = false;
 // TIDAK dihitung -- itu baca, bukan tulis, dan refresh() sendiri lewat sini juga; menghitungnya
 // bikin backgroundRefresh menunggu dirinya sendiri).
 let inFlightWriteCount = 0;
+// Fix (feedback batch 2026-09-10, item 6/10 "tombol ngeflick"): dipakai oleh refresh() di bawah
+// supaya SEMUA pemanggilnya (bukan cuma scheduleRefresh/backgroundRefresh) menunggu semua tulisan
+// yang sedang berlangsung selesai dulu sebelum fetch snapshot -- lihat catatan panjang di refresh().
+function waitForNoInFlightWrites(): Promise<void> {
+  return new Promise((resolve) => {
+    function check() {
+      if (inFlightWriteCount <= 0) {
+        resolve();
+        return;
+      }
+      setTimeout(check, 120);
+    }
+    check();
+  });
+}
 function guardAction<Args extends unknown[], R>(fn: (...args: Args) => Promise<R>, countInFlight: boolean): (...args: Args) => Promise<R> {
   return async (...args: Args) => {
     if (countInFlight) inFlightWriteCount++;
@@ -236,6 +251,9 @@ type FlowActions = {
    *  per warna·lengan, item 14.1) -- roll yang net_kg-nya belum diisi atau masih claimable di-skip
    *  & dilaporkan balik di `skipped`. */
   confirmRollWeigh: (items: { invoiceId: string; warna: string; lengan: Lengan; rollIndex: number }[]) => Promise<{ confirmed: number; skipped: { invoiceId: string; warna: string; lengan: Lengan; rollIndex: number }[] }>;
+  /** Item 13 (feedback batch 2026-09-10): klaim fisik (shading/kotor/dll) untuk roll yang sudah
+   *  masuk resting -- lihat submitCuttingDefectClaimAction. */
+  submitCuttingDefectClaim: (batchIds: string[], note: string, photo: { dataUrl: string; fileName?: string }) => Promise<{ claimed: number; skipped: string[] }>;
   startProductionBatch: (input: { mrpId: string; aduanRowId: string; qtyRoll: number; gramasi: number; restingAt: string; codeRoll?: string }) => Promise<void>;
   // "WASTE" SENGAJA tidak termasuk di sini -- item 19: "Buang ke Sisa" (satu-satunya jalur dulu
   // bikin entri WASTE) sudah dihapus, jadi kind di sini praktis selalu "FG"/"REJECT" saja.
@@ -299,6 +317,9 @@ type FlowActions = {
   payMaklonInvoice: (invoiceId: string) => Promise<void>;
   receiveRawMaterialAddBuy: (invoiceId: string, addBuyId: string) => Promise<void>;
   updateBatchToCutting: (batchId: string, cuttingAt: string, sizeQty?: Record<string, number>) => Promise<void>;
+  /** Item 14 (feedback batch 2026-09-10): edit resting_at untuk 1 sesi resting (beberapa batch
+   *  sekaligus, semuanya berbagi resting_at yang sama). */
+  updateBatchRestingAt: (batchIds: string[], restingAt: string) => Promise<void>;
   resolveProductionYield: (batchId: string, note: string) => Promise<void>;
   unresolveProductionYield: (batchId: string) => Promise<void>;
   reworkRejectSize: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; fromSize: string; qty: number; toLengan: Lengan; toSize: string; usia: Usia }) => Promise<void>;
@@ -507,7 +528,21 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   ...emptyState,
 
   hydrate: (snapshot) => set({ ...snapshot, hydrated: true }),
+  // Fix (feedback batch 2026-09-10, item 6/10 "tombol ngeflick" di Good Receive & Cutting): dulu
+  // cuma jalur backgroundRefresh/scheduleRefresh (dipanggil dari action DI DALAM store ini) yang
+  // menunggu `inFlightWriteCount` balik ke 0 sebelum fetch -- StoreHydrator (components/shell/
+  // store-hydrator.tsx) memanggil refresh() ini LANGSUNG dari mount/focus/visibilitychange/poll
+  // 30 detik, sepenuhnya di luar guard itu. Kalau salah satu trigger itu (paling sering poll 30
+  // detik) kebetulan bersamaan dengan action lain yang masih menulis (mis. markRollArrived,
+  // updateBatchToCutting), snapshot yang diambil di sini bisa "separuh jalan" & menimpa balik
+  // patch optimistic action itu -- sampai backgroundRefresh MILIK action itu sendiri datang
+  // membetulkannya lagi sesaat kemudian. Itulah gejala "klik -> kelihatan belum kesimpan -> balik
+  // lagi sudah tersimpan". Sekarang refresh() ITU SENDIRI menunggu semua tulisan yang sedang
+  // berlangsung selesai dulu -- melindungi SEMUA pemanggil (StoreHydrator, login flow di
+  // internal-auth-store.ts/vendor-auth-store.ts, DAN scheduleRefresh), bukan cuma jalur
+  // backgroundRefresh yang sudah ter-guard.
   refresh: async () => {
+    await waitForNoInFlightWrites();
     const { busy: _snapshotBusy, ...snapshot } = await actions.getFlowSnapshotAction();
     // `busy` SENGAJA tidak ikut di-spread -- ini flag UI lokal punya store.ts (lihat
     // withBusyTracking), bukan bagian data server; overwrite balik pakai kosong/false dari sini
@@ -782,6 +817,14 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   },
   confirmRollWeigh: async (items) => {
     const result = await actions.confirmRollWeighAction(items);
+    backgroundRefresh();
+    return result;
+  },
+  // Item 13 (feedback batch 2026-09-10): klaim fisik dari roll yang sudah masuk resting -- batch-
+  // nya dihapus server-side (lihat submitCuttingDefectClaimAction), jadi TIDAK optimistic (perlu
+  // snapshot baru supaya "Material dalam produksi" & "Timbang roll" langsung konsisten).
+  submitCuttingDefectClaim: async (batchIds, note, photo) => {
+    const result = await actions.submitCuttingDefectClaimAction(batchIds, note, photo);
     backgroundRefresh();
     return result;
   },
@@ -1207,6 +1250,20 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     set({
       productionBatches: get().productionBatches.map((b) => (b.id === batchId ? { ...b, cuttingAt: result.cuttingAt, sizeQty: result.sizeQty ?? b.sizeQty } : b)),
     });
+    backgroundRefresh();
+  },
+  // Item 14 (feedback batch 2026-09-10): edit resting_at untuk semua batch 1 sesi resting
+  // sekaligus (mereka selalu berbagi 1 resting_at yang sama, lihat restingSessionGroups).
+  updateBatchRestingAt: async (batchIds, restingAt) => {
+    const idSet = new Set(batchIds);
+    const previous = get().productionBatches;
+    set({ productionBatches: previous.map((b) => (idSet.has(b.id) ? { ...b, restingAt } : b)) });
+    try {
+      await actions.updateBatchRestingAtAction(batchIds, restingAt);
+    } catch (err) {
+      set({ productionBatches: previous });
+      throw err;
+    }
     backgroundRefresh();
   },
   resolveProductionYield: async (batchId, note) => {

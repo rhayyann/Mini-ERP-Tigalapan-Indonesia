@@ -13,6 +13,7 @@ import {
   formatDateTime,
   formatDecimal,
   formatDuration,
+  materialClaimsList,
   materialClaimStage,
   materialReceivedForMaklon,
   pendingWeighRolls,
@@ -84,10 +85,25 @@ function batchNeedsCuttingInput(b: ProductionBatch): boolean {
   return Object.values(b.sizeQty).every((v) => !v || v <= 0);
 }
 
+/** Format Date jadi nilai yang diterima <input type="datetime-local"> DALAM JAM LOKAL browser
+ *  (bukan UTC) -- kebalikan dari toUtcIso di bawah. Dipakai baik untuk "sekarang" (nowLocalDatetime)
+ *  MAUPUN untuk memprefill form edit (item 14) dari timestamp ISO UTC yang sudah tersimpan
+ *  (isoToLocalDatetime) -- keduanya HARUS lewat konversi yang sama, langsung slice string ISO UTC
+ *  tanpa konversi ini menampilkan jam UTC yang dilabeli seolah jam lokal (geser sebesar offset
+ *  zona waktu, persis bug yang dijelaskan di toUtcIso di bawah).
+ */
+function toLocalDatetimeInput(d: Date): string {
+  const local = new Date(d);
+  local.setMinutes(local.getMinutes() - local.getTimezoneOffset());
+  return local.toISOString().slice(0, 16);
+}
+
 function nowLocalDatetime() {
-  const d = new Date();
-  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-  return d.toISOString().slice(0, 16);
+  return toLocalDatetimeInput(new Date());
+}
+
+function isoToLocalDatetime(iso: string): string {
+  return toLocalDatetimeInput(new Date(iso));
 }
 
 /** Konversi nilai naive dari <input type="datetime-local"> (mis. "2026-09-03T12:33", TANPA info
@@ -127,8 +143,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const productionBatches = useMrpStore((s) => s.productionBatches);
   const startProductionBatch = useMrpStore((s) => s.startProductionBatch);
   const updateBatchToCutting = useMrpStore((s) => s.updateBatchToCutting);
+  const updateBatchRestingAt = useMrpStore((s) => s.updateBatchRestingAt);
   const receiveRawMaterialRoll = useMrpStore((s) => s.receiveRawMaterialRoll);
   const confirmRollWeigh = useMrpStore((s) => s.confirmRollWeigh);
+  const submitCuttingDefectClaim = useMrpStore((s) => s.submitCuttingDefectClaim);
   const materialClaimResolutions = useMrpStore((s) => s.materialClaimResolutions);
   const materialClaimReturRequests = useMrpStore((s) => s.materialClaimReturRequests);
   const materialClaimReturDeliveries = useMrpStore((s) => s.materialClaimReturDeliveries);
@@ -224,6 +242,89 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   // untuk grup itu) alih-alih menebak-nebak.
   const [cuttingGroupError, setCuttingGroupError] = useState<string | null>(null);
   const [cuttingGroupSaving, setCuttingGroupSaving] = useState(false);
+  // Item 14 (feedback batch 2026-09-10, owner: "Tambahkan fitur untuk bisa edit hasil input ulang
+  // (takutnya salah isi jam resting atau qty cutting)"): dulu modal ini cuma bisa dibuka untuk
+  // batch yang MASIH butuh input (batchNeedsCuttingInput) -- begitu sesi "selesai" (semua roll
+  // sudah ada hasil cutting bukan-nol), tidak ada jalan lagi untuk mengoreksi salah ketik. Sekarang
+  // modal bisa dibuka dalam mode "edit" (SEMUA batch sesi ini, bukan cuma yang belum diisi) lewat
+  // tombol "Edit ✎" di baris yang sudah selesai -- cuttingGroupDateDraft & isi form diprefill dari
+  // nilai yang SUDAH tersimpan (bukan kosong/"sekarang"), dan field tanggal/jam resting jadi ikut
+  // bisa diedit (lihat restingAtEditDraft, updateBatchRestingAt di store).
+  const [cuttingGroupEditAll, setCuttingGroupEditAll] = useState(false);
+  const [restingAtEditDraft, setRestingAtEditDraft] = useState(nowLocalDatetime());
+  // Item 13 (feedback batch 2026-09-10, owner: "Saya ingin bisa di select rollnya (checkbox dan
+  // bisa diajukan claim) karena di proses resting ini itu kita menghamparkan kain jadi bisa cek
+  // jika ada cacat material selain dari claim berat toleransi (shading, kotor, dll)"): checkbox
+  // per roll di modal "Input/Perbaiki/Edit Hasil Cutting" + dialog klaim fisik terpisah (foto +
+  // keterangan WAJIB, pola sama seperti dialog klaim berat/pendingClaim di atas tapi state-nya
+  // sengaja dipisah -- 2 dialog beda konteks, tidak pernah tumpang tindih).
+  const [defectClaimSelected, setDefectClaimSelected] = useState<Set<string>>(new Set());
+  const [defectClaimDialogOpen, setDefectClaimDialogOpen] = useState(false);
+  const [defectClaimNote, setDefectClaimNote] = useState("");
+  const [defectPhotoDataUrl, setDefectPhotoDataUrl] = useState<string | null>(null);
+  const [defectPhotoFileName, setDefectPhotoFileName] = useState<string | undefined>(undefined);
+  const [defectPhotoError, setDefectPhotoError] = useState<string | null>(null);
+  const [defectPhotoBusy, setDefectPhotoBusy] = useState(false);
+  const [defectClaimSubmitting, setDefectClaimSubmitting] = useState(false);
+  const [defectClaimError, setDefectClaimError] = useState<string | null>(null);
+  const [defectClaimNotice, setDefectClaimNotice] = useState<string | null>(null);
+  const defectPhotoInputRef = useRef<HTMLInputElement>(null);
+  function toggleDefectClaimSelected(batchId: string) {
+    setDefectClaimSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(batchId)) next.delete(batchId);
+      else next.add(batchId);
+      return next;
+    });
+  }
+  async function onDefectPhotoSelected(file: File) {
+    setDefectPhotoError(null);
+    setDefectPhotoBusy(true);
+    try {
+      const compressed = await compressImageToDataUrl(file);
+      if (dataUrlApproxBytes(compressed) > MAX_CLAIM_PHOTO_BYTES) {
+        setDefectPhotoError("Foto terlalu besar, ambil ulang dengan resolusi lebih kecil");
+        setDefectPhotoDataUrl(null);
+        return;
+      }
+      setDefectPhotoDataUrl(compressed);
+      setDefectPhotoFileName(file.name);
+    } catch (e) {
+      setDefectPhotoError(e instanceof Error ? e.message : "Gagal memproses foto.");
+    } finally {
+      setDefectPhotoBusy(false);
+    }
+  }
+  function closeDefectClaimDialog() {
+    setDefectClaimDialogOpen(false);
+    setDefectClaimNote("");
+    setDefectPhotoDataUrl(null);
+    setDefectPhotoFileName(undefined);
+    setDefectPhotoError(null);
+    if (defectPhotoInputRef.current) defectPhotoInputRef.current.value = "";
+  }
+  async function submitDefectClaim() {
+    if (defectClaimSelected.size === 0 || !defectClaimNote.trim() || !defectPhotoDataUrl || defectClaimSubmitting) return;
+    setDefectClaimSubmitting(true);
+    setDefectClaimError(null);
+    try {
+      const result = await submitCuttingDefectClaim(Array.from(defectClaimSelected), defectClaimNote.trim(), {
+        dataUrl: defectPhotoDataUrl,
+        fileName: defectPhotoFileName,
+      });
+      setDefectClaimNotice(
+        result.skipped.length > 0
+          ? `${result.claimed} roll diklaim cacat fisik. ${result.skipped.length} roll dilewati (gagal dicocokkan ke data roll asli).`
+          : `${result.claimed} roll diklaim cacat fisik -- sudah masuk ke "Timbang roll" (terkunci) & Procurement &gt; Klaim Material.`
+      );
+      setDefectClaimSelected(new Set());
+      closeDefectClaimDialog();
+    } catch (e) {
+      setDefectClaimError(e instanceof Error ? e.message : "Gagal mengajukan klaim fisik.");
+    } finally {
+      setDefectClaimSubmitting(false);
+    }
+  }
   // Item 14.2: "Isi semua roll tersedia" di form Resting butuh SATU nilai gramasi yang dipakai
   // buat mengisi semua baris otomatis -- baris tetap bisa diedit satu-satu sesudahnya.
   const [fillGramasi, setFillGramasi] = useState(0);
@@ -307,6 +408,27 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   function weighKey(r: PendingWeighRoll): string {
     return `${r.invoiceId}|${r.warna}|${r.lengan}|${r.rollIndex}`;
   }
+  // Item 11 (feedback batch 2026-09-10, owner: "Saat ada yang statusnya claim itu harusnya yang
+  // bisa di simpan semua itu adalah jumlah roll yang tidak lewat toleransi"): diekstrak dari
+  // logika `locked` yang sebelumnya cuma inline di render baris (lihat JSX di bawah) -- roll yang
+  // punya claim aktif (belum RETUR_DITERIMA) TERKUNCI, tidak boleh ikut disimpan/di-Simpan-semua.
+  // Dipakai baik untuk render baris (🔒 Terkunci vs tombol Simpan) MAUPUN untuk memfilter rows
+  // sebelum masuk saveAllInGroup -- sebelum fix ini, "Simpan semua" mengirim SEMUA rows tanpa
+  // filter, jadi roll yang terkunci ikut dievaluasi ulang dari r.netKg (nilai lama yang MEMICU
+  // klaim itu sendiri) dan ikut ke-push LAGI ke claimQueue -- membuka ulang dialog klaim untuk
+  // roll yang sudah dalam proses retur.
+  // Item 13 (feedback batch 2026-09-10): "aktif diklaim" sekarang dicek lewat materialClaimsList
+  // (activeClaimKeys) -- SATU sumber kebenaran yang sudah mencakup KEDUA jenis klaim (BERAT via
+  // weightVariance, DAN FISIK via claimDefectAt, lihat lib/mrp/derive.ts) -- bukan lagi
+  // re-derive weightVariance() sendiri di sini, yang akan MELEWATKAN klaim fisik (roll bisa
+  // TETAP dalam toleransi berat tapi sudah diklaim fisik).
+  const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
+  function isRowLocked(r: PendingWeighRoll): boolean {
+    const key = weighKey(r);
+    const stage: MaterialClaimStage = materialClaimStage(key, materialClaimResolutions, materialClaimReturRequests, materialClaimReturDeliveries, materialClaimReturReceipts);
+    const hasActiveClaim = activeClaimKeys.has(key) && stage !== "SELESAI";
+    return hasActiveClaim && stage !== "RETUR_DITERIMA";
+  }
   // Item 14.1: grouping warna·lengan dipakai bareng untuk daftar 1 & 2 (pendingRows/unconfirmedRows).
   function groupByWarnaLengan(rows: PendingWeighRoll[]): { key: string; warna: string; lengan: Lengan; rows: PendingWeighRoll[] }[] {
     const map = new Map<string, { key: string; warna: string; lengan: Lengan; rows: PendingWeighRoll[] }>();
@@ -367,7 +489,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   // (key unik per rollIndex, tidak ada roll yang saling menimpa draft roll lain).
   async function saveAllInGroup(rows: PendingWeighRoll[]) {
     const toCommit: PendingWeighRoll[] = [];
-    for (const r of rows) {
+    // Item 11: jaring pengaman -- caller (tombol "Simpan semua") sudah memfilter locked rows
+    // duluan (lihat pemanggilan di bawah), tapi difilter lagi di sini supaya fungsi ini aman
+    // dipanggil dari tempat lain tanpa filter tersendiri.
+    for (const r of rows.filter((r) => !isRowLocked(r))) {
       const key = weighKey(r);
       const netKg = weighDraft[key] ?? r.netKg ?? r.grossKg;
       const variance = weightVariance(r.grossKg, netKg);
@@ -581,23 +706,38 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   // hasil aduannya kosong/nol semua, lihat batchNeedsCuttingInput), lintas warna. `kode`/`lengan`
   // dipertahankan di signature buat kejelasan pemanggil (lihat 5.4) walau sessionKey sendiri
   // sudah cukup unik (sudah mengandung mrpId|kode|lengan|restingAt).
-  function openCuttingGroupModal(kode: string, lengan: Lengan, sessionKey: string) {
+  // Item 14: `editAll=true` (dipicu tombol "Edit ✎" pada sesi yang sudah selesai) membuka SEMUA
+  // batch sesi ini (bukan cuma yang belum diisi), dan memprefill tanggal/jam dari nilai yang SUDAH
+  // tersimpan -- bukan kosong/"sekarang" seperti alur normal (Input/Perbaiki Hasil Cutting).
+  function openCuttingGroupModal(kode: string, lengan: Lengan, sessionKey: string, editAll = false) {
     void kode;
     void lengan;
     const session = sessionGroups.find((g) => g.key === sessionKey);
-    const groupBatches = (session?.batches ?? []).filter(batchNeedsCuttingInput);
+    const groupBatches = editAll ? (session?.batches ?? []) : (session?.batches ?? []).filter(batchNeedsCuttingInput);
     setCuttingSizeDraft((prev) => {
       const next = { ...prev };
       for (const b of groupBatches) next[b.id] = next[b.id] ?? b.sizeQty ?? {};
       return next;
     });
-    setCuttingGroupDateDraft(nowLocalDatetime());
+    if (editAll) {
+      const cuttingAts = groupBatches.map((b) => b.cuttingAt).filter((c): c is string => !!c);
+      const earliestCuttingAt = cuttingAts.length > 0 ? cuttingAts.reduce((min, c) => (Date.parse(c) < Date.parse(min) ? c : min)) : undefined;
+      setCuttingGroupDateDraft(isoToLocalDatetime(earliestCuttingAt ?? session?.restingAt ?? new Date().toISOString()));
+      setRestingAtEditDraft(isoToLocalDatetime(session?.restingAt ?? new Date().toISOString()));
+    } else {
+      setCuttingGroupDateDraft(nowLocalDatetime());
+    }
+    setCuttingGroupEditAll(editAll);
     setCuttingGroupError(null);
     setActiveCuttingGroupKey(sessionKey);
   }
   function closeCuttingGroupModal() {
     setActiveCuttingGroupKey(null);
     setCuttingGroupError(null);
+    setCuttingGroupEditAll(false);
+    setDefectClaimSelected(new Set());
+    setDefectClaimNotice(null);
+    setDefectClaimError(null);
   }
 
   return (
@@ -658,9 +798,18 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                   <span className={"transition-transform " + (weighExpanded ? "rotate-90" : "")}>›</span>
                   {g.warna} · {g.lengan} ({g.rows.length})
                 </button>
-                <Button onClick={() => saveAllInGroup(g.rows)} variant="primary" size="xs">
-                  Simpan semua ({g.rows.length})
-                </Button>
+                {/* Item 11: "Simpan semua" cuma menghitung & mengirim roll yang TIDAK terkunci
+                   klaim -- roll yang masih menunggu retur Procurement (🔒 Terkunci di baris,
+                   lihat isRowLocked) tidak bisa disimpan sama sekali & tidak boleh ikut kehitung
+                   di label tombol ini. */}
+                {(() => {
+                  const savable = g.rows.filter((r) => !isRowLocked(r));
+                  return (
+                    <Button onClick={() => saveAllInGroup(savable)} disabled={savable.length === 0} variant="primary" size="xs">
+                      Simpan semua ({savable.length})
+                    </Button>
+                  );
+                })()}
               </div>
               {weighExpanded && (
               <>
@@ -680,10 +829,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                 const key = weighKey(r);
                 const netVal = weighDraft[key] ?? r.netKg ?? r.grossKg;
                 const variance = weightVariance(r.grossKg, netVal);
-                // Status klaim SAAT INI dihitung dari r.netKg yang SUDAH TERSIMPAN (bukan dari draft
-                // input yang belum disimpan) -- ini yang menentukan terkunci/tidaknya roll ini,
-                // sinkron persis dengan pengecekan yang sama di receiveRawMaterialRollAction.
-                const savedVariance = r.netKg !== undefined ? weightVariance(r.grossKg, r.netKg) : null;
+                // Status klaim SAAT INI dicek lewat activeClaimKeys (materialClaimsList, sudah
+                // mencakup klaim BERAT & FISIK) -- BUKAN dari draft input yang belum disimpan --
+                // ini yang menentukan terkunci/tidaknya roll ini, sinkron persis dengan pengecekan
+                // yang sama di receiveRawMaterialRollAction.
                 const stage: MaterialClaimStage = materialClaimStage(
                   key,
                   materialClaimResolutions,
@@ -691,7 +840,7 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                   materialClaimReturDeliveries,
                   materialClaimReturReceipts
                 );
-                const hasActiveClaim = !!savedVariance?.claimable && stage !== "SELESAI";
+                const hasActiveClaim = activeClaimKeys.has(key) && stage !== "SELESAI";
                 const locked = hasActiveClaim && stage !== "RETUR_DITERIMA";
                 const unlockedForReweigh = hasActiveClaim && stage === "RETUR_DITERIMA";
                 const delivery = materialClaimReturDeliveries[key];
@@ -1121,7 +1270,22 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                     <span className="font-mono text-[11px]">{formatDateTime(g.restingAt)}</span>
                     <span className="font-mono text-[11px]">
                       {sessionComplete ? (
-                        formatDateTime(earliestCuttingAt ?? g.restingAt)
+                        <span className="flex items-center gap-1.5">
+                          {formatDateTime(earliestCuttingAt ?? g.restingAt)}
+                          {/* Item 14 (feedback batch 2026-09-10, owner: "Tambahkan fitur untuk
+                             bisa edit hasil input ulang (takutnya salah isi jam resting atau qty
+                             cutting)") -- sesi yang sudah selesai dulu tidak punya jalan koreksi
+                             sama sekali. updateBatchToCuttingAction sendiri sudah mendukung edit
+                             berulang (selama grup belum "Selesai Produksi" Final) -- cuma belum
+                             ada tombolnya di sini. */}
+                          <button
+                            onClick={() => openCuttingGroupModal(g.kode, g.lengan, g.key, true)}
+                            title="Edit tanggal/jam resting atau hasil cutting sesi ini"
+                            className="font-sans text-[10.5px] font-semibold text-action-primary underline"
+                          >
+                            Edit ✎
+                          </button>
+                        </span>
                       ) : (
                         <Button onClick={() => openCuttingGroupModal(g.kode, g.lengan, g.key)} variant="primary" size="xs">
                           {anyMissingCuttingAt ? "Input Hasil Cutting →" : "Perbaiki Hasil Cutting →"}
@@ -1227,13 +1391,16 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
           const session = sessionGroups.find((g) => g.key === activeCuttingGroupKey);
           if (!session) return null;
           const { kode, lengan, partNo } = session;
-          const groupBatches = session.batches.filter(batchNeedsCuttingInput);
+          // Item 14: mode edit (dibuka lewat "Edit ✎" pada sesi yang sudah selesai) mencakup
+          // SEMUA batch sesi ini -- alur normal (Input/Perbaiki Hasil Cutting) tetap cuma batch
+          // yang masih butuh aksi.
+          const groupBatches = cuttingGroupEditAll ? session.batches : session.batches.filter(batchNeedsCuttingInput);
           if (groupBatches.length === 0) return null;
           const byWarna = new Map<string, typeof groupBatches>();
           for (const b of groupBatches) byWarna.set(b.warna, [...(byWarna.get(b.warna) ?? []), b]);
           // Item 16.3: tidak bisa Simpan sampai SEMUA batch di modal ini punya minimal 1 size
-          // bukan-nol -- baris yang di-"Perbaiki" boleh mulai dari state non-zero yang sudah
-          // tersimpan sebelumnya (prefilled di openCuttingGroupModal), jadi otomatis lolos.
+          // bukan-nol -- baris yang di-"Perbaiki"/di-edit boleh mulai dari state non-zero yang
+          // sudah tersimpan sebelumnya (prefilled di openCuttingGroupModal), jadi otomatis lolos.
           const incompleteIds = groupBatches.filter((b) => {
             const draft = cuttingSizeDraft[b.id] ?? {};
             return Object.values(draft).every((v) => !v || v <= 0);
@@ -1244,6 +1411,11 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
             setCuttingGroupError(null);
             setCuttingGroupSaving(true);
             try {
+              // Item 14: mode edit juga bisa mengoreksi tanggal/jam resting sesi ini (dulu tidak
+              // ada jalan edit sama sekali setelah "Resting" pertama kali disubmit).
+              if (cuttingGroupEditAll) {
+                await updateBatchRestingAt(groupBatches.map((b) => b.id), toUtcIso(restingAtEditDraft));
+              }
               const effectiveDate = toUtcIso(cuttingGroupDateDraft);
               for (const b of groupBatches) {
                 await updateBatchToCutting(b.id, effectiveDate, cuttingSizeDraft[b.id] ?? {});
@@ -1260,10 +1432,21 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
               <div className="w-full max-w-[720px] rounded-lg bg-white shadow-[0_8px_24px_rgba(11,19,27,.2)]">
                 <div className="border-b border-border-subtle px-5 py-3.5">
                   <span className="font-sans text-[13px] font-semibold text-text-primary">
-                    Input Hasil Cutting — {kode} · {lengan} · Part {partNo} ({groupBatches.length} roll)
+                    {cuttingGroupEditAll ? "Edit" : "Input"} Hasil Cutting — {kode} · {lengan} · Part {partNo} ({groupBatches.length} roll)
                   </span>
                 </div>
                 <div className="max-h-[70vh] overflow-y-auto px-5 py-4">
+                  {cuttingGroupEditAll && (
+                    <div className="mb-3">
+                      <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Tanggal &amp; jam resting (berlaku untuk semua roll di grup ini)</div>
+                      <input
+                        type="datetime-local"
+                        value={restingAtEditDraft}
+                        onChange={(e) => setRestingAtEditDraft(e.target.value)}
+                        className="input mt-1"
+                      />
+                    </div>
+                  )}
                   <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Tanggal &amp; jam cutting (berlaku untuk semua roll di grup ini)</div>
                   <input
                     type="datetime-local"
@@ -1284,8 +1467,22 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                         const isIncomplete = incompleteIds.some((x) => x.id === b.id);
                         return (
                           <div key={b.id} className="mt-2.5 rounded-md border border-[#F1F4F7] bg-[#FAFBFC] p-3">
-                            <div className="font-sans text-[11px] font-medium text-text-muted">
-                              Roll {b.qtyRoll} — {b.codeRoll || "—"} (target {targetTotal} pcs){b.cuttingAt && <span className="ml-1.5 text-warning-fg">(perbaiki)</span>}
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="font-sans text-[11px] font-medium text-text-muted">
+                                Roll {b.qtyRoll} — {b.codeRoll || "—"} (target {targetTotal} pcs){b.cuttingAt && <span className="ml-1.5 text-warning-fg">(perbaiki)</span>}
+                              </div>
+                              {/* Item 13: checkbox pilih roll untuk diajukan klaim fisik (cacat
+                                 selain selisih berat, ditemukan saat menghamparkan kain untuk
+                                 resting/cutting) -- lihat tombol "Ajukan Claim Fisik" di footer. */}
+                              <label className="flex flex-none items-center gap-1.5 font-sans text-[10.5px] font-medium text-text-muted">
+                                <input
+                                  type="checkbox"
+                                  checked={defectClaimSelected.has(b.id)}
+                                  onChange={() => toggleDefectClaimSelected(b.id)}
+                                  className="h-3.5 w-3.5"
+                                />
+                                Cacat fisik?
+                              </label>
                             </div>
                             {/* Item revisi 2026-09-08 (owner: elemen tumpang tindih/tidak presisi di
                                form input cutting) -- label "(target N)" dulu bisa lebih lebar dari
@@ -1323,10 +1520,18 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                     </div>
                   ))}
                 </div>
+                {defectClaimNotice && (
+                  <div className="border-t border-[#B7DFC5] bg-success-bg px-5 py-2.5 font-sans text-[11px] leading-[1.5] text-success-fg">{defectClaimNotice}</div>
+                )}
                 {cuttingGroupError && (
                   <div className="border-t border-[#F0DFC2] bg-danger-bg px-5 py-2.5 font-sans text-[11px] leading-[1.5] text-danger-fg">{cuttingGroupError}</div>
                 )}
-                <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-3.5">
+                <div className="flex items-center justify-end gap-2 border-t border-border-subtle px-5 py-3.5">
+                  {defectClaimSelected.size > 0 && (
+                    <Button onClick={() => setDefectClaimDialogOpen(true)} variant="danger" size="sm" className="mr-auto">
+                      Ajukan Claim Fisik ({defectClaimSelected.size}) →
+                    </Button>
+                  )}
                   <button onClick={closeCuttingGroupModal} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-[7px] font-sans text-xs font-semibold text-action-primary">
                     Batal
                   </button>
@@ -1335,6 +1540,58 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                   </Button>
                 </div>
               </div>
+
+              {/* Item 13: dialog klaim fisik -- foto + keterangan WAJIB sebelum bisa diajukan,
+                 pola sama seperti dialog klaim berat (pendingClaim) di bawah tapi state terpisah. */}
+              {defectClaimDialogOpen && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0B131B]/45 p-4">
+                  <div className="w-full max-w-[480px] rounded-lg bg-white shadow-[0_8px_24px_rgba(11,19,27,.2)]">
+                    <div className="border-b border-border-subtle px-5 py-3.5">
+                      <span className="font-sans text-[13px] font-semibold text-text-primary">Ajukan Claim Fisik — {defectClaimSelected.size} roll</span>
+                    </div>
+                    <div className="px-5 py-4">
+                      <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Keterangan cacat (wajib)</div>
+                      <textarea
+                        value={defectClaimNote}
+                        onChange={(e) => setDefectClaimNote(e.target.value)}
+                        placeholder="Contoh: warna belang/shading di bagian tengah roll, kain kotor terkena oli..."
+                        rows={3}
+                        className="input mt-1 w-full"
+                      />
+                      <div className="mt-3 font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Foto bukti (wajib)</div>
+                      <input
+                        ref={defectPhotoInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) onDefectPhotoSelected(file);
+                        }}
+                        className="mt-1 font-sans text-[11px]"
+                      />
+                      {defectPhotoBusy && <div className="mt-1.5 font-sans text-[10.5px] text-text-muted">Memproses foto…</div>}
+                      {defectPhotoError && <div className="mt-1.5 font-sans text-[10.5px] text-danger-fg">{defectPhotoError}</div>}
+                      {defectPhotoDataUrl && !defectPhotoBusy && (
+                        <img src={defectPhotoDataUrl} alt="Preview bukti cacat fisik" className="mt-2 max-h-[160px] rounded-md border border-[#EEF1F4]" />
+                      )}
+                      {defectClaimError && <div className="mt-2 font-sans text-[10.5px] text-danger-fg">{defectClaimError}</div>}
+                    </div>
+                    <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-3.5">
+                      <button onClick={closeDefectClaimDialog} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-[7px] font-sans text-xs font-semibold text-action-primary">
+                        Batal
+                      </button>
+                      <Button
+                        onClick={submitDefectClaim}
+                        disabled={!defectClaimNote.trim() || !defectPhotoDataUrl || defectClaimSubmitting}
+                        variant="danger"
+                        size="sm"
+                      >
+                        {defectClaimSubmitting ? "Mengirim…" : "Ya, Kirim Claim"}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })()}

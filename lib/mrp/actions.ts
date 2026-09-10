@@ -1120,7 +1120,7 @@ export async function receiveRawMaterialRollAction(
   const colorId = `${invoiceId}-${warna}-${lengan}`;
   const { data: rollRow } = await db
     .from("raw_material_invoice_rolls")
-    .select("code_roll,code_lot,gross_kg,net_kg,claim_resolved_at,claim_retur_received_at")
+    .select("code_roll,code_lot,gross_kg,net_kg,claim_resolved_at,claim_retur_received_at,claim_defect_at")
     .eq("invoice_color_id", colorId)
     .eq("roll_index", rollIndex)
     .single();
@@ -1128,11 +1128,15 @@ export async function receiveRawMaterialRollAction(
   if (rollRow && rollRow.net_kg != null && rollRow.gross_kg != null) {
     // Item 4.4: SEKARANG cuma roll yang lebih RINGAN dari toleransi ("claimable") yang mengunci --
     // lebih berat dari invoice bukan klaim, tidak pernah bikin roll terkunci.
+    // Item 13 (feedback batch 2026-09-10): ATAU roll ini sudah diklaim FISIK (claim_defect_at,
+    // shading/kotor/dll dari production-cutting-tab.tsx) -- roll ini bisa saja beratnya TETAP
+    // dalam toleransi, tapi tetap harus terkunci sampai Procurement atur retur, sama seperti
+    // klaim berat.
     const variance = weightVariance(Number(rollRow.gross_kg), Number(rollRow.net_kg));
-    const isActiveClaim = variance.claimable && !rollRow.claim_resolved_at;
+    const isActiveClaim = (variance.claimable || !!rollRow.claim_defect_at) && !rollRow.claim_resolved_at;
     if (isActiveClaim && !rollRow.claim_retur_received_at) {
       throw new Error(
-        "Roll ini masih diklaim selisih berat -- menunggu Procurement atur retur & kirim roll pengganti (lihat Klaim Material). Konfirmasi 'diterima' dulu di sini setelah roll penggantinya sampai, baru bisa ditimbang ulang."
+        "Roll ini masih diklaim (selisih berat atau cacat fisik) -- menunggu Procurement atur retur & kirim roll pengganti (lihat Klaim Material). Konfirmasi 'diterima' dulu di sini setelah roll penggantinya sampai, baru bisa ditimbang ulang."
       );
     }
   }
@@ -1157,6 +1161,10 @@ export async function receiveRawMaterialRollAction(
     update.claim_resolved_note = null;
     update.claim_resolved_at = null;
     update.claim_photo_at = null;
+    // Item 13: klaim FISIK (kalau ada) ikut dianggap tuntas di titik yang sama seperti klaim
+    // berat -- roll pengganti sudah ditimbang & disimpan normal.
+    update.claim_defect_note = null;
+    update.claim_defect_at = null;
   } else if (photo) {
     // Validasi server-side -- kompresi/ukuran/tipe gambar di client (production-cutting-tab.tsx)
     // cuma konvensi UI, siapa pun yang manggil Server Action ini langsung (skip UI) bisa kirim
@@ -1241,6 +1249,104 @@ export async function receiveRawMaterialRollAction(
     }
   }
   void vendorId;
+}
+
+/** Item 13 (feedback batch 2026-09-10, owner: "bisa di select rollnya (checkbox dan bisa diajukan
+ *  claim) karena di proses resting ini itu kita menghamparkan kain jadi bisa cek jika ada cacat
+ *  material selain dari claim berat toleransi (shading, kotor, dll)"): klaim FISIK untuk roll yang
+ *  SUDAH masuk ProductionBatch (sudah lewat timbang, sedang/sudah resting) -- dipicu checkbox +
+ *  foto + keterangan di production-cutting-tab.tsx.
+ *
+ *  Setiap batch di-resolve balik ke (invoiceId, warna, lengan, rollIndex) lewat pencocokan
+ *  code_roll (pola sama seperti usedCodeRolls di transferMaterialAction) -- ProductionBatch
+ *  sendiri tidak menyimpan invoiceId/rollIndex langsung. claim_defect_at/claim_defect_note
+ *  ditulis ke raw_material_invoice_rolls (kolom baru, migration 0023) supaya materialClaimsList
+ *  (lib/mrp/derive.ts) otomatis menyertakan roll ini -- termasuk otomatis muncul lagi di
+ *  pendingWeighRolls (Timbang roll) TERKUNCI, tanpa perlu logic tambahan di sana (sudah dicek
+ *  lewat activeClaimKeys, tidak bergantung ProductionBatch ada/tidak). Batch itu sendiri
+ *  DIHAPUS (+ production_batch_sizes-nya) -- fisiknya cacat, tidak bisa lanjut cutting/resting,
+ *  jadi tidak boleh nyangkut di tabel "Material dalam produksi" lagi.
+ *
+ *  Batch yang gagal di-resolve (code_roll kosong, atau tidak ketemu roll aslinya -- seharusnya
+ *  tidak terjadi kalau UI konsisten) di-skip & dilaporkan balik, sama pola dengan
+ *  confirmRollWeighAction, bukan diam-diam gagal semua. */
+export async function submitCuttingDefectClaimAction(
+  batchIds: string[],
+  note: string,
+  photo: { dataUrl: string; fileName?: string }
+): Promise<{ claimed: number; skipped: string[] }> {
+  const vendorId = await requireVendorSession();
+  if (!note.trim()) throw new Error("Keterangan cacat wajib diisi.");
+  if (!photo.dataUrl.startsWith("data:image/")) {
+    throw new Error("Foto bukti tidak valid -- harus berupa gambar.");
+  }
+  const base64Part = photo.dataUrl.slice(photo.dataUrl.indexOf(",") + 1);
+  const approxBytes = Math.floor((base64Part.length * 3) / 4);
+  if (approxBytes > 700 * 1024) {
+    throw new Error("Foto bukti terlalu besar -- ambil ulang dengan resolusi lebih kecil.");
+  }
+  if (batchIds.length === 0) return { claimed: 0, skipped: [] };
+
+  const db = supabaseServer();
+  const snapshot = await getFlowSnapshot();
+  const batches = snapshot.productionBatches.filter((b) => batchIds.includes(b.id) && b.vendorProduksi === vendorId);
+  const skipped: string[] = [];
+  let claimed = 0;
+  const claimedAt = nowIso();
+
+  for (const b of batches) {
+    if (!b.codeRoll) {
+      skipped.push(b.id);
+      continue;
+    }
+    let found: { invoiceId: string; rollIndex: number } | null = null;
+    for (const inv of snapshot.invoices) {
+      if (inv.mrpId !== b.mrpId || inv.destinationVendor !== vendorId) continue;
+      const colorKey = b.warna + "|" + b.lengan;
+      const receipts = inv.rollReceipts[colorKey] ?? [];
+      const idx = receipts.findIndex((r) => r?.codeRoll === b.codeRoll);
+      if (idx !== -1) {
+        found = { invoiceId: inv.id, rollIndex: idx };
+        break;
+      }
+    }
+    if (!found) {
+      skipped.push(b.id);
+      continue;
+    }
+    const claimKey = `${found.invoiceId}|${b.warna}|${b.lengan}|${found.rollIndex}`;
+    const { error: photoErr } = await db.from("material_claim_photos").upsert({
+      claim_key: claimKey,
+      invoice_id: found.invoiceId,
+      warna: b.warna,
+      lengan: b.lengan,
+      roll_index: found.rollIndex,
+      data_url: photo.dataUrl,
+      file_name: photo.fileName ?? null,
+      uploaded_at: claimedAt,
+    });
+    if (photoErr) throw new Error("Gagal menyimpan foto bukti klaim: " + photoErr.message);
+
+    const colorId = `${found.invoiceId}-${b.warna}-${b.lengan}`;
+    const { error: updErr } = await db
+      .from("raw_material_invoice_rolls")
+      .update({ claim_defect_note: note.trim(), claim_defect_at: claimedAt, claim_photo_at: claimedAt })
+      .eq("invoice_color_id", colorId)
+      .eq("roll_index", found.rollIndex);
+    if (updErr) throw new Error("Gagal menyimpan klaim fisik: " + updErr.message);
+
+    await db.from("production_batch_sizes").delete().eq("production_batch_id", b.id);
+    const { error: delErr } = await db.from("production_batches").delete().eq("id", b.id);
+    if (delErr) throw new Error("Gagal menghapus batch resting: " + delErr.message);
+
+    claimed++;
+  }
+
+  if (claimed > 0) {
+    await insertNotification(notif(`${claimed} roll diklaim cacat fisik oleh vendor produksi -- cek Klaim Material`, ["procurement"]));
+  }
+
+  return { claimed, skipped };
 }
 
 /** Item 13.2: tutup tahap "timbang" -- roll yang sudah ditimbang (net_kg terisi) & TIDAK claimable
@@ -2157,6 +2263,32 @@ export async function startProductionBatchAction(input: { mrpId: string; aduanRo
     created_at: today(),
     code_roll: input.codeRoll ?? null,
   });
+  if (error) throw new Error(error.message);
+}
+
+/** Item 14 (feedback batch 2026-09-10, owner: "Tambahkan fitur untuk bisa edit hasil input ulang
+ *  (takutnya salah isi jam resting atau qty cutting)") -- edit `resting_at` batch yang sudah ada,
+ *  dipanggil dari modal "Input/Perbaiki Hasil Cutting" (production-cutting-tab.tsx) saat dibuka
+ *  dalam mode edit untuk 1 SESI RESTING ("Part") sekaligus, karena semua batch di sesi itu selalu
+ *  berbagi satu resting_at yang sama (restingSessionGroups, lib/mrp/derive.ts). Gating SAMA
+ *  seperti updateBatchToCuttingAction (blocked kalau grup warna/lengan-nya sudah "Selesai Produksi"
+ *  Final -- production_group_meta.done_at) -- resting_at ikut jadi basis durasi resting/status
+ *  tepat waktu yang dikunci di tahap itu, jadi tidak boleh diubah lagi setelahnya. */
+export async function updateBatchRestingAtAction(batchIds: string[], restingAt: string): Promise<void> {
+  await requireVendorSession();
+  if (batchIds.length === 0) return;
+  const db = supabaseServer();
+  const { data: batchRows } = await db.from("production_batches").select("id,mrp_id,vendor_produksi,warna,lengan").in("id", batchIds);
+  for (const batchRow of batchRows ?? []) {
+    const groupKey = `${batchRow.mrp_id}|${batchRow.warna}|${batchRow.lengan}`;
+    const { data: meta } = await db.from("production_group_meta").select("done_at").eq("group_key", groupKey).maybeSingle();
+    if (meta?.done_at) {
+      throw new Error(
+        `Grup ${batchRow.warna} · ${batchRow.lengan} sudah "Selesai Produksi" (Final Produksi) -- tanggal/jam resting tidak bisa diedit lagi. Buka kunci dulu di tab Final Produksi ("Buka kunci ↺") kalau memang perlu.`
+      );
+    }
+  }
+  const { error } = await db.from("production_batches").update({ resting_at: restingAt }).in("id", batchIds);
   if (error) throw new Error(error.message);
 }
 
