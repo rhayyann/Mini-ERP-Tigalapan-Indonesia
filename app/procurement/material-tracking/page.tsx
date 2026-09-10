@@ -17,7 +17,7 @@ import {
   maklonPoBadgeWithApproval,
   materialPoFullStatus,
   materialPoFullStatusBadge,
-  movableRollCountForInvoice,
+  movableRollCountForInvoiceColor,
   mrpDetailFor,
   rollArrivalProgress,
   rollArrivalStatus,
@@ -380,24 +380,26 @@ export default function MaterialTrackingPage() {
 
       {transferOpen && (
         <TransferMaterialModal
-          items={transferEligibleInvoices.map(
-            (i): TransferCandidate => ({
-              id: i.id,
-              mrpId: i.mrpId,
-              poId: i.poId,
-              warna: i.colorEntries.map((c) => c.warna).join(", ") || "—",
-              // Item 1.4: cap ke roll yang BELUM dipotong (code_roll-nya belum dipakai
-              // ProductionBatch manapun) -- transfer sekarang dibolehkan sampai tahap PRODUCTION,
-              // tapi roll yang sudah dicutting fisiknya tidak boleh ikut "dipindahkan" lagi.
-              qtyReady: Math.min(i.qtyReady, movableRollCountForInvoice(i, productionBatches)),
-            })
+          // Item 2 (feedback batch 2026-09-10): 1 baris per (invoice, warna, lengan) -- bukan lagi
+          // 1 baris per invoice dengan warna digabung jadi 1 string -- supaya user bisa pilih
+          // pindahkan 1 warna saja dari invoice multi-warna, dengan cap "roll belum dipotong"
+          // sendiri per warna (movableRollCountForInvoiceColor).
+          items={transferEligibleInvoices.flatMap((i) =>
+            i.colorEntries.map(
+              (c): TransferCandidate => ({
+                id: `${i.id}|${c.warna}|${c.lengan}`,
+                invoiceId: i.id,
+                mrpId: i.mrpId,
+                poId: i.poId,
+                warna: c.warna,
+                lengan: c.lengan,
+                qtyReady: movableRollCountForInvoiceColor(i, productionBatches, c.warna, c.lengan),
+              })
+            ).filter((c) => c.qtyReady > 0)
           )}
           vendors={Object.keys(VENDOR_PRODUKSI).map((v) => ({ id: v, name: VENDOR_PRODUKSI[v].name }))}
           onCancel={() => setTransferOpen(false)}
-          onConfirm={(toVendor, qtyByInvoice, deliveryDate) => {
-            const items = Object.entries(qtyByInvoice)
-              .filter(([, qty]) => qty > 0)
-              .map(([invoiceId, qty]) => ({ invoiceId, qty }));
+          onConfirm={(toVendor, items, deliveryDate) => {
             transferMaterial(items, toVendor, deliveryDate);
             setSelected(new Set());
             setTransferOpen(false);

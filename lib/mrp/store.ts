@@ -290,7 +290,7 @@ type FlowActions = {
   approveVendorMaterialPos: (mrpId: string, vendor: string) => Promise<void>;
   closePoWithReason: (poId: string, reason: string, warna: string, lengan: Lengan, closeQty: number) => Promise<void>;
   reassignMaterialToSupplier: (poId: string, warna: string, lengan: Lengan, moveQty: number, newSupplier: string, reason: string) => Promise<void>;
-  transferMaterial: (items: { invoiceId: string; qty: number }[], toVendor: string, deliveryDate: string) => Promise<void>;
+  transferMaterial: (items: { invoiceId: string; warna: string; lengan: Lengan; qty: number }[], toVendor: string, deliveryDate: string) => Promise<void>;
   /** Vendor produksi berhenti mid-produksi -- lihat withdrawVendorProductionAction di actions.ts. */
   withdrawVendorProduction: (mrpId: string, fromVendor: string, toVendor: string) => Promise<void>;
   advanceMaklonProduction: (id: string) => Promise<void>;
