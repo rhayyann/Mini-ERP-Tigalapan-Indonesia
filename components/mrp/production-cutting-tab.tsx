@@ -315,7 +315,7 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
       setDefectClaimNotice(
         result.skipped.length > 0
           ? `${result.claimed} roll diklaim cacat fisik. ${result.skipped.length} roll dilewati (gagal dicocokkan ke data roll asli).`
-          : `${result.claimed} roll diklaim cacat fisik -- sudah masuk ke "Timbang roll" (terkunci) & Procurement &gt; Klaim Material.`
+          : `${result.claimed} roll diklaim cacat fisik -- sudah masuk ke "Timbang roll" (terkunci) & Procurement > Klaim Material.`
       );
       setDefectClaimSelected(new Set());
       closeDefectClaimDialog();
@@ -422,7 +422,11 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   // weightVariance, DAN FISIK via claimDefectAt, lihat lib/mrp/derive.ts) -- bukan lagi
   // re-derive weightVariance() sendiri di sini, yang akan MELEWATKAN klaim fisik (roll bisa
   // TETAP dalam toleransi berat tapi sudah diklaim fisik).
-  const activeClaimKeys = new Set(materialClaimsList(invoices).map((c) => c.key));
+  const claimsList = materialClaimsList(invoices);
+  const activeClaimKeys = new Set(claimsList.map((c) => c.key));
+  // Item 13: dipakai untuk menyesuaikan teks banner "roll ini terkunci" -- klaim FISIK (cacat,
+  // tidak ada selisih berat sama sekali) butuh kalimat berbeda dari klaim BERAT (perilaku lama).
+  const claimReasonByKey = new Map(claimsList.map((c) => [c.key, c.reason]));
   function isRowLocked(r: PendingWeighRoll): boolean {
     const key = weighKey(r);
     const stage: MaterialClaimStage = materialClaimStage(key, materialClaimResolutions, materialClaimReturRequests, materialClaimReturDeliveries, materialClaimReturReceipts);
@@ -844,10 +848,16 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                 const locked = hasActiveClaim && stage !== "RETUR_DITERIMA";
                 const unlockedForReweigh = hasActiveClaim && stage === "RETUR_DITERIMA";
                 const delivery = materialClaimReturDeliveries[key];
+                // Item 13: klaim FISIK (cacat, TIDAK ada selisih berat -- lihat claimReasonByKey)
+                // butuh kalimat BELUM yang berbeda dari klaim BERAT (perilaku lama) -- roll ini
+                // bisa saja "SESUAI" toleransi berat tapi tetap terkunci karena cacat fisiknya.
+                const isDefectClaim = claimReasonByKey.get(key) === "FISIK";
                 const stageBanner: Record<Exclude<MaterialClaimStage, "SELESAI">, { tone: string; text: string }> = {
                   BELUM: {
                     tone: "bg-danger-bg text-danger-fg",
-                    text: "Selisih berat kurang dari toleransi — sudah dikirim ke Procurement (lihat Klaim Material). Roll ini TERKUNCI, tidak bisa ditimbang ulang sampai Procurement atur retur & kirim roll pengganti.",
+                    text: isDefectClaim
+                      ? "Diklaim CACAT FISIK (bukan selisih berat) -- sudah dikirim ke Procurement (lihat Klaim Material). Roll ini TERKUNCI, tidak bisa ditimbang ulang sampai Procurement atur retur & kirim roll pengganti."
+                      : "Selisih berat kurang dari toleransi — sudah dikirim ke Procurement (lihat Klaim Material). Roll ini TERKUNCI, tidak bisa ditimbang ulang sampai Procurement atur retur & kirim roll pengganti.",
                   },
                   RETUR_DIMINTA: {
                     tone: "bg-info-bg text-info-fg",

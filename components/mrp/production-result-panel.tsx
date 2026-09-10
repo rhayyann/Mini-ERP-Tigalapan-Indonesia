@@ -385,8 +385,19 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                             totalCapacity[size] = openBatches.reduce((a, b) => a + Math.max(0, (b.sizeQty?.[size] ?? 0) - (b.fgSizeQty?.[size] ?? 0)), 0);
                           }
                           const overflow = sizesOpen.filter((size) => (sizeTotalDraft[size] ?? 0) > totalCapacity[size]);
+                          // BUG FIX (ditemukan lewat verifikasi live, 2026-09-10): fungsi ini dulu
+                          // (dari desain kartu-per-roll lama) fallback ke `b.sizeQty` (TARGET hasil
+                          // cutting) kalau `fgSizeQty` masih kosong -- benar untuk desain lama (input
+                          // per-roll pre-filled ke target penuh sebagai default), tapi SALAH di sini:
+                          // dipakai sebagai baseline "berapa yang SUDAH tersimpan" untuk menghitung
+                          // sisa kapasitas roll (`remaining` di bawah). Fallback ke target membuat
+                          // `remaining` SELALU 0 untuk roll yang belum pernah disimpan sama sekali
+                          // (target - target = 0) -- saveSizeTotals() diam-diam tidak pernah
+                          // mendistribusikan apa pun ke roll manapun. Baseline yang benar: 0 (kosong)
+                          // sampai benar-benar ada progres tersimpan -- sama seperti totalCapacity di
+                          // atas, yang sudah pakai `b.fgSizeQty?.[size] ?? 0` (bukan fallback ke target).
                           function defaultSizeQtyFor(b: (typeof openBatches)[number]): Record<string, number> {
-                            return b.fgSizeQty && Object.keys(b.fgSizeQty).length > 0 ? b.fgSizeQty : (b.sizeQty ?? {});
+                            return b.fgSizeQty ?? {};
                           }
                           async function saveSizeTotals() {
                             // Distribusi (roll pertama dulu, isi sisa kapasitasnya) LANGSUNG jadi
