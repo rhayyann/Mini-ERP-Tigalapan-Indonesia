@@ -685,12 +685,21 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     vendorProduksi: k.vendor_produksi,
     ekspedisi: k.ekspedisi ?? "",
     noKoli: k.no_koli ?? "",
-    items: (itemsByKoli[k.id] ?? []).map<DeliveryKoliItem>((it) => ({ warna: it.warna, lengan: it.lengan, size: it.size, qty: it.qty, kind: it.kind, usia: it.usia ?? undefined })),
+    items: (itemsByKoli[k.id] ?? []).map<DeliveryKoliItem>((it) => ({
+      warna: it.warna,
+      lengan: it.lengan,
+      size: it.size,
+      qty: it.qty,
+      kind: it.kind,
+      usia: it.usia ?? undefined,
+      sourceBatchId: it.source_batch_id ?? undefined,
+    })),
     beratKoli: k.berat_koli == null ? undefined : Number(k.berat_koli),
     deliveredAt: k.delivered_at ?? undefined,
     createdAt: k.created_at,
     sourceBatchIds: (batchIdsByKoli[k.id] ?? []).map((r) => r.production_batch_id),
-    ongkirBatch: k.ongkir_batch == null ? undefined : Number(k.ongkir_batch),
+    ekspedisiNote: k.ekspedisi_note ?? undefined,
+    ekspedisiNoteAt: k.ekspedisi_note_at ?? undefined,
   }));
 
   // ---- Vendor invoice ----

@@ -358,7 +358,21 @@ export type ProductionResult = {
 export type ShippableKind = "FG" | "REWORK";
 export type DeliveryItemKind = ShippableKind | "REJECT";
 
-export type DeliveryKoliItem = { warna: string; lengan: Lengan; size: string; qty: number; kind: DeliveryItemKind; usia?: Usia };
+export type DeliveryKoliItem = {
+  warna: string;
+  lengan: Lengan;
+  size: string;
+  qty: number;
+  kind: DeliveryItemKind;
+  usia?: Usia;
+  /** Item 2026-09-10 (feedback: "input per size ... qty di roll yang telah ditentukan akan
+   *  berkurang"): ProductionBatch (roll) asal item FG ini, di granularitas SIZE yang sama dengan
+   *  `qty` -- BEDA dari `DeliveryKoli.sourceBatchIds` lama (level-koli, whole-roll) -- ini yang
+   *  memungkinkan 1 roll nyebar ke banyak koli (tiap item independen menyimpan roll asalnya
+   *  sendiri, migration 0024). Kosong untuk Rework/item non-roll, atau koli lama (sebelum
+   *  migration 0024) yang masih pakai `sourceBatchIds` level-koli. */
+  sourceBatchId?: string;
+};
 
 export type DeliveryKoli = {
   id: string;
@@ -370,19 +384,19 @@ export type DeliveryKoli = {
   beratKoli?: number;
   deliveredAt?: string;
   createdAt: string;
-  /** Revisi 2026-09-07 (HPP per roll, migration 0020): id ProductionBatch (roll) yang mengisi koli
-   *  ini — cuma untuk item Finish Good (Rework tetap pool lama tanpa roll asal, lihat plan). 1 roll
-   *  SELALU dikirim UTUH dalam 1 koli (dikonfirmasi user), jadi tidak ada qty parsial per roll di
-   *  sini. Kosong untuk koli lama (sebelum migration ini) — HPP-nya fallback ke jalur pool lama. */
+  /** LEGACY (migration 0020, sebelum roll boleh dikirim sebagian) -- id ProductionBatch (roll)
+   *  yang mengisi koli ini, level-KOLI (whole-roll). Koli BARU (sejak migration 0024) tidak lagi
+   *  menulis ke sini -- tracing sekarang per-item lewat `DeliveryKoliItem.sourceBatchId`, yang bisa
+   *  merepresentasikan roll yang dikirim SEBAGIAN. Field ini TETAP dibaca sebagai fallback untuk
+   *  koli lama yang datanya cuma ada di sini. */
   sourceBatchIds?: string[];
-  /** Revisi 2026-09-07: ongkir OPSIONAL untuk batch pengiriman ini, di-set VENDOR PRODUKSI kalau
-   *  ada nilai RIIL dari invoice ekspedisi yang beda dari tarif standar (override) — kalau kosong,
-   *  hppRowsForInvoicePerRoll (derive.ts) fallback ke `ekspedisiPrice(ekspedisi, beratKoli)` (tarif
-   *  standar x berat koli, formula sama seperti sebelum fitur roll ini ada — `ekspedisi`/`beratKoli`
-   *  SUDAH WAJIB diisi vendor sebelum koli bisa "Delivery", jadi selalu ada nilainya tanpa perlu
-   *  input tambahan). Dibagi rata per pc isi koli ini, lalu dijumlah lintas koli jadi total ongkir
-   *  per MRP. */
-  ongkirBatch?: number;
+  /** Item 2026-09-10 (feedback: "Saat pilih ekspedisi juga nanti akan ada input gambar lampiran
+   *  (note dari ekspedisi)"): keterangan WAJIB diisi bareng `ekspedisi` (satu aksi atomik, lihat
+   *  setKoliEkspedisiAction) -- byte foto lampirannya sendiri TIDAK ikut sini (lihat
+   *  delivery_koli_ekspedisi_photos, migration 0024, pola sama material_claim_photos), cuma flag
+   *  `ekspedisiNoteAt` yang menandakan ada/tidaknya. */
+  ekspedisiNote?: string;
+  ekspedisiNoteAt?: string;
 };
 
 export type VendorInvoiceLine = { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; qty: number; ratePerPc: number; amount: number };

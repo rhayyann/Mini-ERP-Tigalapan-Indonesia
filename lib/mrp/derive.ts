@@ -2089,22 +2089,71 @@ export function availableFgToShip(
   return out;
 }
 
-/** Roll (ProductionBatch) yang sudah "Tutup Roll" (`closedAt` terisi) tapi BELUM masuk koli
- *  manapun -- dipakai Pengiriman (app/vendor-maklon/pengiriman/page.tsx) sebagai daftar roll FG
- *  yang bisa dipilih vendor untuk mengisi koli baru. 1 roll SELALU dikirim UTUH (dikonfirmasi
- *  user) -- begitu masuk 1 koli (DeliveryKoli.sourceBatchIds), tidak muncul lagi di sini. Rework
- *  TETAP pakai availableFgToShip pool lama di atas (tidak py roll asal, lihat plan HPP per roll).
- *  `excludeKoliId` sama polanya dengan availableFgToShip -- supaya saat EDIT 1 koli, roll yang
- *  SUDAH ada di koli itu sendiri tetap kelihatan (bukan dianggap "sudah terkirim di koli lain").
+export type RollRemainingRow = { roll: ProductionBatch; remaining: Record<string, number> };
+
+/** Item 2026-09-10 (feedback: "input per size ... qty di roll yang telah ditentukan akan
+ *  berkurang", dikonfirmasi lewat AskUserQuestion: 1 roll BOLEH dikirim SEBAGIAN): sisa qty FG
+ *  yang BELUM masuk koli manapun, PER SIZE, untuk tiap roll (ProductionBatch) yang sudah "Tutup
+ *  Roll". Menggantikan `closedUnshippedRollsForMrp` di bawah sebagai basis utama Pengiriman --
+ *  dulu binary (roll sudah "kepakai" atau belum, whole-roll), sekarang roll bisa MUNCUL LAGI kalau
+ *  masih ada sisa size yang belum dikirim di koli manapun, walau size LAIN dari roll yang sama
+ *  sudah habis.
  *
- *  REVISI (2026-09-09, owner: "ubah agar kunci atau close dulu baru bisa dikirim" -- screenshot
- *  ABU MUDA · PENDEK sudah bisa dipilih di Pengiriman padahal "Selesai Produksi" tahap 1 belum
- *  diklik sama sekali untuk warna itu): dulu roll langsung shippable begitu ditutup, TANPA peduli
- *  status grup warna/lengannya -- beda sendiri dari jalur Rework/sisa FG lama (`availableFgToShip`
- *  di atas) yang SUDAH mewajibkan `fgConfirmedAt` (tahap 1) lebih dulu. Sekarang disamakan: roll
- *  juga baru shippable setelah grup warna/lengannya "Selesai Produksi" (tahap 1) -- BUKAN tahap 2
- *  "Final Produksi" (`doneAt`), yang memang bukan gerbang Pengiriman (lihat halaman Final Produksi
- *  vendor & catatan `mrpIdsWithUnpackedFg`). */
+ *  Sisa dihitung dari `DeliveryKoliItem.sourceBatchId` (baru, migration 0024, granularitas SIZE) --
+ *  dijumlah lintas SEMUA koli vendor ini (kecuali `excludeKoliId`, sama pola dengan
+ *  `availableFgToShip`/`closedUnshippedRollsForMrp` lama, supaya saat EDIT 1 koli, qty yang SUDAH
+ *  ada di koli itu sendiri tetap terhitung "tersedia" bukan "sudah terpakai di koli lain"). Koli
+ *  LAMA (sebelum migration 0024, item-nya belum punya `sourceBatchId`) fallback ke
+ *  `DeliveryKoli.sourceBatchIds` level-koli -- kalau roll id ADA di situ, seluruh size roll itu
+ *  dianggap habis (perilaku whole-roll lama, demi kompatibilitas data lama).
+ *
+ *  Gate status (fgConfirmedAt tahap 1, PO belum di-Close) SAMA PERSIS `closedUnshippedRollsForMrp`
+ *  lama -- lihat catatan REVISI 2026-09-09 di situ untuk alasannya. */
+export function rollRemainingBySizeForMrp(
+  mrpId: string,
+  vendorProduksi: string,
+  batches: ProductionBatch[],
+  deliveryKolis: DeliveryKoli[],
+  maklonPOs: MaklonPO[],
+  productionGroupMeta: ProductionGroupMeta[],
+  excludeKoliId?: string
+): RollRemainingRow[] {
+  const maklonPO = maklonPOs.find((p) => p.mrpId === mrpId && p.vendorProduksi === vendorProduksi);
+  if (maklonPO?.closedAt) return [];
+  const otherKolis = deliveryKolis.filter((k) => k.id !== excludeKoliId);
+  const legacyShippedElsewhere = new Set(otherKolis.flatMap((k) => k.sourceBatchIds ?? []));
+  const closedRolls = batches.filter(
+    (b) =>
+      b.mrpId === mrpId &&
+      b.vendorProduksi === vendorProduksi &&
+      b.closedAt &&
+      productionGroupMetaFor(mrpId + "|" + b.warna + "|" + b.lengan, productionGroupMeta)?.fgConfirmedAt
+  );
+  const out: RollRemainingRow[] = [];
+  for (const roll of closedRolls) {
+    const fgSizeQty = roll.fgSizeQty ?? {};
+    if (legacyShippedElsewhere.has(roll.id)) continue; // koli lama -- roll ini sudah "habis" total.
+    const shippedBySize: Record<string, number> = {};
+    for (const k of otherKolis) {
+      for (const it of k.items) {
+        if (it.sourceBatchId !== roll.id) continue;
+        shippedBySize[it.size] = (shippedBySize[it.size] ?? 0) + it.qty;
+      }
+    }
+    const remaining: Record<string, number> = {};
+    for (const [size, totalQty] of Object.entries(fgSizeQty)) {
+      const r = totalQty - (shippedBySize[size] ?? 0);
+      if (r > 0) remaining[size] = r;
+    }
+    if (Object.keys(remaining).length > 0) out.push({ roll, remaining });
+  }
+  return out;
+}
+
+/** LEGACY -- roll (ProductionBatch) yang MASIH punya sisa qty (di size manapun) belum terkirim,
+ *  dipakai badge/dropdown (`mrpIdsWithClosedRolls` di bawah) yang cuma perlu tahu "apa masih ada
+ *  yang bisa dikirim untuk MRP ini", bukan rincian per size -- lihat `rollRemainingBySizeForMrp`
+ *  untuk itu (dipakai langsung oleh Pengiriman, app/vendor-maklon/pengiriman/page.tsx). */
 export function closedUnshippedRollsForMrp(
   mrpId: string,
   vendorProduksi: string,
@@ -2114,17 +2163,7 @@ export function closedUnshippedRollsForMrp(
   productionGroupMeta: ProductionGroupMeta[],
   excludeKoliId?: string
 ): ProductionBatch[] {
-  const maklonPO = maklonPOs.find((p) => p.mrpId === mrpId && p.vendorProduksi === vendorProduksi);
-  if (maklonPO?.closedAt) return [];
-  const shippedElsewhere = new Set(deliveryKolis.filter((k) => k.id !== excludeKoliId).flatMap((k) => k.sourceBatchIds ?? []));
-  return batches.filter(
-    (b) =>
-      b.mrpId === mrpId &&
-      b.vendorProduksi === vendorProduksi &&
-      b.closedAt &&
-      !shippedElsewhere.has(b.id) &&
-      productionGroupMetaFor(mrpId + "|" + b.warna + "|" + b.lengan, productionGroupMeta)?.fgConfirmedAt
-  );
+  return rollRemainingBySizeForMrp(mrpId, vendorProduksi, batches, deliveryKolis, maklonPOs, productionGroupMeta, excludeKoliId).map((r) => r.roll);
 }
 
 export function mrpIdsWithUnpackedFg(
@@ -2905,6 +2944,47 @@ export function hppRowsForInvoice(
  *  sekarang HANYA jadi fallback untuk sisa qty yang genuinely tidak ketemu di roll pool ATAUPUN
  *  rework pool (data lama/anomali) -- seharusnya jarang/tidak pernah kejadian untuk groupKey yang
  *  sudah pakai roll tracking. */
+/** Item 2026-09-10 (migration 0024, "roll boleh dikirim sebagian"): untuk 1 (roll,size), cari
+ *  SEMUA koli yang mengklaimnya lewat item BERGAYA BARU (`DeliveryKoliItem.sourceBatchId`,
+ *  granularitas size) -- kalau ADA (satu atau lebih), pakai itu APA ADANYA (mendukung 1 roll+size
+ *  kepecah ke >1 koli, ATAU baru terkirim SEBAGIAN sejauh ini). Urut deterministik (`createdAt`
+ *  lalu `id`) supaya alokasi FIFO di `hppRowsForInvoicePerRoll` konsisten dipanggil ulang. Kalau
+ *  TIDAK ADA item bergaya baru SAMA SEKALI utk roll ini (data lama, sebelum migration 0024),
+ *  fallback ke SATU "klaim" utuh dari koli yang tercatat di `sourceBatchIds` level-koli (perilaku
+ *  identik sebelum perubahan ini -- whole-roll, tidak berubah demi kompatibilitas histori HPP). */
+function koliClaimsForRollSize(roll: ProductionBatch, size: string, deliveryKolis: DeliveryKoli[]): { koli: DeliveryKoli; qty: number }[] {
+  const newStyle: { koli: DeliveryKoli; qty: number }[] = [];
+  for (const k of deliveryKolis) {
+    let qty = 0;
+    for (const it of k.items) {
+      if (it.sourceBatchId === roll.id && it.size === size && it.qty > 0) qty += it.qty;
+    }
+    if (qty > 0) newStyle.push({ koli: k, qty });
+  }
+  if (newStyle.length > 0) {
+    return newStyle.sort((a, b) => (a.koli.createdAt !== b.koli.createdAt ? (a.koli.createdAt < b.koli.createdAt ? -1 : 1) : a.koli.id < b.koli.id ? -1 : a.koli.id > b.koli.id ? 1 : 0));
+  }
+  const legacyKoli = deliveryKolis.find((k) => (k.sourceBatchIds ?? []).includes(roll.id));
+  if (!legacyKoli) return [];
+  const fgQty = (roll.fgSizeQty ?? {})[size] ?? 0;
+  return fgQty > 0 ? [{ koli: legacyKoli, qty: fgQty }] : [];
+}
+
+/** Total pcs di koli `k` yang berasal dari roll manapun (bukan legacy/rework tanpa roll) -- dipakai
+ *  utk prorata ongkir baris legacy (lihat catatan panjang di bawah fungsi `hppRowsForInvoicePerRoll`).
+ *  Cek dulu item bergaya baru (`sourceBatchId`, migration 0024) -- kalau koli ini PUNYA item
+ *  bergaya baru, jumlahkan qty-nya langsung (sudah presisi per item, mendukung koli campuran roll
+ *  baru + legacy/rework). Kalau TIDAK ADA item bergaya baru sama sekali (koli lama), fallback ke
+ *  `sourceBatchIds` level-koli (perilaku identik sebelum perubahan ini). */
+function rollCoveredPcsForKoli(koli: DeliveryKoli, productionBatches: ProductionBatch[]): number {
+  const newStyleQty = koli.items.reduce((s, it) => s + (it.sourceBatchId ? it.qty : 0), 0);
+  if (newStyleQty > 0) return newStyleQty;
+  return (koli.sourceBatchIds ?? []).reduce((s, rollId) => {
+    const roll = productionBatches.find((b) => b.id === rollId);
+    return s + (roll ? Object.values(roll.fgSizeQty ?? {}).reduce((a, b) => a + b, 0) : 0);
+  }, 0);
+}
+
 export function hppRowsForInvoicePerRoll(
   inv: VendorInvoice,
   allVendorInvoices: VendorInvoice[],
@@ -2920,7 +3000,7 @@ export function hppRowsForInvoicePerRoll(
   const legacyLines: VendorInvoiceLine[] = [];
   const groupKeyHasRolls = new Map<string, boolean>();
 
-  type RollChunk = { roll: ProductionBatch; size: string; fgQty: number; cuttingQty: number; rejectQty: number; reworkQty: number };
+  type RollChunk = { roll: ProductionBatch; koli: DeliveryKoli; size: string; fgQty: number; cuttingQty: number; rejectQty: number; reworkQty: number };
   type ReworkChunk = { koli: DeliveryKoli; size: string; usia?: Usia; qty: number };
 
   for (const line of inv.lines) {
@@ -2933,12 +3013,20 @@ export function hppRowsForInvoicePerRoll(
         b.lengan === line.lengan &&
         b.closedAt &&
         b.fgSizeQty &&
-        deliveryKolis.some((k) => (k.sourceBatchIds ?? []).includes(b.id))
+        deliveryKolis.some((k) => (k.sourceBatchIds ?? []).includes(b.id) || k.items.some((it) => it.sourceBatchId === b.id))
     );
 
     // Chunk kanonik per (roll,size), reject sudah dinetting FIFO -- murni fungsi dari
     // productionBatches/productionResults, SELALU sama persis untuk groupKey yang sama apa pun
     // invoice yang sedang diproses (lihat catatan di atas).
+    //
+    // Item 2026-09-10 (migration 0024, "roll boleh dikirim sebagian"): 1 (roll,size) sekarang bisa
+    // kepecah ke >1 koli (atau baru terkirim SEBAGIAN sejauh ini) -- jadi SEBELUM chunk ini masuk ke
+    // alokasi FIFO lintas-invoice di bawah, chunk-nya di-fragmentasi LAGI per KOLI lewat
+    // `koliClaimsForRollSize`, reuse teknik pecah-proporsional yang SAMA (qty & turunannya
+    // diskalakan `claim.qty / fgQtyRaw`, rate per pc tidak berubah) -- tiap sub-chunk jadi bawa
+    // `koli`-nya sendiri, jadi baris konsumsi di bawah baca `c.koli` langsung (bukan `.find()` lagi,
+    // yang salah begitu 1 roll+size dibawa >1 koli).
     const chunks: RollChunk[] = [];
     const reworkPoolRemaining: Record<string, number> = { ...reworkedAwayBySize(groupKey, productionResults) };
     for (const roll of shippedRolls) {
@@ -2950,7 +3038,20 @@ export function hppRowsForInvoicePerRoll(
         const rejectRaw = Math.max(0, cuttingQty - fgQtyRaw);
         const reworkQty = Math.min(rejectRaw, reworkPoolRemaining[size] ?? 0);
         reworkPoolRemaining[size] = (reworkPoolRemaining[size] ?? 0) - reworkQty;
-        chunks.push({ roll, size, fgQty: fgQtyRaw, cuttingQty, rejectQty: rejectRaw - reworkQty, reworkQty });
+        const netRejectQty = rejectRaw - reworkQty;
+        const claims = koliClaimsForRollSize(roll, size, deliveryKolis);
+        for (const claim of claims) {
+          const portion = claim.qty / fgQtyRaw;
+          chunks.push({
+            roll,
+            koli: claim.koli,
+            size,
+            fgQty: claim.qty,
+            cuttingQty: cuttingQty * portion,
+            rejectQty: netRejectQty * portion,
+            reworkQty: reworkQty * portion,
+          });
+        }
       }
     }
     const totalRollFgForGroup = chunks.reduce((s, c) => s + c.fgQty, 0);
@@ -3032,16 +3133,17 @@ export function hppRowsForInvoicePerRoll(
       const totalFgRoll = Object.values(roll.fgSizeQty ?? {}).reduce((a, b) => a + b, 0);
       const materialCostPerPcRoll = totalFgRoll > 0 ? rollTotalCost / totalFgRoll : 0;
 
-      const koli = deliveryKolis.find((k) => (k.sourceBatchIds ?? []).includes(roll.id));
-      const totalPcsInKoli = koli ? koli.items.reduce((s, it) => s + it.qty, 0) : 0;
-      // Revisi 2026-09-07: ongkir batch koli ini SENGAJA tidak wajib diinput manual -- `ongkirBatch`
-      // (field "Ongkir batch ini" di Pengiriman) cuma dipakai kalau memang diisi (override, mis.
-      // ada nilai RIIL dari invoice ekspedisi yang beda dari tarif standar). Kalau kosong, fallback
-      // ke tarif ekspedisi x berat koli (ekspedisiPrice, formula sama seperti sebelum fitur roll
-      // ini ada) -- ekspedisi & berat koli SUDAH WAJIB diisi vendor sebelum koli bisa "Delivery"
-      // (lihat doDelivery di app/vendor-maklon/pengiriman/page.tsx), jadi selalu ada nilainya tanpa
-      // perlu input tambahan.
-      const koliOngkirTotal = koli ? koli.ongkirBatch ?? ekspedisiPrice(koli.ekspedisi, koli.beratKoli ?? 0) : 0;
+      // Item 2026-09-10 (migration 0024): `koli` sekarang dibaca LANGSUNG dari chunk (`c.koli`,
+      // sudah ditetapkan saat fragmentasi per-koli di atas) -- bukan `.find()` lagi, yang salah
+      // begitu 1 roll+size dibawa >1 koli (bisa nemu koli yang salah, atau nemu koli PERTAMA saja
+      // padahal chunk ini sedang mewakili koli LAIN).
+      const koli = c.koli;
+      const totalPcsInKoli = koli.items.reduce((s, it) => s + it.qty, 0);
+      // Revisi 2026-09-10: field manual "Ongkir batch ini" (`ongkirBatch`) DIHAPUS dari aplikasi
+      // (owner minta ongkir SELALU otomatis dari tarif ekspedisi x berat koli, lihat migration
+      // 0024) -- ongkir koli sekarang SELALU `ekspedisiPrice(koli.ekspedisi, koli.beratKoli ?? 0)`,
+      // tidak ada lagi override manual.
+      const koliOngkirTotal = ekspedisiPrice(koli.ekspedisi, koli.beratKoli ?? 0);
       const ongkirPerPc = totalPcsInKoli > 0 ? koliOngkirTotal / totalPcsInKoli : 0;
 
       // Denda/reward TIDAK masuk HPP di jalur baru ini (keputusan user, ikut Excel) -- biaya
@@ -3103,7 +3205,7 @@ export function hppRowsForInvoicePerRoll(
       const takeQty = takeEnd - takeStart;
 
       const totalPcsInKoli = c.koli.items.reduce((s, it) => s + it.qty, 0);
-      const koliOngkirTotal = c.koli.ongkirBatch ?? ekspedisiPrice(c.koli.ekspedisi, c.koli.beratKoli ?? 0);
+      const koliOngkirTotal = ekspedisiPrice(c.koli.ekspedisi, c.koli.beratKoli ?? 0);
       const ongkirPerPc = totalPcsInKoli > 0 ? koliOngkirTotal / totalPcsInKoli : 0;
 
       const biayaProduksiPerItem = line.ratePerPc;
@@ -3183,14 +3285,8 @@ export function hppRowsForInvoicePerRoll(
     for (const k of relevantKolis) {
       const totalPcsInKoli = k.items.reduce((s, it) => s + it.qty, 0);
       if (totalPcsInKoli <= 0) continue;
-      const koliOngkirTotal = k.ongkirBatch ?? ekspedisiPrice(k.ekspedisi, k.beratKoli ?? 0);
-      const rollCoveredPcs = Math.min(
-        totalPcsInKoli,
-        (k.sourceBatchIds ?? []).reduce((s, rollId) => {
-          const roll = productionBatches.find((b) => b.id === rollId);
-          return s + (roll ? Object.values(roll.fgSizeQty ?? {}).reduce((a, b) => a + b, 0) : 0);
-        }, 0)
-      );
+      const koliOngkirTotal = ekspedisiPrice(k.ekspedisi, k.beratKoli ?? 0);
+      const rollCoveredPcs = Math.min(totalPcsInKoli, rollCoveredPcsForKoli(k, productionBatches));
       const nonRollPcs = totalPcsInKoli - rollCoveredPcs;
       correctOngkirTotal += koliOngkirTotal * (nonRollPcs / totalPcsInKoli);
       correctTotalPcs += nonRollPcs;

@@ -262,17 +262,11 @@ type FlowActions = {
   closeProductionBatch: (batchId: string, fgSizeQty: Record<string, number>) => Promise<void>;
   /** "Simpan progres" (belum menutup roll) -- lihat saveFgProgressAction di lib/mrp/actions.ts. */
   saveFgProgress: (batchId: string, sizeQty: Record<string, number>) => Promise<void>;
-  createDeliveryKoli: (input: {
-    mrpId: string;
-    vendorProduksi: string;
-    ekspedisi: string;
-    noKoli: string;
-    items: DeliveryKoliItem[];
-    sourceBatchIds?: string[];
-    ongkirBatch?: number;
-  }) => Promise<void>;
+  createDeliveryKoli: (input: { mrpId: string; vendorProduksi: string; ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }) => Promise<void>;
   setKoliWeight: (koliId: string, beratKoli: number) => Promise<void>;
   markKoliDelivered: (koliId: string) => Promise<void>;
+  /** Item 2026-09-10 (migration 0024) -- lihat setKoliEkspedisiAction di actions.ts. */
+  setKoliEkspedisi: (koliId: string, ekspedisi: string, note: string, photo: { dataUrl: string; fileName?: string }) => Promise<void>;
   createVendorInvoice: (input: { vendorProduksi: string; lines: { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; qty: number; ratePerPc: number }[]; note?: string }) => Promise<void>;
   setVendorInvoiceStatus: (invoiceId: string, status: VendorInvoice["status"]) => Promise<void>;
   addVendorInvoiceAdjustment: (invoiceId: string, input: { kind: VendorInvoiceAdjustmentKind; label: string; amount: number; note?: string }) => Promise<void>;
@@ -323,7 +317,7 @@ type FlowActions = {
   resolveProductionYield: (batchId: string, note: string) => Promise<void>;
   unresolveProductionYield: (batchId: string) => Promise<void>;
   reworkRejectSize: (input: { mrpId: string; vendorProduksi: string; warna: string; lengan: Lengan; fromSize: string; qty: number; toLengan: Lengan; toSize: string; usia: Usia }) => Promise<void>;
-  updateDeliveryKoli: (koliId: string, patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[]; sourceBatchIds?: string[]; ongkirBatch?: number }) => Promise<void>;
+  updateDeliveryKoli: (koliId: string, patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }) => Promise<void>;
   setVendorInvoiceDueDate: (invoiceId: string, dueDate: string) => Promise<void>;
   setVendorInvoiceOngkir: (invoiceId: string, ongkirTotal: number) => Promise<void>;
   /** TAHAP 1 -- "Selesai Produksi" di tab Finish Good (hitung reject, tidak mengunci rework). */
@@ -868,6 +862,12 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     await actions.markKoliDeliveredAction(koliId);
     backgroundRefresh();
   },
+  // TIDAK dibuat optimistic -- foto lampiran belum tentu valid (divalidasi server) & melibatkan
+  // upload, pola sama seperti submitCuttingDefectClaim (bukan skalar sederhana).
+  setKoliEkspedisi: async (koliId, ekspedisi, note, photo) => {
+    await actions.setKoliEkspedisiAction(koliId, ekspedisi, note, photo);
+    backgroundRefresh();
+  },
   createVendorInvoice: async (input) => {
     await actions.createVendorInvoiceAction(input);
     backgroundRefresh();
@@ -1302,11 +1302,7 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   updateDeliveryKoli: async (koliId, patch) => {
     const previous = get().deliveryKolis;
     set({
-      deliveryKolis: previous.map((k) =>
-        k.id === koliId && !k.deliveredAt
-          ? { ...k, ekspedisi: patch.ekspedisi, noKoli: patch.noKoli, items: patch.items, sourceBatchIds: patch.sourceBatchIds, ongkirBatch: patch.ongkirBatch }
-          : k
-      ),
+      deliveryKolis: previous.map((k) => (k.id === koliId && !k.deliveredAt ? { ...k, ekspedisi: patch.ekspedisi, noKoli: patch.noKoli, items: patch.items } : k)),
     });
     try {
       await actions.updateDeliveryKoliAction(koliId, patch);
