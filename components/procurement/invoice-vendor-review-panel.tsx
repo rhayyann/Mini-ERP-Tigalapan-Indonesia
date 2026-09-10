@@ -449,7 +449,15 @@ export function InvoiceVendorReviewPanel() {
                               <span className="text-right">Yield</span>
                               <span />
                             </div>
-                            {productionYieldByWarna(line.mrpId, inv.vendorProduksi, mrpDetails, productionBatches, productionResults).map((r) => {
+                            {/* BUG FIX (2026-09-10, owner-reported): productionYieldByWarna cuma difilter
+                                mrpId+vendorProduksi -- mengembalikan SEMUA warna/lengan yang punya batch
+                                produksi di MRP ini, bukan cuma warna/lengan baris invoice ini (`line`). Tanpa
+                                filter ini, warna LAIN yang kebetulan juga sedang cutting di MRP yang sama (mis.
+                                belum FG-confirmed sama sekali, belum pernah dikirim/diinvoice) ikut "bocor"
+                                muncul di breakdown baris invoice yang sebenarnya cuma untuk 1 warna/lengan. */}
+                            {productionYieldByWarna(line.mrpId, inv.vendorProduksi, mrpDetails, productionBatches, productionResults)
+                              .filter((r) => r.warna === line.warna && r.lengan === line.lengan)
+                              .map((r) => {
                               const warnaKey = mrpKey + "|" + r.warna + "|" + r.lengan;
                               const warnaExpanded = expandedWarnaKey === warnaKey;
                               return (
