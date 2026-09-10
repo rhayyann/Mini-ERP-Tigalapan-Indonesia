@@ -37,7 +37,7 @@ import {
   wasteQtyForGroup,
   cumulativeSizeQtyForGroup,
   weightVariance,
-  movableRollCountForInvoice,
+  movableRollCountForInvoiceColor,
   warnaLenganGroupsWithFg,
   reworkSizeAllowed,
 } from "./derive";
@@ -627,12 +627,30 @@ export async function bookInvoiceAction(
   if (mrpRow && !mrpRow.first_invoice_at) await db.from("mrp").update({ first_invoice_at: today() }).eq("id", po.mrp_id);
 }
 
-export async function transferMaterialAction(items: { invoiceId: string; qty: number }[], toVendor: string, deliveryDate: string): Promise<void> {
+export async function transferMaterialAction(
+  items: { invoiceId: string; warna: string; lengan: Lengan; qty: number }[],
+  toVendor: string,
+  deliveryDate: string
+): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
   const db = supabaseServer();
   const snapshot = await getFlowSnapshot();
 
-  for (const { invoiceId, qty } of items) {
+  // Item 2 (feedback batch 2026-09-10, owner: "Buat agar procurement bisa memindahkan warna saja
+  // juga"): dulu 1 item = {invoiceId, qty} lalu semua colorEntries invoice itu di-consume greedy
+  // berurutan (array order) sampai qty habis -- tidak ada cara pilih warna tertentu. Sekarang
+  // 1 item = {invoiceId, warna, lengan, qty} -- dikelompokkan per invoice dulu (1 invoice bisa
+  // punya beberapa baris warna diminta pindah sekaligus), lalu per invoice HANYA colorEntry yang
+  // diminta yang diproses (bukan lagi seluruh colorEntries invoice itu).
+  const byInvoice = new Map<string, { warna: string; lengan: Lengan; qty: number }[]>();
+  for (const it of items) {
+    if (it.qty <= 0) continue;
+    const arr = byInvoice.get(it.invoiceId) ?? [];
+    arr.push({ warna: it.warna, lengan: it.lengan, qty: it.qty });
+    byInvoice.set(it.invoiceId, arr);
+  }
+
+  for (const [invoiceId, colorRequests] of byInvoice) {
     const inv = snapshot.invoices.find((i) => i.id === invoiceId);
     if (!inv) continue;
     const fromVendor = inv.destinationVendor;
@@ -647,15 +665,7 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
       const status = materialPoFullStatus(po, snapshot.invoices, snapshot.productionBatches, snapshot.productionResults, snapshot.mrpDetails, snapshot.deliveryKolis, snapshot.vendorInvoices, snapshot.maklonPOs);
       if (["FINISH_GOOD", "DELIVERED_FROM_VENDOR", "SELESAI"].includes(status)) continue;
     }
-    // Item 1.4: karena transfer sekarang dibolehkan SAMPAI tahap PRODUCTION, roll yang code_roll-
-    // nya SUDAH dipakai suatu ProductionBatch (sudah benar-benar dipotong) tidak boleh ikut
-    // pindah -- clamp moveQty ke movableRollCountForInvoice (exclusion logic sama seperti
-    // availableCodeRollsForColor), skip invoice ini sama sekali kalau movable-nya 0.
-    const movableCount = movableRollCountForInvoice(inv, snapshot.productionBatches);
-    const moveQty = Math.max(0, Math.min(qty, inv.qtyReady, movableCount));
-    if (moveQty <= 0) continue;
 
-    let remaining = moveQty;
     const movedColorEntries: ColorEntry[] = [];
     const keptColorEntries: ColorEntry[] = [];
     // Item 1.4: roll_index ASLI (di DB) yang benar-benar ikut pindah per warna|lengan -- BUKAN
@@ -664,11 +674,22 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
     // Dipakai di bawah untuk DELETE by-index yang benar (bukan asumsi range kontigu).
     const movedIdxByColor = new Map<string, number[]>();
     for (const c of inv.colorEntries) {
-      if (remaining <= 0) {
+      const req = colorRequests.find((r) => r.warna === c.warna && r.lengan === c.lengan);
+      const key = c.warna + "|" + c.lengan;
+      if (!req) {
         keptColorEntries.push(c);
         continue;
       }
-      const key = c.warna + "|" + c.lengan;
+      // Item 1.4: karena transfer sekarang dibolehkan SAMPAI tahap PRODUCTION, roll yang code_roll-
+      // nya SUDAH dipakai suatu ProductionBatch (sudah benar-benar dipotong) tidak boleh ikut
+      // pindah -- clamp ke movableRollCountForInvoiceColor (exclusion logic sama seperti
+      // availableCodeRollsForColor).
+      const movableCap = movableRollCountForInvoiceColor(inv, snapshot.productionBatches, c.warna, c.lengan);
+      const takeCount = Math.max(0, Math.min(req.qty, c.rolls.length, movableCap));
+      if (takeCount <= 0) {
+        keptColorEntries.push(c);
+        continue;
+      }
       const receipts = inv.rollReceipts[key] ?? [];
       const usedCodeRolls = new Set(
         snapshot.productionBatches
@@ -684,7 +705,6 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
         if (cr && usedCodeRolls.has(cr)) continue;
         movableIdx.push(idx);
       }
-      const takeCount = Math.min(remaining, movableIdx.length);
       const takeIdx = new Set(movableIdx.slice(0, takeCount));
       const movedRolls: number[] = [];
       const keptRolls: number[] = [];
@@ -697,9 +717,8 @@ export async function transferMaterialAction(items: { invoiceId: string; qty: nu
         movedIdxByColor.set(key, Array.from(takeIdx).sort((a, b) => a - b));
       }
       if (keptRolls.length > 0) keptColorEntries.push({ ...c, rolls: keptRolls });
-      remaining -= takeCount;
     }
-    const actualMoved = moveQty - remaining;
+    const actualMoved = movedColorEntries.reduce((s, c) => s + c.rolls.length, 0);
     if (actualMoved <= 0) continue;
 
     const detail = snapshot.mrpDetails.find((d) => d.mrp.id === inv.mrpId);
@@ -886,7 +905,9 @@ export async function withdrawVendorProductionAction(mrpId: string, fromVendor: 
   // APA ADANYA (bukan ditulis ulang). qty diisi qtyReady (coba pindah SEMUA) -- fungsi itu sendiri
   // yang clamp ke movableRollCountForInvoice, jadi roll yang sudah dipakai ProductionBatch OTOMATIS
   // tidak ikut (persis yang dibutuhkan di sini, sisanya ditangani langkah 2 di bawah).
-  const rawItems = snapshot1.invoices.filter((i) => i.mrpId === mrpId && i.destinationVendor === fromVendor && i.qtyReady > 0).map((i) => ({ invoiceId: i.id, qty: i.qtyReady }));
+  const rawItems = snapshot1.invoices
+    .filter((i) => i.mrpId === mrpId && i.destinationVendor === fromVendor && i.qtyReady > 0)
+    .flatMap((i) => i.colorEntries.map((c) => ({ invoiceId: i.id, warna: c.warna, lengan: c.lengan, qty: c.rolls.length })));
   if (rawItems.length > 0) {
     await transferMaterialAction(rawItems, toVendor, today());
   }

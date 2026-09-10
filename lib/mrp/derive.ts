@@ -1132,29 +1132,40 @@ export function rollArrivalStatusBadge(s: RollArrivalStatus): { label: string; t
   return map[s];
 }
 
+/** Item 2 (feedback batch 2026-09-10, owner: "Buat agar procurement bisa memindahkan warna saja
+ *  juga"): pecahan per-(warna,lengan) dari movableRollCountForInvoice di bawah -- dipakai
+ *  TransferMaterialModal untuk menampilkan cap "roll belum dipotong" PER WARNA (bukan cuma total
+ *  1 invoice), supaya user bisa pilih pindahkan 1 warna saja dari invoice multi-warna. */
+export function movableRollCountForInvoiceColor(inv: RawMaterialInvoice, batches: ProductionBatch[], warna: string, lengan: Lengan): number {
+  const c = inv.colorEntries.find((e) => e.warna === warna && e.lengan === lengan);
+  if (!c) return 0;
+  const key = c.warna + "|" + c.lengan;
+  const receipts = inv.rollReceipts[key] ?? [];
+  const usedCodeRolls = new Set(
+    batches
+      .filter((b) => b.mrpId === inv.mrpId && b.vendorProduksi === inv.destinationVendor && b.warna === c.warna && b.lengan === c.lengan && b.codeRoll)
+      .map((b) => b.codeRoll!)
+  );
+  let count = 0;
+  for (let idx = 0; idx < c.rolls.length; idx++) {
+    const cr = receipts[idx]?.codeRoll;
+    if (cr && usedCodeRolls.has(cr)) continue;
+    count++;
+  }
+  return count;
+}
+
 /** Item 1.4 (feedback batch 2026-09-04): begitu transfer material dibolehkan sampai ke tahap
  *  PRODUCTION (item 1.1), roll yang code_roll-nya SUDAH dipakai suatu ProductionBatch (sudah
  *  dipilih untuk Resting -- fisiknya sudah dipotong) tidak boleh ikut pindah vendor lagi. Hitungan
  *  "roll bisa dipindahkan" per invoice ini pakai exclusion logic yang SAMA seperti
  *  `availableCodeRollsForColor` (roll dengan codeRoll yang dipakai batch mana pun MRP+vendor+
  *  warna+lengan yang sama dikeluarkan) -- dipakai untuk clamp `moveQty` di transferMaterialAction
- *  DAN untuk cap "roll belum dipotong" yang ditampilkan di TransferMaterialModal. */
+ *  DAN untuk cap "roll belum dipotong" yang ditampilkan di TransferMaterialModal. Sekarang murni
+ *  penjumlahan movableRollCountForInvoiceColor per warna/lengan (lihat di atas). */
 export function movableRollCountForInvoice(inv: RawMaterialInvoice, batches: ProductionBatch[]): number {
   let count = 0;
-  for (const c of inv.colorEntries) {
-    const key = c.warna + "|" + c.lengan;
-    const receipts = inv.rollReceipts[key] ?? [];
-    const usedCodeRolls = new Set(
-      batches
-        .filter((b) => b.mrpId === inv.mrpId && b.vendorProduksi === inv.destinationVendor && b.warna === c.warna && b.lengan === c.lengan && b.codeRoll)
-        .map((b) => b.codeRoll!)
-    );
-    for (let idx = 0; idx < c.rolls.length; idx++) {
-      const cr = receipts[idx]?.codeRoll;
-      if (cr && usedCodeRolls.has(cr)) continue;
-      count++;
-    }
-  }
+  for (const c of inv.colorEntries) count += movableRollCountForInvoiceColor(inv, batches, c.warna, c.lengan);
   return count;
 }
 
