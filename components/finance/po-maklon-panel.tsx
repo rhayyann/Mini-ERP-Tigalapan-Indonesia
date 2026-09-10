@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
+import { MaklonPoWarnaLenganTable } from "@/components/mrp/maklon-po-warna-lengan-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatPcs, formatRupiah, maklonPoBadgeWithApproval, maklonPoWarnaBreakdown } from "@/lib/mrp/derive";
+import { formatPcs, formatRupiah, maklonPoBadgeWithApproval } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { MaklonPO } from "@/lib/mrp/types";
 
@@ -19,8 +20,9 @@ export function PoMaklonPanel() {
   const vendorInvoices = useMrpStore((s) => s.vendorInvoices);
   const approveMaklonPo = useMrpStore((s) => s.approveMaklonPo);
   // Item revisi 2026-09-06: dipakai untuk detail per-warna/lengan begitu baris di-expand -- lihat
-  // maklonPoWarnaBreakdown (lib/mrp/derive.ts).
+  // MaklonPoWarnaLenganTable (components/mrp/).
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
+  const hargaMaklon = useMrpStore((s) => s.hargaMaklon);
 
   if (!mounted) return null;
 
@@ -102,36 +104,20 @@ export function PoMaklonPanel() {
           },
         ]}
         emptyText="Belum ada PO vendor produksi."
-        // Item revisi 2026-09-06: klik baris untuk lihat rincian per warna/lengan -- sama pola
-        // dengan PPIC/SCM (MrpWarnaBreakdownTable) & PO Material di atas, cuma MaklonPO tidak
-        // punya colorBreakdown sendiri jadi di-derive dari aduanRows (maklonPoWarnaBreakdown).
-        renderExpanded={(p) => {
-          const breakdown = maklonPoWarnaBreakdown(
-            mrpDetails.find((d) => d.mrp.id === p.mrpId),
-            p.vendorProduksi
-          );
-          if (breakdown.length === 0) {
-            return <div className="font-sans text-[11.5px] text-text-muted">Belum ada rincian warna untuk PO ini.</div>;
-          }
-          return (
-            <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
-              <div className="grid grid-cols-3 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
-                <span>Warna / lengan</span>
-                <span className="text-right">Qty (pcs)</span>
-                <span className="text-right">Estimasi roll</span>
-              </div>
-              {breakdown.map((b, i) => (
-                <div key={i} className="grid grid-cols-3 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
-                  <span className="font-medium">
-                    {b.warna} · {b.lengan}
-                  </span>
-                  <span className="text-right font-mono">{formatPcs(b.qty)}</span>
-                  <span className="text-right font-mono">{b.qtyRoll}</span>
-                </div>
-              ))}
-            </div>
-          );
-        }}
+        // Item 4 (feedback batch 2026-09-10, owner: "lebih detail ke tipe lengan juga untuk
+        // qty-nya (panjang pendek) serta estimasi harga per warna dan tipe lengan") -- dulu tabel
+        // detail di sini lebih polos (warna·lengan 1 baris, tanpa harga, lewat
+        // maklonPoWarnaBreakdown). Diganti MaklonPoWarnaLenganTable, komponen yang sama dengan
+        // yang dipakai Procurement > PO Approval untuk PO Maklon yang sama -- qty Pendek/Panjang
+        // dipisah + harga per pc masing-masing.
+        renderExpanded={(p) => (
+          <MaklonPoWarnaLenganTable
+            vendorProduksi={p.vendorProduksi}
+            amount={p.amount}
+            aduanRows={mrpDetails.find((d) => d.mrp.id === p.mrpId)?.aduanRows.filter((a) => a.vendor === p.vendorProduksi) ?? []}
+            hargaMaklon={hargaMaklon}
+          />
+        )}
       />
     </>
   );

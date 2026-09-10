@@ -5,10 +5,40 @@ import Link from "next/link";
 import { StatusPill } from "@/components/ui/status-pill";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatPcs, formatRupiah, maklonFeeForColorLine, materialPoFullStatus, materialPoFullStatusBadge } from "@/lib/mrp/derive";
+import {
+  formatPcs,
+  formatRupiah,
+  hargaKainRateInfo,
+  maklonFeeForColorLine,
+  materialPoFullStatus,
+  materialPoFullStatusBadge,
+  mrpDetailFor,
+} from "@/lib/mrp/derive";
 import { countPendingMaterialPoForMrp, pendingMarker } from "@/lib/shell/badges";
-import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
-import type { MaterialPO } from "@/lib/mrp/types";
+import { ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "@/lib/mrp/seed";
+import type { ColorBreakdown, MaterialPO } from "@/lib/mrp/types";
+import type { MrpDetail } from "@/lib/mrp/store";
+
+/** Item 3 (feedback batch 2026-09-10, owner: "bisa ada juga untuk penggunaan rib serta harga di
+ *  warna itu kalau ada kalau tidak ada berarti kosong"): rib (kg) dijumlah dari materialRows MRP
+ *  ini yang cocok warna+lengan -- sumber SAMA seperti "Rib kg" di halaman PO Approval Procurement
+ *  (materialGroupsByWarna, app/procurement/po-approval/page.tsx), cuma di-scope ke 1 warna/lengan
+ *  di sini (bukan digabung semua lengan). */
+function ribKgForColor(poId: string, c: ColorBreakdown, mrpDetails: MrpDetail[]): number {
+  const detail = mrpDetailFor(poId, mrpDetails);
+  if (!detail) return 0;
+  return detail.materialRows.filter((m) => m.warna === c.warna && m.lengan === c.lengan).reduce((s, m) => s + m.ribKg, 0);
+}
+
+/** Harga/kg PER WARNA -- pakai hargaKainRateInfo yang sama dengan badge "Standar"/"PKS"/"Estimasi"
+ *  di halaman Procurement, tapi di sini nilainya cuma ditampilkan kalau BENAR ada harga tercatat
+ *  di Master Data (Standar/PKS) -- source "Estimasi" (fallback flat, tidak ada data harga sama
+ *  sekali untuk supplier+warna ini) ditampilkan kosong ("—"), bukan angka tebakan. */
+function hargaPerKgForColor(supplier: string, c: ColorBreakdown, hargaKain: Parameters<typeof hargaKainRateInfo>[0], hargaKainPks: Parameters<typeof hargaKainRateInfo>[1]): number | null {
+  const kg = c.rollCount * ROLL_KG_ESTIMATE;
+  const info = hargaKainRateInfo(hargaKain, hargaKainPks, supplier, c.warna, kg);
+  return info.source === "Estimasi" ? null : info.rate;
+}
 
 /** Panel "PO Material" — konten diekstrak dari halaman lama /finance/po-material,
  *  sekarang dipakai sebagai satu sub-tab di halaman gabungan /finance/po-approval. */
@@ -38,6 +68,9 @@ export function PoMaterialPanel() {
   const setMaterialPoEntity = useMrpStore((s) => s.setMaterialPoEntity);
   const setMaterialPoColorEntity = useMrpStore((s) => s.setMaterialPoColorEntity);
   const approveVendorMaterialPos = useMrpStore((s) => s.approveVendorMaterialPos);
+  // Item 3: sumber harga/kg per warna (rib dari mrpDetails.materialRows di atas).
+  const hargaKain = useMrpStore((s) => s.hargaKain);
+  const hargaKainPks = useMrpStore((s) => s.hargaKainPks);
 
   const [selectedMrpId, setSelectedMrpId] = useState<string>("");
   // `colorBreakdown[].entitas` di database SELALU sudah terisi default (entitas pertama secara
@@ -281,19 +314,25 @@ export function PoMaterialPanel() {
                           </select>
                         </div>
                         <div className="mx-4 mb-3 overflow-hidden rounded-md border border-[#F1F4F7]">
-                          <div className="grid grid-cols-5 gap-2 bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                          <div className="grid grid-cols-7 gap-2 bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                             <span>Warna / lengan</span>
                             <span className="text-right">Roll</span>
+                            <span className="text-right">Rib (kg)</span>
+                            <span className="text-right">Harga/Kg</span>
                             <span className="text-right">Nilai material</span>
                             <span className="text-right">Biaya maklon</span>
                             <span>Entitas</span>
                           </div>
-                          {po.colorBreakdown.map((c, i) => (
-                            <div key={i} className="grid grid-cols-5 items-center gap-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                          {po.colorBreakdown.map((c, i) => {
+                            const hargaPerKg = hargaPerKgForColor(po.supplier, c, hargaKain, hargaKainPks);
+                            return (
+                            <div key={i} className="grid grid-cols-7 items-center gap-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
                               <span>
                                 {c.warna} · {c.lengan}
                               </span>
                               <span className="text-right font-mono">{c.rollCount}</span>
+                              <span className="text-right font-mono">{ribKgForColor(po.mrpId, c, mrpDetails).toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>
+                              <span className="text-right font-mono">{hargaPerKg != null ? formatRupiah(hargaPerKg) : "—"}</span>
                               <span className="text-right font-mono">{formatRupiah((po.amount / po.rollCount) * c.rollCount)}</span>
                               <span className="text-right font-mono">{formatRupiah(maklonFeeForColorLine(po, c, maklonPOs, mrpDetails))}</span>
                               <select
@@ -312,10 +351,13 @@ export function PoMaterialPanel() {
                                 ))}
                               </select>
                             </div>
-                          ))}
-                          <div className="grid grid-cols-5 gap-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
+                            );
+                          })}
+                          <div className="grid grid-cols-7 gap-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
                             <span>Subtotal PO {po.id}</span>
                             <span className="text-right font-mono">{po.rollCount} roll</span>
+                            <span />
+                            <span />
                             <span className="text-right font-mono">{formatRupiah(po.amount)}</span>
                             <span className="text-right font-mono">{formatRupiah(poMaklonTotal)}</span>
                             <span />
@@ -363,27 +405,36 @@ export function PoMaterialPanel() {
         // sudah ada di bagian "pending" di atas, sekarang dibuat sama untuk PO yang sudah approved.
         renderExpanded={(p) => (
           <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
-            <div className="grid grid-cols-5 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+            <div className="grid grid-cols-7 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
               <span>Warna / lengan</span>
               <span className="text-right">Roll</span>
+              <span className="text-right">Rib (kg)</span>
+              <span className="text-right">Harga/Kg</span>
               <span className="text-right">Nilai material (estimasi)</span>
               <span className="text-right">Biaya maklon (estimasi)</span>
               <span>Entitas</span>
             </div>
-            {p.colorBreakdown.map((c, i) => (
-              <div key={i} className="grid grid-cols-5 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+            {p.colorBreakdown.map((c, i) => {
+              const hargaPerKg = hargaPerKgForColor(p.supplier, c, hargaKain, hargaKainPks);
+              return (
+              <div key={i} className="grid grid-cols-7 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
                 <span className="font-medium">
                   {c.warna} · {c.lengan}
                 </span>
                 <span className="text-right font-mono">{c.rollCount}</span>
+                <span className="text-right font-mono">{ribKgForColor(p.mrpId, c, mrpDetails).toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>
+                <span className="text-right font-mono">{hargaPerKg != null ? formatRupiah(hargaPerKg) : "—"}</span>
                 <span className="text-right font-mono">{formatRupiah(p.rollCount > 0 ? (p.amount / p.rollCount) * c.rollCount : 0)}</span>
                 <span className="text-right font-mono">{formatRupiah(maklonFeeForColorLine(p, c, maklonPOs, mrpDetails))}</span>
                 <span>{c.entitas ?? "—"}</span>
               </div>
-            ))}
-            <div className="grid grid-cols-5 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
+              );
+            })}
+            <div className="grid grid-cols-7 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
               <span>Subtotal PO {p.id}</span>
               <span className="text-right font-mono">{p.rollCount} roll</span>
+              <span />
+              <span />
               <span className="text-right font-mono">{formatRupiah(p.amount)}</span>
               <span className="text-right font-mono">{formatRupiah(p.colorBreakdown.reduce((a, c) => a + maklonFeeForColorLine(p, c, maklonPOs, mrpDetails), 0))}</span>
               <span />

@@ -6,6 +6,7 @@ import { AppShell } from "@/components/shell/app-shell";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
 import { VendorSwitchModal } from "@/components/mrp/vendor-switch-modal";
+import { MaklonPoWarnaLenganTable } from "@/components/mrp/maklon-po-warna-lengan-table";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
@@ -14,7 +15,6 @@ import {
   formatPcs,
   formatRupiah,
   hargaKainRate,
-  hargaMaklonRate,
   maklonPoBadgeWithApproval,
   maklonPoDeliveryProgress,
   maklonPoInvoiceLockedBy,
@@ -31,7 +31,7 @@ import {
 import { countMaterialRowsWithoutSupplierForMrp, pendingMarker } from "@/lib/shell/badges";
 import { exportMaklonPoPdf, exportMaterialPoPdf } from "@/lib/mrp/exportPoPdf";
 import { ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "@/lib/mrp/seed";
-import type { Lengan, MaklonPO, MaterialPO } from "@/lib/mrp/types";
+import type { MaklonPO, MaterialPO } from "@/lib/mrp/types";
 
 /** Badge kecil "Standar"/"PKS"/"Estimasi" di sebelah nilai Rupiah — hover untuk lihat rincian
  *  per lengan/warna (kenapa dapat harga itu, tonase/kapasitas berapa). Dipakai di 3 tempat:
@@ -522,60 +522,18 @@ export default function PoApprovalPage() {
           },
         ]}
         emptyText="Belum ada PO vendor produksi."
-        renderExpanded={(p) => {
-          const rows = mrpDetailFor(p.mrpId, mrpDetails)?.aduanRows.filter((a) => a.vendor === p.vendorProduksi) ?? [];
-          if (rows.length === 0) {
-            return <div className="font-sans text-[11.5px] text-text-muted">Belum ada rincian aduan pola untuk PO ini.</div>;
-          }
-          // Item revisi 2026-09-08 (owner: "satu warna itu berapa qty-nya untuk pendek atau
-          // panjang dan juga berapa harga maklon per tipe itu serta totalannya") -- restrukturisasi
-          // dari 1 baris per aduanRow jadi 1 baris per WARNA, qty PENDEK/PANJANG dipisah jelas.
-          // Rate per lengan dihitung dari qty KUMULATIF SELURUH PO ini (lintas warna) -- formula
-          // PERSIS sama seperti maklonRateExplanation (dipakai badge "Standar/PKS" di kolom Nilai
-          // level-PO), supaya rate yang tampil di sini konsisten dgn yang benar-benar dipakai.
-          const qtyByLengan = new Map<Lengan, number>();
-          for (const a of rows) qtyByLengan.set(a.lengan, (qtyByLengan.get(a.lengan) ?? 0) + a.qty);
-          const rateByLengan: Record<"PENDEK" | "PANJANG", number> = {
-            PENDEK: hargaMaklonRate(hargaMaklon, p.vendorProduksi, "PENDEK", qtyByLengan.get("PENDEK") ?? 0),
-            PANJANG: hargaMaklonRate(hargaMaklon, p.vendorProduksi, "PANJANG", qtyByLengan.get("PANJANG") ?? 0),
-          };
-          const byWarna = new Map<string, { pendek: number; panjang: number }>();
-          for (const a of rows) {
-            const cur = byWarna.get(a.warna) ?? { pendek: 0, panjang: 0 };
-            if (a.lengan === "PENDEK") cur.pendek += a.qty;
-            else cur.panjang += a.qty;
-            byWarna.set(a.warna, cur);
-          }
-          return (
-            <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
-              <div className="grid grid-cols-6 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
-                <span>Warna</span>
-                <span className="text-right">Qty Pendek</span>
-                <span className="text-right">Harga/Pc Pendek</span>
-                <span className="text-right">Qty Panjang</span>
-                <span className="text-right">Harga/Pc Panjang</span>
-                <span className="text-right">Subtotal</span>
-              </div>
-              {Array.from(byWarna.entries()).map(([warna, q]) => {
-                const subtotal = q.pendek * rateByLengan.PENDEK + q.panjang * rateByLengan.PANJANG;
-                return (
-                  <div key={warna} className="grid grid-cols-6 gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
-                    <span className="font-medium">{warna}</span>
-                    <span className="text-right font-mono">{q.pendek > 0 ? formatPcs(q.pendek) : "—"}</span>
-                    <span className="text-right font-mono">{q.pendek > 0 ? formatRupiah(rateByLengan.PENDEK) : "—"}</span>
-                    <span className="text-right font-mono">{q.panjang > 0 ? formatPcs(q.panjang) : "—"}</span>
-                    <span className="text-right font-mono">{q.panjang > 0 ? formatRupiah(rateByLengan.PANJANG) : "—"}</span>
-                    <span className="text-right font-mono">{formatRupiah(subtotal)}</span>
-                  </div>
-                );
-              })}
-              <div className="grid grid-cols-6 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
-                <span className="col-span-5">Total</span>
-                <span className="text-right font-mono">{formatRupiah(p.amount)}</span>
-              </div>
-            </div>
-          );
-        }}
+        // Item revisi 2026-09-08 (owner: "satu warna itu berapa qty-nya untuk pendek atau panjang
+        // dan juga berapa harga maklon per tipe itu serta totalannya") -- item 4 (feedback batch
+        // 2026-09-10) mengekstrak tabel ini ke MaklonPoWarnaLenganTable (components/mrp/) supaya
+        // dipakai bareng dengan Finance > PO Approval > PO Maklon.
+        renderExpanded={(p) => (
+          <MaklonPoWarnaLenganTable
+            vendorProduksi={p.vendorProduksi}
+            amount={p.amount}
+            aduanRows={mrpDetailFor(p.mrpId, mrpDetails)?.aduanRows.filter((a) => a.vendor === p.vendorProduksi) ?? []}
+            hargaMaklon={hargaMaklon}
+          />
+        )}
       />
 
       {detail && drillVendor && (
