@@ -40,6 +40,7 @@ import {
   movableRollCountForInvoiceColor,
   warnaLenganGroupsWithFg,
   reworkSizeAllowed,
+  rollRemainingBySizeForMrp,
 } from "./derive";
 import { ENTITAS_LIST } from "./seed";
 import type { ParsedMrpImport } from "./parseImport";
@@ -1554,28 +1555,28 @@ export async function unresolveProductionYieldAction(batchId: string): Promise<v
   await supabaseServer().from("production_yield_resolutions").delete().eq("production_batch_id", batchId);
 }
 
-export async function updateDeliveryKoliAction(
-  koliId: string,
-  patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[]; sourceBatchIds?: string[]; ongkirBatch?: number }
-): Promise<void> {
+export async function updateDeliveryKoliAction(koliId: string, patch: { ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }): Promise<void> {
   await requireVendorSession();
   const db = supabaseServer();
-  const { data: koli } = await db.from("delivery_kolis").select("delivered_at").eq("id", koliId).maybeSingle();
+  const { data: koli } = await db.from("delivery_kolis").select("delivered_at,mrp_id,vendor_produksi").eq("id", koliId).maybeSingle();
   if (!koli || koli.delivered_at) return;
+  // `excludeKoliId: koliId` -- sisa roll dihitung TANPA menganggap qty koli ini sendiri (versi
+  // LAMA sebelum edit) sebagai "sudah terpakai", supaya qty yang sudah ada di koli ini bisa
+  // dipertahankan/diedit bebas (bukan cuma bisa berkurang).
+  const items = await clampDeliveryItemsBySourceBatch(patch.items, koli.mrp_id, koli.vendor_produksi, koliId);
   await db.from("delivery_kolis").update({ ekspedisi: patch.ekspedisi, no_koli: patch.noKoli }).eq("id", koliId);
   await db.from("delivery_koli_items").delete().eq("delivery_koli_id", koliId);
-  if (patch.items.length > 0) {
-    await db.from("delivery_koli_items").insert(patch.items.map((it) => ({ delivery_koli_id: koliId, warna: it.warna, lengan: it.lengan, size: it.size, qty: it.qty, kind: it.kind, usia: it.usia ?? null })));
-  }
-  await trySetOngkirBatch(db, koliId, patch.ongkirBatch);
-  // Revisi 2026-09-07 (HPP per roll) -- roll (ProductionBatch) FG yang mengisi koli ini, DIGANTI
-  // seluruhnya (delete+insert, pola sama dengan delivery_koli_items di atas) supaya edit koli bisa
-  // menambah/mengurangi roll. Constraint unique(production_batch_id) di migration 0020 mencegah 1
-  // roll masuk 2 koli sekaligus.
-  await db.from("delivery_koli_batches").delete().eq("delivery_koli_id", koliId);
-  if (patch.sourceBatchIds && patch.sourceBatchIds.length > 0) {
-    const { error: batchErr } = await db.from("delivery_koli_batches").insert(patch.sourceBatchIds.map((batchId) => ({ delivery_koli_id: koliId, production_batch_id: batchId })));
-    if (batchErr) throw new Error(batchErr.message);
+  if (items.length > 0) {
+    // BUG FIX SEKALIAN (ditemukan saat menambah `source_batch_id`, migration 0024): insert ini dulu
+    // TIDAK PERNAH dicek error-nya -- items LAMA sudah TERLANJUR di-delete di atas, jadi kalau
+    // insert baris PENGGANTI ini gagal diam-diam (mis. migration belum di-apply), koli berakhir
+    // KOSONG SAMA SEKALI (lebih parah dari createDeliveryKoliAction -- di sini bahkan data yang
+    // SUDAH ada sebelum edit ikut hilang). Sekarang dicek & di-throw -- lihat catatan lebih
+    // panjang di createDeliveryKoliAction.
+    const { error: itemsErr } = await db
+      .from("delivery_koli_items")
+      .insert(items.map((it) => ({ delivery_koli_id: koliId, warna: it.warna, lengan: it.lengan, size: it.size, qty: it.qty, kind: it.kind, usia: it.usia ?? null, source_batch_id: it.sourceBatchId ?? null })));
+    if (itemsErr) throw new Error(itemsErr.message);
   }
 }
 
@@ -2928,40 +2929,53 @@ export async function reopenProductionPoAction(maklonPoId: string): Promise<void
 // Delivery
 // =========================================================================
 
-/** Ongkir batch (migration 0020) -- SENGAJA ditulis lewat query TERPISAH (soft-fail, tidak throw)
- *  dari insert/update utama delivery_kolis, supaya "Simpan koli"/"Update koli" (dipakai vendor
- *  SETIAP hari) tidak ikut gagal total kalau migration 0020 belum sempat di-apply saat kode ini
- *  ter-deploy -- kolomnya jadi cuma "belum kesimpan", bukan mem-break alur Pengiriman yang sudah
- *  ada. Pola sama dengan production_batch_sizes di updateBatchToCuttingAction. */
-async function trySetOngkirBatch(db: SupabaseClient, koliId: string, ongkirBatch: number | undefined): Promise<void> {
-  if (ongkirBatch === undefined) return;
-  const { error } = await db.from("delivery_kolis").update({ ongkir_batch: ongkirBatch }).eq("id", koliId);
-  if (error) console.error("trySetOngkirBatch: gagal simpan ongkir_batch (migration 0020 sudah jalan?)", error.message);
+/** Item 2026-09-10 (migration 0024, "roll boleh dikirim sebagian"): pertahanan berlapis SISI
+ *  SERVER terhadap balapan antar-tab/vendor -- klien (halaman Pengiriman) sudah men-clamp qty ke
+ *  sisa roll yang dilihatnya SAAT input, tapi snapshot itu bisa basi begitu request lain (tab lain,
+ *  atau koli lain yang baru saja disimpan) mengklaim sisa yang sama lebih dulu. Di sini snapshot
+ *  di-fetch ULANG (fresh) tepat sebelum insert, sisa per (roll,size) dihitung lewat fungsi yang
+ *  SAMA (`rollRemainingBySizeForMrp`) yang dipakai UI utk menampilkan sisa -- tiap item ber-
+ *  `sourceBatchId` di-clamp ke sisa itu (dikurangi berjalan kalau 1 submission py >1 item roll+size
+ *  yang sama), item yang qty-nya jadi 0 dibuang. `excludeKoliId` diteruskan APA ADANYA supaya edit
+ *  koli yang sudah ada tidak salah menganggap qty koli itu sendiri sebagai "sudah terpakai orang
+ *  lain" (lihat pemanggil). Item TANPA `sourceBatchId` (Rework/legacy) tidak disentuh sama sekali. */
+async function clampDeliveryItemsBySourceBatch(items: DeliveryKoliItem[], mrpId: string, vendorProduksi: string, excludeKoliId: string | undefined): Promise<DeliveryKoliItem[]> {
+  if (!items.some((it) => it.sourceBatchId)) return items;
+  const snapshot = await getFlowSnapshot();
+  const remainingRows = rollRemainingBySizeForMrp(mrpId, vendorProduksi, snapshot.productionBatches, snapshot.deliveryKolis, snapshot.maklonPOs, snapshot.productionGroupMeta, excludeKoliId);
+  const remainingByRoll = new Map(remainingRows.map((r) => [r.roll.id, { ...r.remaining }]));
+  return items
+    .map((it) => {
+      if (!it.sourceBatchId) return it;
+      const remaining = remainingByRoll.get(it.sourceBatchId);
+      const avail = remaining?.[it.size] ?? 0;
+      const qty = Math.min(it.qty, avail);
+      if (remaining) remaining[it.size] = avail - qty;
+      return { ...it, qty };
+    })
+    .filter((it) => it.qty > 0);
 }
 
-export async function createDeliveryKoliAction(input: {
-  mrpId: string;
-  vendorProduksi: string;
-  ekspedisi: string;
-  noKoli: string;
-  items: DeliveryKoliItem[];
-  sourceBatchIds?: string[];
-  ongkirBatch?: number;
-}): Promise<void> {
+export async function createDeliveryKoliAction(input: { mrpId: string; vendorProduksi: string; ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }): Promise<void> {
   await requireVendorSession();
   const db = supabaseServer();
+  const items = await clampDeliveryItemsBySourceBatch(input.items, input.mrpId, input.vendorProduksi, undefined);
   const id = await nextReadableId("KOLI");
   const { error } = await db.from("delivery_kolis").insert({ id, mrp_id: input.mrpId, vendor_produksi: input.vendorProduksi, ekspedisi: input.ekspedisi, no_koli: input.noKoli, created_at: today() });
   if (error) throw new Error(error.message);
-  if (input.items.length > 0) {
-    await db.from("delivery_koli_items").insert(input.items.map((it) => ({ delivery_koli_id: id, warna: it.warna, lengan: it.lengan, size: it.size, qty: it.qty, kind: it.kind, usia: it.usia ?? null })));
-  }
-  await trySetOngkirBatch(db, id, input.ongkirBatch);
-  // Revisi 2026-09-07 (HPP per roll) -- roll (ProductionBatch) FG yang mengisi koli ini, SELALU
-  // utuh (dikonfirmasi user, roll tidak pernah dicicil lintas koli).
-  if (input.sourceBatchIds && input.sourceBatchIds.length > 0) {
-    const { error: batchErr } = await db.from("delivery_koli_batches").insert(input.sourceBatchIds.map((batchId) => ({ delivery_koli_id: id, production_batch_id: batchId })));
-    if (batchErr) throw new Error(batchErr.message);
+  if (items.length > 0) {
+    // BUG FIX SEKALIAN (ditemukan saat menambah `source_batch_id`, migration 0024): insert ini dulu
+    // TIDAK PERNAH dicek error-nya sama sekali -- gagal (mis. migration belum di-apply, kolom
+    // `source_batch_id` belum ada) berarti koli tersimpan KOSONG (delivery_kolis ada, items-nya
+    // NOL) TANPA vendor tahu sama sekali "Simpan koli" sebenarnya gagal separuh jalan. Sekarang
+    // dicek & di-throw -- pola sama material_claim_photos (HARUS menggagalkan seluruh aksi supaya
+    // user tahu, bukan diam-diam hilang), krusial di sini karena source_batch_id JUGA basis
+    // pelacakan "roll sudah kepakai koli mana" (rollRemainingBySizeForMrp) -- kalau diam-diam gagal
+    // tersimpan, roll yang SUDAH terkirim bisa muncul lagi sebagai "tersedia" di koli berikutnya.
+    const { error: itemsErr } = await db
+      .from("delivery_koli_items")
+      .insert(items.map((it) => ({ delivery_koli_id: id, warna: it.warna, lengan: it.lengan, size: it.size, qty: it.qty, kind: it.kind, usia: it.usia ?? null, source_batch_id: it.sourceBatchId ?? null })));
+    if (itemsErr) throw new Error(itemsErr.message);
   }
 }
 
@@ -2969,6 +2983,43 @@ export async function setKoliWeightAction(koliId: string, beratKoli: number): Pr
   await requireVendorSession();
   const { error } = await supabaseServer().from("delivery_kolis").update({ berat_koli: beratKoli }).eq("id", koliId);
   if (error) throw new Error(error.message);
+}
+
+/** Item 2026-09-10 (migration 0024, feedback: "Saat pilih ekspedisi juga nanti akan ada input
+ *  gambar lampiran (note dari ekspedisi) sebelum melakukan proses penerbitan invoice & payment"):
+ *  SATU aksi atomik yang set `ekspedisi` BARENG catatan+foto -- tidak mungkin ekspedisi ter-set
+ *  tanpa catatan+foto ikut tersimpan, jadi gate "Delivery" yang SUDAH ADA
+ *  (`disabled={!(berat>0 && k.ekspedisi)}` di app/vendor-maklon/pengiriman/page.tsx) otomatis juga
+ *  menjamin catatan+foto sudah ada, TANPA perlu gate terpisah di jalur invoice sama sekali --
+ *  delivery selalu terjadi sebelum invoice di alur yang ada. Validasi foto server-side sama persis
+ *  polanya dengan material_claim_photos (lihat saveWeighRollAction/klaim fisik di atas). */
+export async function setKoliEkspedisiAction(koliId: string, ekspedisi: string, note: string, photo: { dataUrl: string; fileName?: string }): Promise<void> {
+  await requireVendorSession();
+  const db = supabaseServer();
+  if (!ekspedisi.trim()) throw new Error("Pilih ekspedisi dulu.");
+  if (!note.trim()) throw new Error("Catatan ekspedisi wajib diisi.");
+  if (!photo.dataUrl.startsWith("data:image/")) throw new Error("Foto lampiran tidak valid -- harus berupa gambar.");
+  const base64Part = photo.dataUrl.slice(photo.dataUrl.indexOf(",") + 1);
+  const approxBytes = Math.floor((base64Part.length * 3) / 4);
+  if (approxBytes > 700 * 1024) throw new Error("Foto lampiran terlalu besar -- ambil ulang dengan resolusi lebih kecil.");
+  const { data: koli } = await db.from("delivery_kolis").select("delivered_at").eq("id", koliId).maybeSingle();
+  if (!koli || koli.delivered_at) return;
+  const notedAt = nowIso();
+  const { error: photoErr } = await db.from("delivery_koli_ekspedisi_photos").upsert({ delivery_koli_id: koliId, data_url: photo.dataUrl, file_name: photo.fileName ?? null, uploaded_at: notedAt });
+  if (photoErr) throw new Error(`Gagal menyimpan foto lampiran: ${photoErr.message}`);
+  const { error } = await db.from("delivery_kolis").update({ ekspedisi, ekspedisi_note: note.trim(), ekspedisi_note_at: notedAt }).eq("id", koliId);
+  if (error) throw new Error(error.message);
+}
+
+/** Ambil BYTE foto lampiran ekspedisi 1 koli on-demand -- `delivery_koli_ekspedisi_photos` sengaja
+ *  DIKELUARKAN dari get_flow_snapshot_raw() (migration 0024, pola sama material_claim_photos)
+ *  supaya payloadnya tidak ikut re-download di setiap refresh snapshot. */
+export async function getDeliveryKoliEkspedisiPhotoAction(koliId: string): Promise<{ dataUrl: string; fileName?: string } | null> {
+  await requireVendorSession();
+  const db = supabaseServer();
+  const { data } = await db.from("delivery_koli_ekspedisi_photos").select("data_url,file_name").eq("delivery_koli_id", koliId).maybeSingle();
+  if (!data) return null;
+  return { dataUrl: data.data_url, fileName: data.file_name ?? undefined };
 }
 
 export async function markKoliDeliveredAction(koliId: string): Promise<void> {
