@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
-import { KoliEkspedisiCard } from "@/components/mrp/koli-ekspedisi-card";
+import { KoliEkspedisiCard, viewEkspedisiPhoto } from "@/components/mrp/koli-ekspedisi-card";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
   formatDate,
@@ -150,6 +150,59 @@ function InvoiceLinesDetail({
   );
 }
 
+/** Item 2026-09-10 (feedback: "di payment maklon sertakan no po di list card serta lampiran
+ *  foto ekspedisi") -- dulu No PO/MRP & lampiran ekspedisi cuma kelihatan setelah baris
+ *  di-expand (lihat InvoiceLinesDetail di atas) -- Finance minta itu langsung terlihat di baris
+ *  ringkas, tanpa perlu expand dulu. Kolom ini dipakai KEDUA tabel (siap dibayar & sudah
+ *  dibayar) -- reuse `invoiceKoliBreakdown` yang SAMA (bukan pool "semua koli MRP ini" yang
+ *  longgar) supaya lampiran yang ditampilkan di sini PASTI koli yang benar-benar menjadi dasar
+ *  invoice ini, bukan koli lain yang kebetulan sama MRP-nya (lihat bug fix "warna/lengan lain
+ *  bocor" sebelumnya -- prinsip yang sama). Ditaruh di module scope (bukan nested function di
+ *  dalam PaymentMaklonPanel) supaya identitas komponennya stabil antar render -- pola sama
+ *  InvoiceLinesDetail di atas. */
+function LampiranEkspedisiCell({
+  inv,
+  vendorInvoices,
+  mrpDetails,
+  staticMrps,
+  productionBatches,
+  productionResults,
+  productionGroupMeta,
+  rawInvoices,
+  deliveryKolis,
+}: {
+  inv: VendorInvoice;
+  vendorInvoices: VendorInvoice[];
+  mrpDetails: MrpDetail[];
+  staticMrps: Mrp[];
+  productionBatches: ProductionBatch[];
+  productionResults: ProductionResult[];
+  productionGroupMeta: ProductionGroupMeta[];
+  rawInvoices: RawMaterialInvoice[];
+  deliveryKolis: DeliveryKoli[];
+}) {
+  const breakdown = invoiceKoliBreakdown(inv, vendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis);
+  if (breakdown.groups.length === 0) {
+    return <span className="font-sans text-[11px] text-text-muted">—</span>;
+  }
+  return (
+    <span onClick={(e) => e.stopPropagation()} className="flex flex-col items-start gap-1">
+      {breakdown.groups.map((g) => (
+        <span key={g.koliId} className="flex items-center gap-1.5 font-sans text-[10.5px] text-[#31414F]">
+          <span className="font-medium">{g.ekspedisi || "—"}</span>
+          {g.ekspedisiNoteAt ? (
+            <button onClick={() => viewEkspedisiPhoto(g.koliId)} className="font-semibold text-action-primary underline">
+              Lihat foto
+            </button>
+          ) : (
+            <span className="text-text-muted">foto —</span>
+          )}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 /** Panel "Payment Maklon" — konten diekstrak dari halaman lama /finance/payment-maklon,
  *  sekarang dipakai sebagai satu sub-tab di halaman gabungan /finance/payment.
  *  Retensi sudah dihapus dari alur (keputusan bisnis terbaru) — pembayaran sekarang cuma
@@ -210,6 +263,7 @@ export function PaymentMaklonPanel() {
 
   const readyColumns: ColumnDef<VendorInvoice>[] = [
     { key: "vendor", label: "Vendor", default: true, render: (inv) => VENDOR_PRODUKSI[inv.vendorProduksi]?.name ?? inv.vendorProduksi },
+    { key: "noPo", label: "No PO", default: true, render: (inv) => <span className="font-mono">{Array.from(new Set(inv.lines.map((l) => l.mrpId))).join(", ")}</span> },
     {
       key: "total",
       label: "Total tagihan",
@@ -258,6 +312,24 @@ export function PaymentMaklonPanel() {
         return <StatusPill tone={payment.tone}>{payment.label}</StatusPill>;
       },
     },
+    {
+      key: "lampiranEkspedisi",
+      label: "Lampiran Ekspedisi",
+      default: true,
+      render: (inv) => (
+        <LampiranEkspedisiCell
+          inv={inv}
+          vendorInvoices={vendorInvoices}
+          mrpDetails={mrpDetails}
+          staticMrps={staticMrps}
+          productionBatches={productionBatches}
+          productionResults={productionResults}
+          productionGroupMeta={productionGroupMeta}
+          rawInvoices={rawInvoices}
+          deliveryKolis={deliveryKolis}
+        />
+      ),
+    },
   ];
 
   const paidColumns: ColumnDef<VendorInvoice>[] = [
@@ -266,6 +338,24 @@ export function PaymentMaklonPanel() {
     { key: "totalQty", label: "Total qty", default: true, align: "right", render: (inv) => formatPcs(inv.lines.reduce((s, l) => s + l.qty, 0)) },
     { key: "totalPaid", label: "Total dibayar", default: true, align: "right", render: (inv) => formatRupiah(vendorInvoiceTotalPaid(inv)) },
     { key: "tglLunas", label: "Tanggal Lunas", default: true, render: (inv) => formatDate(inv.paidAt) },
+    {
+      key: "lampiranEkspedisi",
+      label: "Lampiran Ekspedisi",
+      default: true,
+      render: (inv) => (
+        <LampiranEkspedisiCell
+          inv={inv}
+          vendorInvoices={vendorInvoices}
+          mrpDetails={mrpDetails}
+          staticMrps={staticMrps}
+          productionBatches={productionBatches}
+          productionResults={productionResults}
+          productionGroupMeta={productionGroupMeta}
+          rawInvoices={rawInvoices}
+          deliveryKolis={deliveryKolis}
+        />
+      ),
+    },
     {
       key: "status",
       label: "Status",

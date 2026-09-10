@@ -10,7 +10,11 @@ import { openPreviewWindow, fillPreviewWindow } from "@/lib/mrp/clientFiles";
  *  dipakai di 2 tempat (invoice-vendor-review-panel.tsx & payment-maklon-panel.tsx) supaya tidak
  *  duplikasi. `getDeliveryKoliEkspedisiPhotoAction` sekarang bisa dipanggil procurement/finance
  *  juga (lihat catatan di actions.ts), bukan cuma vendor seperti awalnya (Riwayat Pengiriman). */
-async function viewEkspedisiPhoto(koliId: string) {
+/** Diekspor juga (bukan cuma dipakai internal file ini) -- item 2026-09-10 (feedback: "sertakan
+ *  ... lampiran foto ekspedisi" langsung di baris ringkas Payment Maklon, bukan cuma di kartu
+ *  ini) dipakai LANGSUNG oleh payment-maklon-panel.tsx tanpa merender `KoliEkspedisiCard` penuh
+ *  (baris ringkas tabel sempit, cuma butuh tombol lihat foto-nya saja). */
+export async function viewEkspedisiPhoto(koliId: string) {
   const win = openPreviewWindow();
   try {
     const photo = await getDeliveryKoliEkspedisiPhotoAction(koliId);
