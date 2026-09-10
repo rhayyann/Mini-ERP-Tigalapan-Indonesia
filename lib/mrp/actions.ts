@@ -1321,14 +1321,14 @@ export async function submitCuttingDefectClaimAction(
       skipped.push(b.id);
       continue;
     }
-    let found: { invoiceId: string; rollIndex: number } | null = null;
+    let found: { invoiceId: string; rollIndex: number; invoice: RawMaterialInvoice; codeLot?: string } | null = null;
     for (const inv of snapshot.invoices) {
       if (inv.mrpId !== b.mrpId || inv.destinationVendor !== vendorId) continue;
       const colorKey = b.warna + "|" + b.lengan;
       const receipts = inv.rollReceipts[colorKey] ?? [];
       const idx = receipts.findIndex((r) => r?.codeRoll === b.codeRoll);
       if (idx !== -1) {
-        found = { invoiceId: inv.id, rollIndex: idx };
+        found = { invoiceId: inv.id, rollIndex: idx, invoice: inv, codeLot: receipts[idx]?.codeLot };
         break;
       }
     }
@@ -1356,6 +1356,44 @@ export async function submitCuttingDefectClaimAction(
       .eq("invoice_color_id", colorId)
       .eq("roll_index", found.rollIndex);
     if (updErr) throw new Error("Gagal menyimpan klaim fisik: " + updErr.message);
+
+    // BUG FIX (2026-09-10, owner-reported): fungsi ini dulu TIDAK PERNAH menulis ke
+    // material_claim_history (arsip klaim, migration 0011) sama sekali -- cuma
+    // raw_material_invoice_rolls (live) di atas. `createClaimReplacementInvoiceAction`
+    // ("Buat PV Pengganti") MEWAJIBKAN baris arsip ada (findOpenClaimHistoryId), jadi klaim
+    // fisik SELALU gagal dibuatkan PV pengganti -- "Klaim ini tidak ditemukan di arsip atau
+    // sudah selesai" -- meski di daftar Klaim Material kelihatan aktif & normal. Sekarang
+    // ditulis juga, pola SAMA PERSIS jalur klaim berat (lihat receiveRawMaterialRollAction) --
+    // soft-fail (try/catch, TIDAK menggagalkan aksi utama) supaya "Ajukan Claim Fisik" (dipakai
+    // vendor SETIAP hari) tidak ikut gagal cuma karena migration 0025 belum ter-apply.
+    // claimed_net_kg/diff_kg/pct dibiarkan kosong (tidak berarti utk klaim fisik, lihat migration
+    // 0025) -- `reason`+`defect_note` jadi penanda/keterangannya sebagai ganti.
+    try {
+      const colorEntry = found.invoice.colorEntries.find((c) => c.warna === b.warna && c.lengan === b.lengan);
+      const grossKg = colorEntry?.rolls[found.rollIndex];
+      const historyId = await nextReadableId("MCH");
+      await db.from("material_claim_history").insert({
+        id: historyId,
+        invoice_id: found.invoiceId,
+        po_id: found.invoice.poId ?? null,
+        mrp_id: found.invoice.mrpId ?? null,
+        supplier: found.invoice.supplier ?? null,
+        vendor_produksi: found.invoice.destinationVendor ?? null,
+        warna: b.warna,
+        lengan: b.lengan,
+        roll_index: found.rollIndex,
+        code_roll: b.codeRoll,
+        code_lot: found.codeLot ?? null,
+        gross_kg: grossKg ?? null,
+        reason: "FISIK",
+        defect_note: note.trim(),
+        claim_photo_at: claimedAt,
+      });
+    } catch {
+      // arsip opsional (migration 0025 belum ter-apply, atau data roll tidak lengkap) -- klaim
+      // fisik utamanya (raw_material_invoice_rolls di atas) SUDAH tersimpan, tidak boleh ikut
+      // gagal cuma karena arsip tambahan ini.
+    }
 
     await db.from("production_batch_sizes").delete().eq("production_batch_id", b.id);
     const { error: delErr } = await db.from("production_batches").delete().eq("id", b.id);
