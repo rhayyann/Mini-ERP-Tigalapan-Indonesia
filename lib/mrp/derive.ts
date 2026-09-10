@@ -2693,6 +2693,12 @@ export type HppRow = {
    *  spesifik (baris roll & baris rework baru, lib/mrp/derive.ts hppRowsForInvoicePerRoll).
    *  Kosong untuk baris pool lama (hppRowsForInvoice) yang menggabungkan >1 koli sekaligus. */
   noKoli?: string;
+  /** Item 2026-09-10 (Procurement/Finance: info lampiran ekspedisi sebelum approve/bayar) -- id
+   *  DeliveryKoli asal baris ini (BEDA dari `noKoli` yang cuma label bebas yang diketik vendor,
+   *  tidak dijamin unik) -- dipakai `invoiceKoliBreakdown` di bawah untuk lookup balik ke
+   *  `DeliveryKoli` (ekspedisi/catatan/foto/tanggal kirim) secara PASTI. Sama syarat kosongnya
+   *  dengan `noKoli` di atas. */
+  koliId?: string;
   mrpId: string;
   mrpLabel: string;
   warna: string;
@@ -3159,6 +3165,7 @@ export function hppRowsForInvoicePerRoll(
         invoiceId: inv.id,
         vendorProduksi: inv.vendorProduksi,
         noKoli: koli?.noKoli,
+        koliId: koli?.id,
         mrpId: line.mrpId,
         mrpLabel: `${line.mrpId} ${mrp?.kategori ?? ""}`.trim(),
         warna: line.warna,
@@ -3216,6 +3223,7 @@ export function hppRowsForInvoicePerRoll(
         invoiceId: inv.id,
         vendorProduksi: inv.vendorProduksi,
         noKoli: c.koli.noKoli,
+        koliId: c.koli.id,
         mrpId: line.mrpId,
         mrpLabel: `${line.mrpId} ${mrp?.kategori ?? ""}`.trim(),
         warna: line.warna,
@@ -3306,4 +3314,82 @@ export function hppRowsForInvoicePerRoll(
   }
 
   return rows;
+}
+
+export type InvoiceKoliBreakdownRow = { warna: string; lengan: Lengan; size: string; qty: number; nominal: number };
+
+export type InvoiceKoliGroup = {
+  koliId: string;
+  noKoli: string;
+  ekspedisi: string;
+  deliveredAt?: string;
+  ekspedisiNote?: string;
+  ekspedisiNoteAt?: string;
+  rows: InvoiceKoliBreakdownRow[];
+  totalQty: number;
+  totalNominal: number;
+};
+
+/** Item 2026-09-10 (Procurement "Invoice Vendor" & Finance "Payment Maklon": info lampiran
+ *  ekspedisi sebelum approve/bayar): rincian 1 invoice vendor, DIKELOMPOKKAN PER KOLI pengiriman
+ *  asalnya -- reuse `hppRowsForInvoicePerRoll` APA ADANYA (fungsi yang SAMA dipakai Laporan HPP,
+ *  sudah punya alokasi FIFO-per-koli yang benar & live-verified, lihat catatan panjang di
+ *  fungsi itu) alih-alih menulis ulang logic alokasinya di sini.
+ *
+ *  `nominal` per baris = `biayaProduksiTotal` (rate maklon x qty) -- BUKAN `hppPerItem` (yang
+ *  termasuk COGS bahan + ongkir, itu basis Laporan HPP internal) -- karena `biayaProduksiTotal`
+ *  PERSIS basis `VendorInvoiceLine.amount` yang sebenarnya ditagih vendor produksi & dibayar
+ *  Finance (lihat createVendorInvoiceAction/createDeliveryKoliAction) -- vendor produksi TIDAK
+ *  dibayar untuk bahan (itu invoice terpisah ke supplier bahan) atau ongkir (itu biaya ekspedisi,
+ *  bukan komponen tagihan maklon).
+ *
+ *  Baris yang TIDAK bisa ditelusuri ke satu koli (fallback pool lama, `hppRowsForInvoice` --
+ *  lihat catatan `HppRow.koliId`) dikumpulkan terpisah di `legacyRows`, TIDAK dipaksa masuk grup
+ *  koli manapun -- data lama ini genuinely tidak tahu koli asalnya. */
+export function invoiceKoliBreakdown(
+  inv: VendorInvoice,
+  allVendorInvoices: VendorInvoice[],
+  mrpDetails: MrpDetail[],
+  staticMrps: Mrp[],
+  productionBatches: ProductionBatch[],
+  productionResults: ProductionResult[],
+  productionGroupMeta: ProductionGroupMeta[],
+  rawInvoices: RawMaterialInvoice[],
+  deliveryKolis: DeliveryKoli[]
+): { groups: InvoiceKoliGroup[]; legacyRows: InvoiceKoliBreakdownRow[] } {
+  const hppRows = hppRowsForInvoicePerRoll(inv, allVendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis);
+  const groupsByKoli = new Map<string, InvoiceKoliGroup>();
+  const legacyRows: InvoiceKoliBreakdownRow[] = [];
+  for (const r of hppRows) {
+    // `jenis` SELALU "`${lengan} ${size}`" (lihat hppRowsForInvoicePerRoll/hppRowsForInvoice) --
+    // potong prefix "LENGAN " (pakai `r.lengan` yang sudah ada di baris ini, bukan split by
+    // space, supaya tetap benar kalaupun size punya spasi) untuk dapat size mentahnya kembali
+    // tanpa perlu HppRow bawa field `size` terpisah.
+    const row: InvoiceKoliBreakdownRow = { warna: r.warna, lengan: r.lengan, size: r.jenis.slice(r.lengan.length + 1), qty: r.fg, nominal: r.biayaProduksiTotal };
+    if (!r.koliId) {
+      legacyRows.push(row);
+      continue;
+    }
+    let group = groupsByKoli.get(r.koliId);
+    if (!group) {
+      const koli = deliveryKolis.find((k) => k.id === r.koliId);
+      group = {
+        koliId: r.koliId,
+        noKoli: koli?.noKoli ?? r.noKoli ?? r.koliId,
+        ekspedisi: koli?.ekspedisi ?? "",
+        deliveredAt: koli?.deliveredAt,
+        ekspedisiNote: koli?.ekspedisiNote,
+        ekspedisiNoteAt: koli?.ekspedisiNoteAt,
+        rows: [],
+        totalQty: 0,
+        totalNominal: 0,
+      };
+      groupsByKoli.set(r.koliId, group);
+    }
+    group.rows.push(row);
+    group.totalQty += row.qty;
+    group.totalNominal += row.nominal;
+  }
+  const groups = Array.from(groupsByKoli.values()).sort((a, b) => (a.noKoli < b.noKoli ? -1 : a.noKoli > b.noKoli ? 1 : 0));
+  return { groups, legacyRows };
 }

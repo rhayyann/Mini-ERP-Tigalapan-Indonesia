@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/shell/app-shell";
 import { StatusPill } from "@/components/ui/status-pill";
-import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
 import { formatDateTime, formatRupiah, vendorDepositBalance, vendorDepositEntriesFor, vendorDepositSuppliers } from "@/lib/mrp/derive";
@@ -95,16 +94,9 @@ export default function VendorDepositPage() {
   useEffect(() => setMounted(true), []);
 
   const vendorDeposits = useMrpStore((s) => s.vendorDeposits);
-  const deleteVendorDepositEntry = useMrpStore((s) => s.deleteVendorDepositEntry);
   const invoices = useMrpStore((s) => s.invoices);
 
   if (!mounted) return null;
-
-  function confirmDelete(id: string, label: string) {
-    if (window.confirm(`Hapus permanen baris "${label}"? Saldo berjalan supplier ini akan otomatis terkoreksi. Tindakan ini tidak bisa dibatalkan.`)) {
-      deleteVendorDepositEntry(id);
-    }
-  }
 
   const suppliers = vendorDepositSuppliers(vendorDeposits);
   const rows: SupplierDepositRow[] = suppliers.map((supplier) => ({
@@ -157,7 +149,7 @@ export default function VendorDepositPage() {
         emptyText="Belum ada saldo deposit vendor tercatat."
         renderExpanded={(r) => {
           const entries = vendorDepositEntriesFor(r.supplier, vendorDeposits);
-          const gridCols = "minmax(90px,0.8fr) minmax(90px,0.8fr) minmax(70px,0.6fr) minmax(70px,0.6fr) minmax(100px,0.9fr) minmax(90px,0.8fr) minmax(160px,1.4fr) minmax(60px,0.5fr)";
+          const gridCols = "minmax(90px,0.8fr) minmax(90px,0.8fr) minmax(70px,0.6fr) minmax(70px,0.6fr) minmax(100px,0.9fr) minmax(90px,0.8fr) minmax(160px,1.4fr)";
           return (
             <div className="overflow-x-auto rounded-md border border-[#E4E8EE] bg-white">
               <div
@@ -171,7 +163,6 @@ export default function VendorDepositPage() {
                 <span>Kode Roll</span>
                 <span className="text-right">Nilai</span>
                 <span>Bukti</span>
-                <span className="text-right">Aksi</span>
               </div>
               {entries.map((e) => {
                 const label = e.kind === "CREDIT" ? "Kredit masuk" : "Dipakai bayar";
@@ -217,11 +208,6 @@ export default function VendorDepositPage() {
                       ) : (
                         <span className="font-sans text-[10.5px] text-text-muted">Foto klaim —</span>
                       )}
-                    </span>
-                    <span className="text-right">
-                      <Button onClick={() => confirmDelete(e.id, `${label} — ${ctx.invoice?.id ?? e.id}`)} variant="danger" size="xs">
-                        Hapus
-                      </Button>
                     </span>
                   </div>
                 );
