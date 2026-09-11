@@ -3265,22 +3265,34 @@ export async function dismissNotificationAction(id: string): Promise<void> {
 export async function resetAllAction(): Promise<void> {
   await requireSession(); // siapa saja yang sudah login (role apapun / vendor) boleh -- sama seperti perilaku lama
   const db = supabaseServer();
+  // BUG FIX 2026-09-11 (owner: "kenapa fitur reset data tidak bisa bekerja?"): dulu tidak ada satu
+  // pun pengecekan `.error` di bawah -- klien Supabase TIDAK melempar exception untuk error query
+  // (RLS block, tabel terkunci, dst.), cuma mengembalikan `{ error }` di hasilnya. Tanpa dicek,
+  // delete yang gagal lewat diam-diam: function ini "selesai" tanpa throw, client (reset-data-
+  // button.tsx) mengira sukses dan reload halaman -- padahal sebagian/semua data MASIH ADA. Dari
+  // sisi user persis kelihatan seperti "tombol reset tidak bekerja" (tidak ada error, tapi data
+  // tidak hilang). Sekarang tiap delete dicek, throw begitu ada yang gagal supaya errornya sampai
+  // ke reset-data-button.tsx (lihat try/catch barunya di sana) dan terlihat oleh user.
+  async function del(table: string, col: string) {
+    const { error } = await db.from(table).delete().neq(col, "");
+    if (error) throw new Error(`Reset data gagal di tabel "${table}": ${error.message}`);
+  }
   // vendor_invoices dihapus DULU -- vendor_invoice_lines beracuan ke mrp_id (cascade lewat mrp),
   // tapi baris vendor_invoices sendiri TIDAK beracuan ke mrp -- kalau mrp dihapus duluan, baris
   // vendor_invoices bakal jadi "cangkang kosong" tanpa lines, bukan ikut terhapus.
-  await db.from("vendor_invoices").delete().neq("id", "");
+  await del("vendor_invoices", "id");
   // Hapus mrp -- cascade ke SEMUA tabel turunannya (lengan_groups, aduan_pola_rows, material_rows,
   // material_pos, maklon_pos, raw_material_invoices, maklon_invoices, production_batches,
   // production_results, production_group_meta, delivery_kolis, dst -- lihat FK ON DELETE CASCADE
   // di supabase/migrations/0001_init.sql).
-  await db.from("mrp").delete().neq("id", "");
-  await db.from("notifications").delete().neq("id", "");
+  await del("mrp", "id");
+  await del("notifications", "id");
   // BUG FIX 2026-09-07: vendor_deposits (saldo deposit vendor, migration 0018) SENGAJA standalone
   // -- tidak beracuan FK ke mrp/raw_material_invoices sama sekali (source_claim_id/source_invoice_id
   // cuma teks bebas, bukan constraint), jadi TIDAK ikut cascade terhapus waktu mrp dihapus di atas.
   // Baris ledger-nya jadi "yatim" (menunjuk ke invoice/klaim yang sudah tidak ada) tapi tetap
   // dihitung ke saldo berjalan supplier itu -- itu sebabnya saldo lama tetap muncul setelah reset.
-  await db.from("vendor_deposits").delete().neq("id", "");
+  await del("vendor_deposits", "id");
   // BUG FIX 2026-09-07 (lanjutan, ketemu owner lewat "kenapa masih ada data lain di Riwayat Klaim
   // setelah reset?"): 3 tabel arsip/payload-terpisah lain punya masalah persis sama seperti
   // vendor_deposits di atas -- SEMUA `create table` di migration 0011/0014/0017 sengaja tidak
@@ -3289,15 +3301,15 @@ export async function resetAllAction(): Promise<void> {
   // - material_claim_history (arsip Riwayat Klaim Material, migration 0011)
   // - material_claim_photos (payload foto bukti klaim, migration 0014)
   // - invoice_payment_proofs (payload bukti transfer/bayar, migration 0017)
-  await db.from("material_claim_history").delete().neq("id", "");
-  await db.from("material_claim_photos").delete().neq("claim_key", "");
-  await db.from("invoice_payment_proofs").delete().neq("invoice_id", "");
+  await del("material_claim_history", "id");
+  await del("material_claim_photos", "claim_key");
+  await del("invoice_payment_proofs", "invoice_id");
   // Master data (bukan vendors_produksi) -- persis initialState lama (semua balik ke []).
-  await db.from("harga_maklon").delete().neq("id", "");
-  await db.from("harga_kain").delete().neq("id", "");
-  await db.from("harga_kain_pks").delete().neq("id", "");
-  await db.from("entitas").delete().neq("id", "");
-  await db.from("suppliers").delete().neq("id", "");
+  await del("harga_maklon", "id");
+  await del("harga_kain", "id");
+  await del("harga_kain_pks", "id");
+  await del("entitas", "id");
+  await del("suppliers", "id");
 }
 
 export async function getFlowSnapshotAction() {
