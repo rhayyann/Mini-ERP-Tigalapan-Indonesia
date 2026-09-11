@@ -443,7 +443,11 @@ export default function PoApprovalPage() {
         filterDefs={[
           { label: "No MRP", options: Array.from(new Set(allMaterialPOs.map((p) => p.mrpId))), test: (p, v) => p.mrpId === v },
           { label: "No PO", options: Array.from(new Set(allMaterialPOs.map((p) => p.id))), test: (p, v) => p.id === v },
-          { label: "Vendor produksi", options: Array.from(new Set(allMaterialPOs.map((p) => p.vendorProduksi))), test: (p, v) => p.vendorProduksi === v },
+          {
+            label: "Vendor produksi",
+            options: Array.from(new Set(allMaterialPOs.map((p) => VENDOR_PRODUKSI[p.vendorProduksi]?.name ?? p.vendorProduksi))),
+            test: (p, v) => (VENDOR_PRODUKSI[p.vendorProduksi]?.name ?? p.vendorProduksi) === v,
+          },
           { label: "Entitas", options: Array.from(new Set(allMaterialPOs.map((p) => p.entity))), test: (p, v) => p.entity === v },
           {
             label: "Status",
