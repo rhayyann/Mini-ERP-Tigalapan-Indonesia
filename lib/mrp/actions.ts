@@ -42,6 +42,7 @@ import {
   reworkSizeAllowed,
   rollRemainingBySizeForMrp,
   resiGroupInvoiceLines,
+  warehouseReceivableGroups,
 } from "./derive";
 import { ENTITAS_LIST, VENDOR_PRODUKSI } from "./seed";
 import type { ParsedMrpImport } from "./parseImport";
@@ -3228,7 +3229,7 @@ export async function deliverKoliResiGroupAction(items: { koliId: string; beratK
   if (items.some((it) => !(it.beratKoli > 0))) throw new Error("Berat semua koli dalam grup ini harus diisi (> 0) sebelum Delivery.");
   const db = supabaseServer();
   const koliIds = items.map((it) => it.koliId);
-  const { data: rows } = await db.from("delivery_kolis").select("id,vendor_produksi,ekspedisi,resi_group_id,delivered_at").in("id", koliIds);
+  const { data: rows } = await db.from("delivery_kolis").select("id,vendor_produksi,ekspedisi,resi_group_id,delivered_at,no_koli").in("id", koliIds);
   if (!rows || rows.length !== koliIds.length) throw new Error("Sebagian koli tidak ditemukan.");
   if (rows.some((r) => r.vendor_produksi !== vendorId)) throw new Error("Forbidden: sebagian koli bukan milik vendor Anda.");
   if (rows.some((r) => r.delivered_at)) return; // sudah delivered semua -- no-op, idempotent
@@ -3245,6 +3246,11 @@ export async function deliverKoliResiGroupAction(items: { koliId: string; beratK
   }
   const { error: deliverErr } = await db.from("delivery_kolis").update({ delivered_at: today() }).in("id", koliIds);
   if (deliverErr) throw new Error(deliverErr.message);
+
+  // Spec Portal Warehouse R18 -- Warehouse butuh tahu begitu ada koli baru "sedang dikirim" (siap
+  // ditunggu di /warehouse/penerimaan begitu gate HPP-nya lolos nanti).
+  const noKoliLabel = rows.map((r) => r.no_koli ?? r.id).join(", ");
+  await insertNotification(notif(`Koli ${noKoliLabel} dari ${VENDOR_PRODUKSI[vendorId]?.name ?? vendorId} sedang dikirim`, ["warehouse"]));
 }
 
 // =========================================================================
@@ -3343,6 +3349,149 @@ export async function payVendorInvoiceAction(invoiceId: string): Promise<void> {
   if (!invoice || invoice.status === "PAID") return;
   await db.from("vendor_invoices").update({ status: "PAID", paid_at: today() }).eq("id", invoiceId);
   await insertNotification(notif(`Invoice vendor ${invoice.id} telah dibayar lunas oleh Finance`, ["vendorMaklon"], invoice.vendor_produksi));
+}
+
+// =========================================================================
+// "Finalkan HPP" (Spec Portal Warehouse bagian A) -- PENANDA per invoice vendor, BUKAN LOCK.
+// Level finalisasi PER INVOICE (bukan per resi group) karena HppRow.invoiceId mengikat setiap
+// baris HPP ke tepat satu invoice -- lihat penjelasan level di spec. Mengisi hpp_finalized_at
+// TIDAK mengubah perilaku modul lain manapun (cutting/rework/ongkir/Laporan HPP tetap live) --
+// satu-satunya efeknya adalah membuka gate Warehouse (lihat warehouseReceivableGroups, derive.ts).
+// =========================================================================
+
+export async function finalizeHppForInvoiceAction(invoiceId: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "finance");
+  const db = supabaseServer();
+  const { data: invoice } = await db.from("vendor_invoices").select("id,vendor_produksi,status,hpp_finalized_at").eq("id", invoiceId).maybeSingle();
+  if (!invoice) return; // no-op -- invoice tidak ditemukan
+  if (invoice.hpp_finalized_at) return; // idempotent -- klik dobel aman, sudah final duluan
+  if (invoice.status === "REVISION") throw new Error("Invoice masih dalam revisi — HPP belum bisa difinalkan");
+  const { error } = await db.from("vendor_invoices").update({ hpp_finalized_at: nowIso(), hpp_finalized_by: "finance" }).eq("id", invoiceId);
+  if (error) throw new Error(error.message);
+  await insertNotification(notif(`HPP invoice ${invoice.id} telah difinalkan Finance — koli terkait siap dibongkar Warehouse`, ["warehouse"]));
+}
+
+/** Pengaman salah klik "Finalkan HPP" -- DITOLAK kalau koli yang biayanya ditelusuri ke invoice
+ *  ini SUDAH dibongkar Warehouse (warehouse_receipts), supaya angka yang sudah tersnapshot di sana
+ *  tidak pernah "kehilangan dasar" finalisasinya. Deteksi lewat `vendor_invoice_id` yang dicatat
+ *  di warehouse_receipts saat Bongkar (lihat receiveWarehouseResiGroupAction) -- cukup akurat untuk
+ *  kasus umum (1 resi = 1 invoice); kalau tabelnya belum ada (migration 0031 belum di-apply),
+ *  query di-try/catch supaya TIDAK memblokir "Batalkan Final" di environment yang belum migrate. */
+/** "Batalkan Final" HPP -- blokir kalau koli-koli invoice ini sudah dibongkar fisik oleh Warehouse
+ *  (supaya angka HPP yang sudah dipakai untuk membuka gate bongkar tidak bisa diubah diam-diam
+ *  setelah barangnya sudah diterima).
+ *
+ *  KETERBATASAN YANG SUDAH DIKETAHUI DAN DITERIMA (bukan bug, keputusan sadar untuk versi awal):
+ *  deteksi "sudah dibongkar" di bawah ini HANYA lewat `warehouse_receipts.vendor_invoice_id`, yang
+ *  NULL kalau 1 resi group menaungi >1 invoice vendor (FIFO alokasi lintas invoice saat resi group
+ *  dibentuk — lihat warehouseReceivableGroups di derive.ts). Untuk kasus itu, "Batalkan Final" bisa
+ *  LOLOS tanpa ditolak walau sebagian/semua barang di resi group tsb sudah fisik dibongkar Warehouse.
+ *  Root cause: skema `warehouse_receipt_items` (migration 0031) tidak punya kolom invoice_id per
+ *  baris item, cuma per-receipt (`warehouse_receipts.vendor_invoice_id`), jadi tidak ada cara
+ *  menelusuri "item mana dari invoice mana" begitu >1 invoice tercampur dalam 1 resi group. Perbaikan
+ *  penuh butuh migration schema tambahan (kolom invoice_id per item) — SENGAJA TIDAK dikerjakan di
+ *  sini, di luar scope; kalau kasus ini jadi masalah nyata di produksi, tangani sebagai task terpisah
+ *  dengan migration baru, bukan tambal di fungsi ini. */
+export async function unfinalizeHppForInvoiceAction(invoiceId: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "finance");
+  const db = supabaseServer();
+  try {
+    const { data: receipts } = await db.from("warehouse_receipts").select("id").eq("vendor_invoice_id", invoiceId).limit(1);
+    if (receipts && receipts.length > 0) throw new Error("Koli invoice ini sudah dibongkar Warehouse — HPP tidak bisa dibuka lagi");
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Koli invoice ini")) throw err;
+    // tabel warehouse_receipts belum ada (migration 0031 belum di-apply) -- lanjutkan, tidak ada
+    // yang perlu diblokir.
+  }
+  const { error } = await db.from("vendor_invoices").update({ hpp_finalized_at: null, hpp_finalized_by: null }).eq("id", invoiceId);
+  if (error) throw new Error(error.message);
+}
+
+// =========================================================================
+// Warehouse (Spec Portal Warehouse bagian B) — Penerimaan & Bongkar koli barang jadi.
+// =========================================================================
+
+/** "Bongkar Koli" -- SELALU per RESI GROUP dan SELALU UTUH (Q5 final, non-goal: tidak ada bongkar
+ *  sebagian/koreksi qty/klaim selisih). Payload dari client SENGAJA cuma `{ resiGroupId, note? }`
+ *  -- qty & hpp_per_item TIDAK PERNAH dipercaya dari client, server membangun ulang daftar item
+ *  dari snapshot FRESH (`warehouseReceivableGroups`, derive.ts) yang APA ADANYA memanggil
+ *  `hppRowsForInvoicePerRoll` (pola sama `submitResiGroupInvoiceAction` yang juga tidak percaya
+ *  qty dari client). Gate HPP (R9) divalidasi ULANG di sini (bukan cuma di UI) lewat
+ *  `group.gateReason`. */
+export async function receiveWarehouseResiGroupAction(resiGroupId: string, note?: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "warehouse");
+  const db = supabaseServer();
+
+  // Idempotent -- resi group ini sudah pernah dibongkar sebelumnya (klik dobel/replay action) ->
+  // no-op, bukan error.
+  const { data: existing } = await db.from("warehouse_receipts").select("id").eq("resi_group_id", resiGroupId).maybeSingle();
+  if (existing) return;
+
+  const snapshot = await getFlowSnapshot();
+  const groups = warehouseReceivableGroups(
+    snapshot.deliveryKolis,
+    snapshot.vendorInvoices,
+    snapshot.mrpDetails,
+    snapshot.staticMrps,
+    snapshot.productionBatches,
+    snapshot.productionResults,
+    snapshot.productionGroupMeta,
+    snapshot.invoices,
+    snapshot.warehouseReceipts
+  );
+  const group = groups.find((g) => g.resiGroupId === resiGroupId);
+  // Validasi server-side ulang (R11): grup tidak ditemukan berarti resi ini sudah tidak eligible
+  // lagi (mis. koli belum delivered semua, atau resiGroupId salah) -- no-op, jangan tampilkan
+  // error membingungkan untuk kondisi race yang wajar (mis. koli baru saja ditambahkan lagi).
+  if (!group) return;
+  if (group.gateReason) throw new Error(group.gateReason);
+
+  const id = await nextReadableId("WHR");
+  const receivedAt = nowIso();
+  // Kolom `vendor_invoice_id` di warehouse_receipts cuma 1 (bukan array) -- diisi kalau SELURUH
+  // item grup ini bisa ditelusuri ke TEPAT SATU invoice (kasus umum), kosong kalau gabungan >1
+  // invoice (tetap valid, cuma tidak ada 1 nomor invoice representatif tunggal untuk kolom ini).
+  const vendorInvoiceId = group.invoiceIds.length === 1 ? group.invoiceIds[0] : null;
+
+  const { error } = await db.from("warehouse_receipts").insert({
+    id,
+    resi_group_id: group.resiGroupId,
+    mrp_id: group.mrpId,
+    vendor_produksi: group.vendorProduksi,
+    vendor_invoice_id: vendorInvoiceId,
+    received_at: receivedAt,
+    note: note?.trim() || null,
+    created_at: receivedAt,
+  });
+  if (error) {
+    // Race condition: request lain untuk resi group yang sama sudah menang duluan di antara cek
+    // idempotency di atas dan insert ini -- unique constraint (resi_group_id) di DB menolak baris
+    // kita. Perlakukan sama seperti early-return `if (existing) return` di atas: no-op, bukan error.
+    if ((error as { code?: string }).code === "23505") return;
+    throw new Error(error.message);
+  }
+
+  const { error: koliErr } = await db.from("warehouse_receipt_kolis").insert(group.koliIds.map((koliId) => ({ warehouse_receipt_id: id, delivery_koli_id: koliId })));
+  if (koliErr) throw new Error(`Gagal menyimpan koli penerimaan: ${koliErr.message}`);
+
+  if (group.items.length > 0) {
+    const { error: itemsErr } = await db.from("warehouse_receipt_items").insert(
+      group.items.map((it) => ({
+        warehouse_receipt_id: id,
+        delivery_koli_id: it.deliveryKoliId,
+        warna: it.warna,
+        lengan: it.lengan,
+        size: it.size,
+        kind: it.kind,
+        qty: it.qty,
+        hpp_per_item: it.hppPerItem,
+        source_batch_id: it.sourceBatchId ?? null,
+      }))
+    );
+    if (itemsErr) throw new Error(`Gagal menyimpan item penerimaan: ${itemsErr.message}`);
+  }
+
+  await insertNotification(notif(`Warehouse membongkar koli resi ${group.noResi ?? group.noKoli} (${group.mrpLabel})`, ["finance", "produksi"]));
 }
 
 export async function addVendorInvoiceAdjustmentAction(invoiceId: string, input: { kind: VendorInvoiceAdjustmentKind; label: string; amount: number; note?: string }): Promise<void> {

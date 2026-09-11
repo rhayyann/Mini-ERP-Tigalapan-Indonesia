@@ -14,6 +14,7 @@ const INTERNAL_ROLE_ENV_VAR: Record<InternalRole, string> = {
   finance: "INTERNAL_PASSWORD_FINANCE",
   scm: "INTERNAL_PASSWORD_SCM",
   produksi: "INTERNAL_PASSWORD_PRODUKSI",
+  warehouse: "INTERNAL_PASSWORD_WAREHOUSE",
 };
 
 /** Cek password role internal (PPIC/Procurement/Finance/SCM/Produksi) terhadap env var

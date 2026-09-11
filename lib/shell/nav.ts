@@ -1,6 +1,6 @@
 export type NavItem = { label: string; href?: string; badge?: number };
 
-export type RoleKey = "ppic" | "procurement" | "finance" | "scm" | "produksi" | "vendorMaklon" | "vendorSupplier" | "admin";
+export type RoleKey = "ppic" | "procurement" | "finance" | "scm" | "produksi" | "warehouse" | "vendorMaklon" | "vendorSupplier" | "admin";
 
 export type RoleNav = {
   role: string;
@@ -64,6 +64,14 @@ export const NAV: Record<RoleKey, RoleNav> = {
     items: [
       { label: "Monitoring Produksi", href: "/produksi/monitoring" },
       { label: "Yield Alert", href: "/produksi/yield-alerts" },
+    ],
+  },
+  warehouse: {
+    role: "Warehouse",
+    entity: "Tigalapan Indonesia",
+    items: [
+      { label: "Penerimaan", href: "/warehouse/penerimaan" },
+      { label: "Riwayat Penerimaan", href: "/warehouse/riwayat" },
     ],
   },
   vendorMaklon: {

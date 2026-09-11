@@ -1,7 +1,7 @@
 import { EKSPEDISI_RATES, MATERIAL_RATE_PER_ROLL, ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "./seed";
 import type { MrpDetail, PpicApprovalStatus } from "./store";
 import type { HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
-import type { AduanPolaRow, ColorBreakdown, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, Usia, VendorDepositEntry, VendorInvoice, VendorInvoiceLine } from "./types";
+import type { AduanPolaRow, ColorBreakdown, DeliveryItemKind, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, Usia, VendorDepositEntry, VendorInvoice, VendorInvoiceLine, WarehouseReceipt } from "./types";
 
 export function formatRupiah(n: number) {
   return "Rp " + Math.round(n).toLocaleString("id-ID");
@@ -3528,4 +3528,200 @@ export function invoiceKoliBreakdown(
     .map(({ noKoliList: _noKoliList, ...g }) => g)
     .sort((a, b) => (a.noKoli < b.noKoli ? -1 : a.noKoli > b.noKoli ? 1 : 0));
   return { groups, legacyRows };
+}
+
+// =========================================================================
+// Spec Portal Warehouse — Penerimaan & Bongkar koli barang jadi dari Vendor Produksi.
+// =========================================================================
+
+export type WarehouseReceivableItem = {
+  /** Item 2026-09-12 (R10 di spec: "warehouse_receipt_items.qty SELALU sama dengan qty di
+   *  DeliveryKoliItem") -- SATU baris di sini = SATU `DeliveryKoliItem` apa adanya (TIDAK
+   *  dijumlahkan lintas koli/kind meskipun warna+lengan+size-nya kebetulan sama), supaya qty
+   *  di sini identik persis dengan qty aslinya & `deliveryKoliId`/`sourceBatchId` tetap bisa
+   *  ditelusuri ke koli spesifiknya (lihat kolom warehouse_receipt_items di migration 0031). */
+  deliveryKoliId: string;
+  warna: string;
+  lengan: Lengan;
+  size: string;
+  kind: DeliveryItemKind;
+  qty: number;
+  sourceBatchId?: string;
+  /** SUMBER dari `HppRow.hppPerItem` (hppRowsForInvoicePerRoll), TIDAK dihitung ulang -- kalau
+   *  item ini kena >1 baris HPP yang cocok (mis. qty-nya terpecah ke >1 invoice lewat alokasi
+   *  FIFO), nilainya rata-rata TERTIMBANG qty per baris. 0 kalau item ini genuinely tidak ketemu
+   *  baris HPP-nya (lihat gateReason grup -- 0 di sini TIDAK PERNAH tersimpan ke DB, gate akan
+   *  memblokir "Bongkar" duluan). */
+  hppPerItem: number;
+};
+
+export type WarehouseReceivableGroup = {
+  /** `resiGroupId ?? koliId` -- kunci grup batch pengiriman, konvensi yang SAMA dipakai di seluruh
+   *  app (lihat catatan invoiceKoliBreakdown di atas). */
+  resiGroupId: string;
+  koliIds: string[];
+  /** Gabungan noKoli semua koli dalam grup ini, format sama invoiceKoliBreakdown ("Koli A, B"). */
+  noKoli: string;
+  ekspedisi: string;
+  deliveredAt?: string;
+  noResi?: string;
+  /** Representatif (koli pertama dalam grup) -- warehouse_receipts hanya punya 1 kolom mrp_id
+   *  (lihat migration 0031), jadi kasus normal (1 grup = 1 MRP) disimpan apa adanya. `mrpLabel`
+   *  TETAP menggabungkan SEMUA mrpId berbeda dalam grup (kalau ada) supaya tidak menyembunyikan
+   *  info ke gudang, walau `mrpId` yang disimpan cuma yang representatif. */
+  mrpId: string;
+  mrpLabel: string;
+  vendorProduksi: string;
+  /** Himpunan invoiceId yang menaungi item-item grup ini (lihat gatePassed di spec) -- kosong
+   *  berarti belum ada invoice vendor sama sekali untuk resi ini. */
+  invoiceIds: string[];
+  totalQty: number;
+  /** Σ (qty × hppPerItem) seluruh item grup ini. */
+  totalNilai: number;
+  items: WarehouseReceivableItem[];
+  /** null = lolos gate, boleh "Bongkar". Non-null = alasan spesifik kenapa tombol Bongkar
+   *  disabled (lihat R9 di spec) -- baris TETAP tampil biar gudang tahu barang fisiknya sudah
+   *  datang, cuma belum boleh dibongkar. */
+  gateReason: string | null;
+};
+
+/** Baris HPP ini "kind"-nya REWORK kalau ditelusuri lewat reworkChunks (bukan roll chunk) --
+ *  hppRowsForInvoicePerRoll TIDAK menyimpan flag ini eksplisit di HppRow, tapi `item` selalu
+ *  memuat literal " · Rework" HANYA untuk baris asal reworkChunks (lihat penulisannya di fungsi
+ *  itu) -- baris roll & baris pool legacy tidak pernah memuat kata itu. */
+function isReworkHppRow(r: HppRow): boolean {
+  return r.item.includes("Rework");
+}
+
+/** Spec Portal Warehouse, requirement 15 -- daftar batch pengiriman (resi group) siap dibongkar,
+ *  dibangun dengan memanggil `hppRowsForInvoicePerRoll` APA ADANYA (fungsi & alokasi FIFO yang
+ *  SAMA dipakai Laporan HPP & invoiceKoliBreakdown, TIDAK dihitung ulang) lalu regroup per
+ *  `resiGroupId ?? koliId` -- struktur & gaya mengikuti `invoiceKoliBreakdown` di atas. Beda dari
+ *  fungsi itu: (a) granularitas grup di sini per RESI GROUP (bukan per invoice — eligibility &
+ *  gate Warehouse memang per resi group, lihat R9/R10), (b) `hppPerItem` dipakai sebagai basis
+ *  nilai (bukan `biayaProduksiTotal`/nominal tagihan vendor — nilai stok gudang harus mencerminkan
+ *  HPP penuh: biaya produksi + COGS bahan + ongkir), (c) membawa `gateReason` per grup.
+ *
+ *  Gate (R9, final, Q1 = Opsi B): grup boleh "Bongkar" HANYA kalau (a) SETIAP item koli dalam grup
+ *  ketemu baris HPP-nya (bisa ditelusuri lewat koliId+warna+lengan+size), (b) himpunan invoiceId
+ *  dari baris-baris itu TIDAK kosong, (c) SEMUA invoice dalam himpunan itu sudah `hppFinalizedAt`.
+ *  Baris yang gagal gate TETAP tampil (item TIDAK disembunyikan) dengan `gateReason` spesifik --
+ *  gudang harus tetap tahu barang fisiknya sudah datang walau belum boleh dibongkar. */
+export function warehouseReceivableGroups(
+  deliveryKolis: DeliveryKoli[],
+  vendorInvoices: VendorInvoice[],
+  mrpDetails: MrpDetail[],
+  staticMrps: Mrp[],
+  productionBatches: ProductionBatch[],
+  productionResults: ProductionResult[],
+  productionGroupMeta: ProductionGroupMeta[],
+  rawInvoices: RawMaterialInvoice[],
+  warehouseReceipts: WarehouseReceipt[]
+): WarehouseReceivableGroup[] {
+  // R8: kandidat = SEMUA koli dalam grup sudah delivered, DAN grup belum pernah diterima penuh
+  // oleh Warehouse (1 resi group = tepat 1 warehouse_receipt, lihat R10/R12) -- grup yang sudah
+  // ada di warehouseReceipts TIDAK ditampilkan lagi di sini (arsipnya ada di /warehouse/riwayat).
+  const receivedResiGroupIds = new Set(warehouseReceipts.map((r) => r.resiGroupId));
+  const groupsByResi = new Map<string, DeliveryKoli[]>();
+  for (const k of deliveryKolis) {
+    const key = k.resiGroupId ?? k.id;
+    const arr = groupsByResi.get(key);
+    if (arr) arr.push(k);
+    else groupsByResi.set(key, [k]);
+  }
+
+  const nonRevisionInvoices = vendorInvoices.filter((i) => i.status !== "REVISION");
+  const invoiceById = new Map(vendorInvoices.map((i) => [i.id, i]));
+  // Cache hppRows PER VENDOR (dipanggil sekali per vendor, bukan berulang per grup) -- beberapa
+  // grup resi biasanya berasal dari vendor yang sama.
+  const hppRowsByVendor = new Map<string, HppRow[]>();
+  function hppRowsForVendor(vendorProduksi: string): HppRow[] {
+    const cached = hppRowsByVendor.get(vendorProduksi);
+    if (cached) return cached;
+    // SEMUA invoice vendor ini (termasuk REVISION -- perlu tahu keberadaannya untuk gateReason
+    // "masih dalam revisi", lihat catatan HppRow.invoiceId di derive.ts). `allVendorInvoices` param
+    // tetap non-REVISION (basis alokasi FIFO yang benar, konsisten dgn pemanggilan lain di app).
+    const invoicesForVendor = vendorInvoices.filter((i) => i.vendorProduksi === vendorProduksi);
+    const rows = invoicesForVendor.flatMap((inv) =>
+      hppRowsForInvoicePerRoll(inv, nonRevisionInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis)
+    );
+    hppRowsByVendor.set(vendorProduksi, rows);
+    return rows;
+  }
+
+  const result: WarehouseReceivableGroup[] = [];
+  for (const [resiKey, kolis] of groupsByResi) {
+    if (receivedResiGroupIds.has(resiKey)) continue;
+    if (kolis.some((k) => !k.deliveredAt)) continue;
+
+    const koliIds = new Set(kolis.map((k) => k.id));
+    const rep = kolis[0];
+    const vendorProduksi = rep.vendorProduksi;
+    const mrpIds = Array.from(new Set(kolis.map((k) => k.mrpId)));
+    const mrpLabel = mrpIds
+      .map((id) => `${id} ${mrpMetaFor(id, mrpDetails, staticMrps)?.kategori ?? ""}`.trim())
+      .join(", ");
+
+    const hppRowsInGroup = hppRowsForVendor(vendorProduksi).filter((r) => r.koliId && koliIds.has(r.koliId));
+    const noKoliList = Array.from(new Set(kolis.map((k) => k.noKoli)));
+
+    const items: WarehouseReceivableItem[] = [];
+    const invoiceIdSet = new Set<string>();
+    let anyUntraceable = false;
+
+    for (const koli of kolis) {
+      for (const it of koli.items) {
+        const isRework = it.kind === "REWORK";
+        const matches = hppRowsInGroup.filter(
+          (r) => r.koliId === koli.id && r.warna === it.warna && r.lengan === it.lengan && r.jenis.slice(r.lengan.length + 1) === it.size && isReworkHppRow(r) === isRework
+        );
+        let hppPerItem = 0;
+        if (matches.length === 0) {
+          anyUntraceable = true;
+        } else {
+          const totalFg = matches.reduce((s, r) => s + r.fg, 0);
+          hppPerItem = totalFg > 0 ? matches.reduce((s, r) => s + r.hppPerItem * r.fg, 0) / totalFg : matches[0].hppPerItem;
+          for (const r of matches) invoiceIdSet.add(r.invoiceId);
+        }
+        items.push({ deliveryKoliId: koli.id, warna: it.warna, lengan: it.lengan, size: it.size, kind: it.kind, qty: it.qty, sourceBatchId: it.sourceBatchId, hppPerItem });
+      }
+    }
+
+    const invoiceIds = Array.from(invoiceIdSet);
+
+    let gateReason: string | null = null;
+    if (invoiceIds.length === 0) {
+      gateReason = "Belum ada invoice vendor untuk resi ini";
+    } else {
+      const invoicesInGroup = invoiceIds.map((id) => invoiceById.get(id)).filter((i): i is VendorInvoice => !!i);
+      const revisionInv = invoicesInGroup.find((i) => i.status === "REVISION");
+      const unfinalized = invoicesInGroup.filter((i) => i.status !== "REVISION" && !i.hppFinalizedAt);
+      if (revisionInv) {
+        gateReason = `Invoice ${revisionInv.id} masih dalam revisi`;
+      } else if (unfinalized.length > 0) {
+        gateReason = `Menunggu Finance memfinalkan HPP invoice ${unfinalized.map((i) => i.id).join(", ")}`;
+      } else if (anyUntraceable) {
+        gateReason = "HPP item ini tidak bisa ditelusuri ke koli (data lama)";
+      }
+    }
+
+    result.push({
+      resiGroupId: resiKey,
+      koliIds: kolis.map((k) => k.id),
+      noKoli: "Koli " + noKoliList.join(", "),
+      ekspedisi: rep.ekspedisi,
+      deliveredAt: rep.deliveredAt,
+      noResi: rep.noResi,
+      mrpId: rep.mrpId,
+      mrpLabel,
+      vendorProduksi,
+      invoiceIds,
+      totalQty: items.reduce((s, i) => s + i.qty, 0),
+      totalNilai: items.reduce((s, i) => s + i.qty * i.hppPerItem, 0),
+      items,
+      gateReason,
+    });
+  }
+
+  return result.sort((a, b) => (a.deliveredAt ?? "").localeCompare(b.deliveredAt ?? ""));
 }
