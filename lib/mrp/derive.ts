@@ -3385,7 +3385,12 @@ export function hppRowsForInvoicePerRoll(
 export type InvoiceKoliBreakdownRow = { warna: string; lengan: Lengan; size: string; qty: number; nominal: number };
 
 export type InvoiceKoliGroup = {
+  /** Koli REPRESENTATIF grup ini (yang pertama ditemukan) -- cuma dipakai untuk lookup foto
+   *  ekspedisi (getDeliveryKoliEkspedisiPhotoAction), aman dipakai koli manapun dalam grup karena
+   *  foto/ekspedisi/resi ditulis identik ke SEMUA koli segrup lewat satu aksi atomik
+   *  (setKoliEkspedisiResiGroupAction) -- lihat catatan grouping di bawah. */
   koliId: string;
+  /** Gabungan noKoli semua koli dalam grup resi ini, mis. "Koli 1, 2" -- lihat catatan grouping. */
   noKoli: string;
   ekspedisi: string;
   deliveredAt?: string;
@@ -3400,7 +3405,7 @@ export type InvoiceKoliGroup = {
 };
 
 /** Item 2026-09-10 (Procurement "Invoice Vendor" & Finance "Payment Maklon": info lampiran
- *  ekspedisi sebelum approve/bayar): rincian 1 invoice vendor, DIKELOMPOKKAN PER KOLI pengiriman
+ *  ekspedisi sebelum approve/bayar): rincian 1 invoice vendor, DIKELOMPOKKAN PER RESI pengiriman
  *  asalnya -- reuse `hppRowsForInvoicePerRoll` APA ADANYA (fungsi yang SAMA dipakai Laporan HPP,
  *  sudah punya alokasi FIFO-per-koli yang benar & live-verified, lihat catatan panjang di
  *  fungsi itu) alih-alih menulis ulang logic alokasinya di sini.
@@ -3411,6 +3416,17 @@ export type InvoiceKoliGroup = {
  *  Finance (lihat createVendorInvoiceAction/createDeliveryKoliAction) -- vendor produksi TIDAK
  *  dibayar untuk bahan (itu invoice terpisah ke supplier bahan) atau ongkir (itu biaya ekspedisi,
  *  bukan komponen tagihan maklon).
+ *
+ *  BUG FIX (2026-09-11, user-reported: "kolinya ada dua jadinya lampirannya ada dua" -- lampiran
+ *  ekspedisi di Finance/Procurement muncul dobel walau 2 koli itu dikirim dalam SATU resi yang
+ *  sama): dulu dikelompokkan per `koliId` mentah -- begitu 1 resi (`resiGroupId`, migration 0026)
+ *  berisi >1 koli, tiap koli dapat kartu lampiran sendiri walau ekspedisi/resi/foto/tanggalnya
+ *  identik (ditulis sekaligus ke semua koli segrup oleh `setKoliEkspedisiResiGroupAction`).
+ *  Halaman Pengiriman (vendor) sudah benar mengelompokkan per `resiGroupId` (`resiKeyFor` di
+ *  app/vendor-maklon/pengiriman/page.tsx) -- fungsi ini sekarang dibuat KONSISTEN dengan itu:
+ *  kunci grup = `resiGroupId` kalau ada, fallback ke `koliId` sendiri untuk koli lama (sebelum
+ *  migration 0026, sama seperti `resiKeyFor`). Baris dari semua koli dalam 1 resi digabung jadi
+ *  SATU `InvoiceKoliGroup` (1 kartu lampiran), `noKoli` jadi gabungan label semua koli-nya.
  *
  *  Baris yang TIDAK bisa ditelusuri ke satu koli (fallback pool lama, `hppRowsForInvoice` --
  *  lihat catatan `HppRow.koliId`) dikumpulkan terpisah di `legacyRows`, TIDAK dipaksa masuk grup
@@ -3427,7 +3443,7 @@ export function invoiceKoliBreakdown(
   deliveryKolis: DeliveryKoli[]
 ): { groups: InvoiceKoliGroup[]; legacyRows: InvoiceKoliBreakdownRow[] } {
   const hppRows = hppRowsForInvoicePerRoll(inv, allVendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis);
-  const groupsByKoli = new Map<string, InvoiceKoliGroup>();
+  const groupsByResi = new Map<string, InvoiceKoliGroup & { noKoliList: string[] }>();
   const legacyRows: InvoiceKoliBreakdownRow[] = [];
   for (const r of hppRows) {
     // `jenis` SELALU "`${lengan} ${size}`" (lihat hppRowsForInvoicePerRoll/hppRowsForInvoice) --
@@ -3439,12 +3455,17 @@ export function invoiceKoliBreakdown(
       legacyRows.push(row);
       continue;
     }
-    let group = groupsByKoli.get(r.koliId);
+    const koli = deliveryKolis.find((k) => k.id === r.koliId);
+    // Sama seperti `resiKeyFor` di halaman Pengiriman -- resiGroupId kalau ada, fallback ke
+    // koliId sendiri (koli lama sebelum migration 0026, tetap tampil sebagai "grup isi 1" wajar).
+    const resiKey = koli?.resiGroupId ?? r.koliId;
+    const noKoliLabel = koli?.noKoli ?? r.noKoli ?? r.koliId;
+    let group = groupsByResi.get(resiKey);
     if (!group) {
-      const koli = deliveryKolis.find((k) => k.id === r.koliId);
       group = {
         koliId: r.koliId,
-        noKoli: koli?.noKoli ?? r.noKoli ?? r.koliId,
+        noKoli: noKoliLabel,
+        noKoliList: [noKoliLabel],
         ekspedisi: koli?.ekspedisi ?? "",
         deliveredAt: koli?.deliveredAt,
         ekspedisiNote: koli?.ekspedisiNote,
@@ -3454,12 +3475,17 @@ export function invoiceKoliBreakdown(
         totalQty: 0,
         totalNominal: 0,
       };
-      groupsByKoli.set(r.koliId, group);
+      groupsByResi.set(resiKey, group);
+    } else if (!group.noKoliList.includes(noKoliLabel)) {
+      group.noKoliList.push(noKoliLabel);
+      group.noKoli = "Koli " + group.noKoliList.join(", ");
     }
     group.rows.push(row);
     group.totalQty += row.qty;
     group.totalNominal += row.nominal;
   }
-  const groups = Array.from(groupsByKoli.values()).sort((a, b) => (a.noKoli < b.noKoli ? -1 : a.noKoli > b.noKoli ? 1 : 0));
+  const groups: InvoiceKoliGroup[] = Array.from(groupsByResi.values())
+    .map(({ noKoliList: _noKoliList, ...g }) => g)
+    .sort((a, b) => (a.noKoli < b.noKoli ? -1 : a.noKoli > b.noKoli ? 1 : 0));
   return { groups, legacyRows };
 }
