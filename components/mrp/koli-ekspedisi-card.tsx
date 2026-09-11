@@ -36,6 +36,7 @@ export function KoliEkspedisiCard({
   deliveredAt,
   ekspedisiNote,
   ekspedisiNoteAt,
+  noResi,
   vendorName,
 }: {
   koliId: string;
@@ -44,6 +45,9 @@ export function KoliEkspedisiCard({
   deliveredAt?: string;
   ekspedisiNote?: string;
   ekspedisiNoteAt?: string;
+  /** Item 2026-09-11 (migration 0026) -- nomor resi/tracking, sekarang field tersendiri (dulu
+   *  tergabung bebas di ekspedisiNote). */
+  noResi?: string;
   /** Kalau diisi, nama vendor produksi ikut ditampilkan di kartu -- dipakai Finance (Payment
    *  Maklon) supaya kartu ini bisa berdiri sendiri (mis. saat diekspor/dicetak) tanpa bergantung
    *  konteks baris invoice di luar kartu. Procurement (sudah selalu dalam konteks 1 invoice per
@@ -61,6 +65,9 @@ export function KoliEkspedisiCard({
         <span className="font-mono font-semibold">{noKoli}</span>
         <span>
           Ekspedisi: <span className="font-medium">{ekspedisi || "—"}</span>
+        </span>
+        <span>
+          No resi: <span className="font-mono font-medium">{noResi || "—"}</span>
         </span>
         <span>
           Tanggal kirim: <span className="font-mono">{formatDate(deliveredAt)}</span>

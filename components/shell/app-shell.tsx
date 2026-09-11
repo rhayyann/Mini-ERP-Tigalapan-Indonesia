@@ -189,6 +189,9 @@ export function AppShell({
         returReceipts: materialClaimReturReceipts,
       }),
       "/vendor-maklon/pengiriman": countVendorPengirimanReady(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs, productionBatches),
+      // Item migration 0026: Invoice & Payment sekarang 100% arsip (Create Invoice manual
+      // dihapus, submit invoice pindah ke Pengiriman per resi-group) -- countVendorInvoicePaymentTotal
+      // selalu 0 sekarang (lib/shell/badges.ts), jadi baris ini efektif tidak pernah menyala lagi.
       "/vendor-maklon/invoice-payment": countVendorInvoicePaymentTotal(vendorId, mrpDetails, deliveryKolis, vendorInvoices, maklonInvoices),
     };
   }

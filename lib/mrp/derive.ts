@@ -655,7 +655,7 @@ export type MaterialPoFullStatus =
  *  di FINISH_GOOD (target Finish Good tercapai), padahal itu belum berarti barangnya sudah
  *  keluar dari vendor produksi ATAU vendor produksinya sudah dibayar lunas. Sekarang lanjut ke:
  *  - DELIVERED_FROM_VENDOR: FG untuk MRP+vendor produksi ini sudah ada koli yang `deliveredAt`
- *    (lihat createDeliveryKoli/markKoliDelivered di store.ts) — barang sudah keluar dari vendor.
+ *    (lihat createDeliveryKoli/deliverKoliResiGroup di store.ts) — barang sudah keluar dari vendor.
  *  - SELESAI: DAN invoice vendor (maklon) untuk MRP+vendor itu sudah lunas (retensi+tahap1
  *    terbayar, lihat vendorInvoicePaymentStatus) — baru dianggap benar-benar tuntas end-to-end. */
 export function materialPoFullStatus(
@@ -742,6 +742,31 @@ export function ekspedisiPrice(ekspedisi: string, beratKg: number): number {
   if (brackets.length === 0) return 0;
   const match = brackets.find((r) => beratKg >= r.minKg && beratKg < r.maxKg) ?? brackets[brackets.length - 1];
   return Math.round(match.pricePerKg * beratKg);
+}
+
+/** Item 2026-09-11 (feedback: "Checkbox Koli yang mau dikirim (disamakan ekspedisinya - jadi satu
+ *  resi)" -- migration 0026): ongkir RIIL 1 koli. Kalau koli ini bagian dari grup resi
+ *  (`resiGroupId`, >=1 koli dikirim bareng lewat SATU aksi "Set Ekspedisi & Resi"), tarif
+ *  ekspedisi dihitung dari BERAT TOTAL seluruh koli SEGRUP (1 resi = SATU KALI timbang riil di
+ *  ekspedisi, bukan dijumlah dari tarif per-koli terpisah -- yang lebih mahal karena tarif
+ *  ekspedisi biasanya berjenjang/tidak linear terhadap berat) -- lalu DIPRORATA BALIK ke koli ini
+ *  berdasar porsi beratnya dari total grup, supaya "ongkir per koli" (yang owner minta tetap ada
+ *  sebagai catatan/histori) tetap masuk akal & jumlah semua koli dalam 1 grup PERSIS balik ke
+ *  ongkir riil 1 resi itu (tidak lebih/kurang dari yang benar-benar dibayar).
+ *
+ *  Koli TANPA `resiGroupId` (data lama sebelum migration 0026, atau -- karena SEKARANG setiap
+ *  koli SELALU dapat resiGroupId begitu ekspedisinya di-set -- pada praktiknya cuma kasus data
+ *  lama) dihitung APA ADANYA seperti sebelumnya (grup isinya cuma dirinya sendiri, portion = 1) --
+ *  MENGGANTIKAN semua pemanggilan `ekspedisiPrice(k.ekspedisi, k.beratKoli ?? 0)` langsung di
+ *  seluruh app (autoOngkirForInvoice, hppRowsForInvoicePerRoll, halaman Pengiriman). */
+export function koliOngkirShare(koli: DeliveryKoli, allKolis: DeliveryKoli[]): number {
+  if (!koli.ekspedisi) return 0;
+  if (!koli.resiGroupId) return ekspedisiPrice(koli.ekspedisi, koli.beratKoli ?? 0);
+  const group = allKolis.filter((k) => k.resiGroupId === koli.resiGroupId);
+  const totalWeight = group.reduce((s, k) => s + (k.beratKoli ?? 0), 0);
+  if (totalWeight <= 0) return 0;
+  const totalOngkir = ekspedisiPrice(koli.ekspedisi, totalWeight);
+  return totalOngkir * ((koli.beratKoli ?? 0) / totalWeight);
 }
 
 /** Status approval SCM untuk MRP yang diajukan PPIC — gerbang sebelum Procurement bisa bikin PO
@@ -2224,6 +2249,29 @@ export function deliveredQtyByMrp(vendorProduksi: string, kolis: DeliveryKoli[])
   return Array.from(map.values());
 }
 
+/** Item 2026-09-11 (feedback: "ketika sudah final pengiriman nanti akan ada button submit
+ *  invoice", migration 0026) -- agregasi `DeliveryKoliItem[]` SEMUA koli dalam `koliIds` (1 grup
+ *  resi), dikelompokkan per (mrpId,warna,lengan,usia) SEMUA kind (pola SAMA `deliveredQtyByMrp`
+ *  di atas -- FG/REWORK/REJECT ditagih sama, rate maklon, bukan per jenis). Dipakai isi awal
+ *  dialog "Submit Invoice" (client, qty read-only) DAN divalidasi ULANG server-side di
+ *  submitResiGroupInvoiceAction (actions.ts) -- qty TIDAK PERNAH dipercaya dari client, cuma
+ *  `ratePerPc` per baris yang dipercaya (defense-in-depth, pola sama
+ *  clampDeliveryItemsBySourceBatch). */
+export function resiGroupInvoiceLines(koliIds: string[], allKolis: DeliveryKoli[]): DeliveredQtyRow[] {
+  const idSet = new Set(koliIds);
+  const map = new Map<string, DeliveredQtyRow>();
+  for (const k of allKolis) {
+    if (!idSet.has(k.id)) continue;
+    for (const it of k.items) {
+      const key = invoiceLineKey(k.mrpId, it.warna, it.lengan, it.usia);
+      const cur = map.get(key) ?? { mrpId: k.mrpId, warna: it.warna, lengan: it.lengan, usia: it.usia, qty: 0 };
+      cur.qty += it.qty;
+      map.set(key, cur);
+    }
+  }
+  return Array.from(map.values());
+}
+
 export type KoliBreakdownRow = { koliId: string; noKoli: string; deliveredAt?: string; qty: number };
 
 /** Rincian qty per NOMOR KOLI untuk 1 baris "sudah dikirim, belum diinvoice" (mrpId+warna+lengan
@@ -2740,7 +2788,10 @@ export function autoOngkirForInvoice(inv: VendorInvoice, deliveryKolis: Delivery
   const mrpIdsInInvoice = Array.from(new Set(inv.lines.map((l) => l.mrpId)));
   return deliveryKolis
     .filter((k) => k.vendorProduksi === inv.vendorProduksi && mrpIdsInInvoice.includes(k.mrpId))
-    .reduce((sum, k) => sum + ekspedisiPrice(k.ekspedisi, k.beratKoli ?? 0), 0);
+    // `deliveryKolis` UTUH (bukan hasil filter di atas) diteruskan sebagai basis grup resi --
+    // 1 resi/grup BISA mencakup koli dari MRP LAIN yang tidak ikut invoice ini (migration 0026,
+    // koliOngkirShare butuh SEMUA anggota grup buat hitung total berat & prorata yang benar).
+    .reduce((sum, k) => sum + koliOngkirShare(k, deliveryKolis), 0);
 }
 
 export function hppRowsForInvoice(
@@ -3147,9 +3198,10 @@ export function hppRowsForInvoicePerRoll(
       const totalPcsInKoli = koli.items.reduce((s, it) => s + it.qty, 0);
       // Revisi 2026-09-10: field manual "Ongkir batch ini" (`ongkirBatch`) DIHAPUS dari aplikasi
       // (owner minta ongkir SELALU otomatis dari tarif ekspedisi x berat koli, lihat migration
-      // 0024) -- ongkir koli sekarang SELALU `ekspedisiPrice(koli.ekspedisi, koli.beratKoli ?? 0)`,
-      // tidak ada lagi override manual.
-      const koliOngkirTotal = ekspedisiPrice(koli.ekspedisi, koli.beratKoli ?? 0);
+      // 0024). Revisi 2026-09-11 (migration 0026): kalau koli ini bagian dari grup resi (>1 koli
+      // dikirim bareng), ongkir dihitung dari TOTAL berat segrup lalu diprorata balik -- lihat
+      // koliOngkirShare.
+      const koliOngkirTotal = koliOngkirShare(koli, deliveryKolis);
       const ongkirPerPc = totalPcsInKoli > 0 ? koliOngkirTotal / totalPcsInKoli : 0;
 
       // Denda/reward TIDAK masuk HPP di jalur baru ini (keputusan user, ikut Excel) -- biaya
@@ -3212,7 +3264,7 @@ export function hppRowsForInvoicePerRoll(
       const takeQty = takeEnd - takeStart;
 
       const totalPcsInKoli = c.koli.items.reduce((s, it) => s + it.qty, 0);
-      const koliOngkirTotal = ekspedisiPrice(c.koli.ekspedisi, c.koli.beratKoli ?? 0);
+      const koliOngkirTotal = koliOngkirShare(c.koli, deliveryKolis);
       const ongkirPerPc = totalPcsInKoli > 0 ? koliOngkirTotal / totalPcsInKoli : 0;
 
       const biayaProduksiPerItem = line.ratePerPc;
@@ -3293,7 +3345,7 @@ export function hppRowsForInvoicePerRoll(
     for (const k of relevantKolis) {
       const totalPcsInKoli = k.items.reduce((s, it) => s + it.qty, 0);
       if (totalPcsInKoli <= 0) continue;
-      const koliOngkirTotal = ekspedisiPrice(k.ekspedisi, k.beratKoli ?? 0);
+      const koliOngkirTotal = koliOngkirShare(k, deliveryKolis);
       const rollCoveredPcs = Math.min(totalPcsInKoli, rollCoveredPcsForKoli(k, productionBatches));
       const nonRollPcs = totalPcsInKoli - rollCoveredPcs;
       correctOngkirTotal += koliOngkirTotal * (nonRollPcs / totalPcsInKoli);
@@ -3325,6 +3377,9 @@ export type InvoiceKoliGroup = {
   deliveredAt?: string;
   ekspedisiNote?: string;
   ekspedisiNoteAt?: string;
+  /** Item 2026-09-11 (migration 0026) -- nomor resi/tracking ekspedisi, sekarang field
+   *  tersendiri (dulu tergabung di ekspedisiNote). */
+  noResi?: string;
   rows: InvoiceKoliBreakdownRow[];
   totalQty: number;
   totalNominal: number;
@@ -3380,6 +3435,7 @@ export function invoiceKoliBreakdown(
         deliveredAt: koli?.deliveredAt,
         ekspedisiNote: koli?.ekspedisiNote,
         ekspedisiNoteAt: koli?.ekspedisiNoteAt,
+        noResi: koli?.noResi,
         rows: [],
         totalQty: 0,
         totalNominal: 0,

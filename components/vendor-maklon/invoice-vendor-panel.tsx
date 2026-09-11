@@ -2,19 +2,13 @@
 
 import { useState } from "react";
 import { StatusPill } from "@/components/ui/status-pill";
-import { NumberInput } from "@/components/mrp/number-input";
 import { useMrpStore } from "@/lib/mrp/store";
 import {
   formatDate,
   formatPcs,
   formatRupiah,
-  invoiceableMrpIds,
-  invoiceCategoryLabel,
   invoiceProductionStatus,
   invoiceYieldSummary,
-  koliBreakdownForLine,
-  maklonPoInvoiceLockedBy,
-  mrpMetaFor,
   productionYieldByWarna,
   productionYieldBySize,
   vendorInvoiceAdjustmentTotal,
@@ -22,237 +16,39 @@ import {
   vendorInvoiceFinalAmount,
   vendorInvoicePaymentStatus,
 } from "@/lib/mrp/derive";
-import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { Lengan } from "@/lib/mrp/types";
 
 /** Panel "Invoice Vendor" — konten diekstrak dari halaman lama Invoice & Payment (sekarang
  *  jadi satu sub-tab di halaman yang sama, berdampingan dengan panel "Invoice Maklon"). Alur
  *  invoice PER-PCS delivered × rate (dibatasi kapasitas vendor), direview Procurement dulu
- *  sebelum dibayar Finance — beda dari "Invoice Maklon" yang per-PO base fee. */
+ *  sebelum dibayar Finance — beda dari "Invoice Maklon" yang per-PO base fee.
+ *
+ *  Item 2026-09-11 (feedback: "ketika sudah final pengiriman nanti akan ada button submit
+ *  invoice, jadi tidak ada lagi action apa2 di halaman Invoice & Payment", migration 0026):
+ *  section "Create Invoice" (checkbox/qty/rate manual) DIHAPUS TOTAL -- invoice sekarang
+ *  diajukan LANGSUNG dari halaman Pengiriman (tombol "Submit Invoice" per grup resi yang sudah
+ *  delivered penuh, lihat app/vendor-maklon/pengiriman/page.tsx & submitResiGroupInvoiceAction).
+ *  Panel ini jadi MURNI daftar riwayat invoice (read-only) -- tidak ada aksi apa pun lagi di
+ *  sini. */
 export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
-  const staticMrps = useMrpStore((s) => s.staticMrps);
   const productionBatches = useMrpStore((s) => s.productionBatches);
   const productionResults = useMrpStore((s) => s.productionResults);
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const rawInvoices = useMrpStore((s) => s.invoices);
-  const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const vendorInvoices = useMrpStore((s) => s.vendorInvoices);
-  const maklonInvoices = useMrpStore((s) => s.maklonInvoices);
-  const createVendorInvoice = useMrpStore((s) => s.createVendorInvoice);
-  const vendorProduksiList = useMrpStore((s) => s.vendorProduksiList);
-
-  const vendorMeta = VENDOR_PRODUKSI[vendorId];
-  // Revisi 2026-09-06: kapasitas mingguan sekarang dari vendorProduksiList (data ASLI dari
-  // spreadsheet Procurement, lihat migration 0019) -- BUKAN lagi vendorMeta.baseCapacity
-  // (VENDOR_PRODUKSI/seed.ts, placeholder untuk 8 dari 10 vendor). `vendorMeta` tetap dipakai di
-  // bawah untuk `ratePerPc` (belum pindah ke DB).
-  const weeklyCapacity = vendorProduksiList.find((v) => v.id === vendorId)?.weeklyCapacity ?? vendorMeta?.baseCapacity ?? 0;
-  // Item revisi 2026-09-07 (owner: "kenapa yang diinvoicekan itu yang totalan dari PO? kenapa
-  // bukan yang sudah dipacking atau yang ada list2 di pengiriman saja? kan harusnya seperti itu"):
-  // dibalik dari basis PLANNED (invoiceableMrpIdsFullQty, sempat jadi "hasil konsultasi tim
-  // produksi" -- lihat riwayat git kalau perlu detail keputusan lama itu) ke basis DELIVERED
-  // (invoiceableMrpIds -- qty yang benar-benar sudah masuk koli Pengiriman berstatus terkirim,
-  // deliveryKolis.deliveredAt terisi) -- vendor cuma bisa invoice untuk qty yang benar-benar sudah
-  // dikirim, bukan seluruh qty planned PO sekaligus begitu delivery pertama mulai. Retensi TETAP
-  // dihapus dari alur (keputusan terpisah, tidak disentuh) -- pembayaran Finance masih sekali
-  // lunas penuh, lihat payVendorInvoice di lib/mrp/store.ts. Cegah tagihan ganda: buang baris yang
-  // MRP-nya sudah terkunci ke jalur Invoice Maklon (per-PO) — vendor harus lanjut lewat jalur yang
-  // sudah dipakai duluan itu.
-  const allEligible = invoiceableMrpIds(vendorId, deliveryKolis, vendorInvoices);
-  const eligible = allEligible.filter((r) => maklonPoInvoiceLockedBy(r.mrpId, vendorId, maklonInvoices, vendorInvoices) !== "maklon");
-  const lockedByMaklonCount = allEligible.length - eligible.length;
-  const lineKey = (mrpId: string, warna: string, lengan: string, usia?: string) => mrpId + "|" + warna + "|" + lengan + "|" + (usia ?? "");
-
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [qtyByLine, setQtyByLine] = useState<Record<string, number>>({});
-  const [rateByLine, setRateByLine] = useState<Record<string, number>>({});
 
   const [expandedInvoiceId, setExpandedInvoiceId] = useState("");
   const [expandedMrpKey, setExpandedMrpKey] = useState("");
   const [expandedWarnaKey, setExpandedWarnaKey] = useState("");
-  // Item feedback 2026-09-09 ("Vendor bisa klik detail nanti data per row untuk lihat detail qty
-  // per nomor koli di warna itu") -- expand baris eligible di tabel "Create Invoice" untuk lihat
-  // rincian per koli pengiriman.
-  const [expandedEligibleKey, setExpandedEligibleKey] = useState("");
-
-  function toggleLine(key: string, maxQty: number) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-        setQtyByLine((q) => ({ ...q, [key]: q[key] ?? maxQty }));
-        setRateByLine((r) => ({ ...r, [key]: r[key] ?? (vendorMeta?.ratePerPc ?? 0) }));
-      }
-      return next;
-    });
-  }
-
-  const selectedLines = Array.from(selected).map((key) => {
-    const src = eligible.find((e) => lineKey(e.mrpId, e.warna, e.lengan, e.usia) === key);
-    return {
-      mrpId: src?.mrpId ?? key.split("|")[0],
-      warna: src?.warna ?? "",
-      lengan: src?.lengan ?? "PENDEK",
-      usia: src?.usia,
-      qty: qtyByLine[key] ?? 0,
-      ratePerPc: rateByLine[key] ?? 0,
-    };
-  });
-  const totalQty = selectedLines.reduce((s, l) => s + l.qty, 0);
-  const capacity = weeklyCapacity;
-  const overCapacity = totalQty > capacity;
-  const totalTagihan = selectedLines.reduce((s, l) => s + l.qty * l.ratePerPc, 0);
-
-  // Item revisi 2026-09-07 (owner: aksi vendor produksi terasa lambat -- tidak ada tanda loading
-  // sama sekali sebelum ini): dulu fungsi ini TIDAK async & TIDAK menunggu createVendorInvoice
-  // (invoice BARU, bukan optimistic -- lihat store.ts) -- form langsung dikosongkan SEKETIKA
-  // sebelum invoice barunya benar-benar tersimpan, jadi ada jeda tanpa tanda apa pun.
-  const [submittingInvoice, setSubmittingInvoice] = useState(false);
-  async function submitInvoice() {
-    if (selectedLines.length === 0 || overCapacity || submittingInvoice) return;
-    const lines = selectedLines.filter((l) => l.qty > 0);
-    if (lines.length === 0) return;
-    setSubmittingInvoice(true);
-    try {
-      await createVendorInvoice({ vendorProduksi: vendorId, lines });
-      setSelected(new Set());
-      setQtyByLine({});
-      setRateByLine({});
-    } finally {
-      setSubmittingInvoice(false);
-    }
-  }
 
   const myInvoices = vendorInvoices.filter((i) => i.vendorProduksi === vendorId);
 
   return (
     <>
-      <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
-        <div className="border-b border-border-subtle px-4 py-3 font-sans text-[13px] font-semibold text-text-primary">
-          Create Invoice — kapasitas vendor {capacity ? formatPcs(capacity) + " pcs" : "—"}
-        </div>
-        {lockedByMaklonCount > 0 && (
-          <div className="border-b border-[#F0DFC2] bg-warning-bg px-4 py-2 font-sans text-[11px] text-warning-fg">
-            {lockedByMaklonCount} baris disembunyikan — sudah ditagih via Invoice Maklon (per PO).
-          </div>
-        )}
-        <div className="grid grid-cols-9 gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
-          <span />
-          <span>No MRP</span>
-          <span>Kategori</span>
-          <span>Warna</span>
-          <span>Lengan</span>
-          <span className="text-right">Sudah dikirim, belum diinvoice</span>
-          <span className="text-right">Qty diinvoice</span>
-          <span className="text-right">Harga maklon / pc</span>
-          <span />
-        </div>
-        {eligible.length === 0 && (
-          <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">
-            Belum ada qty yang sudah dikirim (lihat Pengiriman) &amp; belum diinvoice.
-          </div>
-        )}
-        {eligible.map(({ mrpId, warna, lengan, usia, uninvoicedQty }) => {
-          const key = lineKey(mrpId, warna, lengan, usia);
-          const checked = selected.has(key);
-          const mrp = mrpMetaFor(mrpId, mrpDetails, staticMrps);
-          const eligibleExpanded = expandedEligibleKey === key;
-          const koliRows = eligibleExpanded ? koliBreakdownForLine(mrpId, warna, lengan, usia, vendorId, deliveryKolis) : [];
-          return (
-            <div key={key} className="border-b border-[#F1F4F7] last:border-b-0">
-              <div className="grid grid-cols-9 items-center gap-x-3 px-4 py-[11px] font-sans text-xs text-[#31414F]">
-                <button
-                  onClick={() => toggleLine(key, uninvoicedQty)}
-                  className={"h-3.5 w-3.5 flex-none rounded-[3px] border " + (checked ? "border-accent-blue bg-accent-blue" : "border-[#B8C4D0]")}
-                />
-                <span className="font-mono">{mrpId}</span>
-                <span>{invoiceCategoryLabel(mrp, usia)}</span>
-                <span>{warna}</span>
-                <span>{lengan}</span>
-                <span className="text-right font-mono">{formatPcs(uninvoicedQty)}</span>
-                <span className="flex justify-end">
-                  {checked ? (
-                    <NumberInput
-                      value={qtyByLine[key] ?? 0}
-                      decimals={0}
-                      onChange={(v) => setQtyByLine((prev) => ({ ...prev, [key]: Math.max(0, Math.min(v, uninvoicedQty)) }))}
-                      className="input w-[100px] text-right"
-                    />
-                  ) : (
-                    "—"
-                  )}
-                </span>
-                <span className="flex justify-end">
-                  {checked ? (
-                    <NumberInput
-                      value={rateByLine[key] ?? 0}
-                      decimals={0}
-                      onChange={(v) => setRateByLine((prev) => ({ ...prev, [key]: Math.max(0, v) }))}
-                      className="input w-[110px] text-right"
-                    />
-                  ) : (
-                    "—"
-                  )}
-                </span>
-                <span className="text-right">
-                  <button onClick={() => setExpandedEligibleKey(eligibleExpanded ? "" : key)} className="font-sans text-[11px] font-semibold text-action-primary">
-                    {eligibleExpanded ? "Sembunyikan" : "Detail →"}
-                  </button>
-                </span>
-              </div>
-              {eligibleExpanded && (
-                <div className="bg-[#FAFBFC] px-6 py-3">
-                  <div className="grid grid-cols-3 gap-2 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
-                    <span>No Koli</span>
-                    <span>Tanggal Kirim</span>
-                    <span className="text-right">Qty</span>
-                  </div>
-                  {koliRows.length === 0 ? (
-                    <div className="py-2 font-sans text-[11.5px] text-text-muted">Tidak ada data koli.</div>
-                  ) : (
-                    koliRows.map((k) => (
-                      <div key={k.koliId} className="grid grid-cols-3 items-center gap-2 border-t border-[#F1F4F7] py-1.5 font-sans text-[11.5px] text-[#31414F]">
-                        <span className="font-mono">{k.noKoli}</span>
-                        <span className="font-mono">{k.deliveredAt ? formatDate(k.deliveredAt) : "—"}</span>
-                        <span className="text-right font-mono">{formatPcs(k.qty)}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {selected.size > 0 && (
-          <div className="border-t border-[#CFE0EF] bg-info-bg p-4">
-            <div className={"font-sans text-xs font-semibold " + (overCapacity ? "text-danger-fg" : "text-info-fg")}>
-              Total qty diinvoice: {formatPcs(totalQty)} pcs / kapasitas {formatPcs(capacity)} pcs
-              {overCapacity && " — melebihi kapasitas!"}
-            </div>
-            <div className="mt-3 grid grid-cols-4 gap-3">
-              <div>
-                <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Total invoice</div>
-                <div className="input mt-1 flex items-center bg-[#F7F9FB] font-mono font-semibold">{formatRupiah(totalTagihan)}</div>
-              </div>
-              <div className="col-span-3 flex items-end font-sans text-[10.5px] leading-[1.4] text-text-muted">
-                Total invoice dihitung otomatis dari qty × harga maklon per pc dan tidak dapat diubah. Tidak ada retensi — dibayar Finance lunas sekaligus.
-              </div>
-            </div>
-            <div className="mt-3">
-              <button
-                onClick={submitInvoice}
-                disabled={overCapacity || submittingInvoice}
-                className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {submittingInvoice ? "Menyimpan…" : "Create Invoice"}
-              </button>
-            </div>
-          </div>
-        )}
+      <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
+        Invoice diajukan langsung dari halaman Pengiriman — tombol &quot;Submit Invoice&quot; muncul begitu satu grup resi (koli yang dikirim bareng
+        ke ekspedisi yang sama) sudah Delivery penuh. Daftar di bawah ini murni riwayat invoice yang sudah diajukan.
       </div>
 
       <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">

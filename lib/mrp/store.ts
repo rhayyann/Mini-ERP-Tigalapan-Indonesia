@@ -263,10 +263,16 @@ type FlowActions = {
   /** "Simpan progres" (belum menutup roll) -- lihat saveFgProgressAction di lib/mrp/actions.ts. */
   saveFgProgress: (batchId: string, sizeQty: Record<string, number>) => Promise<void>;
   createDeliveryKoli: (input: { mrpId: string; vendorProduksi: string; ekspedisi: string; noKoli: string; items: DeliveryKoliItem[] }) => Promise<void>;
-  setKoliWeight: (koliId: string, beratKoli: number) => Promise<void>;
-  markKoliDelivered: (koliId: string) => Promise<void>;
-  /** Item 2026-09-10 (migration 0024) -- lihat setKoliEkspedisiAction di actions.ts. */
-  setKoliEkspedisi: (koliId: string, ekspedisi: string, note: string, photo: { dataUrl: string; fileName?: string }) => Promise<void>;
+  /** Item 2026-09-11 (migration 0026) -- lihat setKoliEkspedisiResiGroupAction di actions.ts.
+   *  Pengganti setKoliWeight/markKoliDelivered/setKoliEkspedisi lama (dihapus, cuma dipanggil dari
+   *  halaman Pengiriman yang sekarang selalu lewat 3 method grup ini). */
+  setKoliEkspedisiResiGroup: (koliIds: string[], ekspedisi: string, note: string, noResi: string, photo: { dataUrl: string; fileName?: string }) => Promise<void>;
+  /** Lihat deliverKoliResiGroupAction di actions.ts -- berat per koli + Delivery seluruh grup,
+   *  satu aksi. */
+  deliverKoliResiGroup: (items: { koliId: string; beratKoli: number }[]) => Promise<void>;
+  /** Lihat submitResiGroupInvoiceAction di actions.ts -- ganti alur "Create Invoice" manual lama
+   *  (dihapus dari invoice-vendor-panel.tsx). */
+  submitResiGroupInvoice: (koliIds: string[], rates: { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; ratePerPc: number }[]) => Promise<void>;
   createVendorInvoice: (input: { vendorProduksi: string; lines: { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; qty: number; ratePerPc: number }[]; note?: string }) => Promise<void>;
   setVendorInvoiceStatus: (invoiceId: string, status: VendorInvoice["status"]) => Promise<void>;
   addVendorInvoiceAdjustment: (invoiceId: string, input: { kind: VendorInvoiceAdjustmentKind; label: string; amount: number; note?: string }) => Promise<void>;
@@ -439,7 +445,13 @@ const BUSY_TRACKED_ACTIONS = new Set<string>([
   "closePoWithReason",
   "reassignMaterialToSupplier",
   "createDeliveryKoli",
-  "markKoliDelivered",
+  // Item 2026-09-11 (migration 0026): "markKoliDelivered" (aksi lama, dihapus) diganti
+  // "deliverKoliResiGroup" -- handoff signifikan yang sama (koli resmi "berangkat"), tetap
+  // busy-tracked. "submitResiGroupInvoice" BARU (ganti alur "Create Invoice" manual lama yang
+  // sebelumnya lewat "createVendorInvoice", juga busy-tracked) -- sama-sama "oper" data ke modul
+  // lain (Procurement/Finance), jadi ikut daftar ini.
+  "deliverKoliResiGroup",
+  "submitResiGroupInvoice",
   "closeProductionPo",
   "reopenProductionPo",
 ]);
@@ -842,30 +854,22 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     await actions.createDeliveryKoliAction(input);
     backgroundRefresh();
   },
-  setKoliWeight: async (koliId, beratKoli) => {
-    const previous = get().deliveryKolis;
-    set({ deliveryKolis: previous.map((k) => (k.id === koliId ? { ...k, beratKoli } : k)) });
-    try {
-      await actions.setKoliWeightAction(koliId, beratKoli);
-    } catch (err) {
-      set({ deliveryKolis: previous });
-      window.alert("Gagal menyimpan berat koli -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
-      throw err;
-    }
-    backgroundRefresh();
-  },
-  // TIDAK dibuat optimistic -- markKoliDeliveredAction diam-diam no-op (tidak set delivered_at,
-  // TIDAK throw) kalau berat_koli belum tersimpan di server saat itu (lihat lib/mrp/actions.ts).
-  // Kalau di-optimistic, UI bisa terlanjur bilang "terkirim" padahal server sebenarnya menolak
-  // tanpa error yang bisa ditangkap untuk rollback.
-  markKoliDelivered: async (koliId) => {
-    await actions.markKoliDeliveredAction(koliId);
-    backgroundRefresh();
-  },
   // TIDAK dibuat optimistic -- foto lampiran belum tentu valid (divalidasi server) & melibatkan
   // upload, pola sama seperti submitCuttingDefectClaim (bukan skalar sederhana).
-  setKoliEkspedisi: async (koliId, ekspedisi, note, photo) => {
-    await actions.setKoliEkspedisiAction(koliId, ekspedisi, note, photo);
+  setKoliEkspedisiResiGroup: async (koliIds, ekspedisi, note, noResi, photo) => {
+    await actions.setKoliEkspedisiResiGroupAction(koliIds, ekspedisi, note, noResi, photo);
+    backgroundRefresh();
+  },
+  // TIDAK dibuat optimistic -- deliverKoliResiGroupAction diam-diam no-op (tidak set
+  // delivered_at, TIDAK throw) kalau ekspedisi belum ter-set sama sekali (lihat
+  // lib/mrp/actions.ts, mirip alasan markKoliDeliveredAction lama). Kalau di-optimistic, UI bisa
+  // terlanjur bilang "terkirim" padahal server sebenarnya menolak tanpa error yang bisa ditangkap.
+  deliverKoliResiGroup: async (items) => {
+    await actions.deliverKoliResiGroupAction(items);
+    backgroundRefresh();
+  },
+  submitResiGroupInvoice: async (koliIds, rates) => {
+    await actions.submitResiGroupInvoiceAction(koliIds, rates);
     backgroundRefresh();
   },
   createVendorInvoice: async (input) => {

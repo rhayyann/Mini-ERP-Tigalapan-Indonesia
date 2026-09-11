@@ -41,6 +41,7 @@ import {
   warnaLenganGroupsWithFg,
   reworkSizeAllowed,
   rollRemainingBySizeForMrp,
+  resiGroupInvoiceLines,
 } from "./derive";
 import { ENTITAS_LIST } from "./seed";
 import type { ParsedMrpImport } from "./parseImport";
@@ -3017,35 +3018,50 @@ export async function createDeliveryKoliAction(input: { mrpId: string; vendorPro
   }
 }
 
-export async function setKoliWeightAction(koliId: string, beratKoli: number): Promise<void> {
-  await requireVendorSession();
-  const { error } = await supabaseServer().from("delivery_kolis").update({ berat_koli: beratKoli }).eq("id", koliId);
-  if (error) throw new Error(error.message);
-}
-
-/** Item 2026-09-10 (migration 0024, feedback: "Saat pilih ekspedisi juga nanti akan ada input
- *  gambar lampiran (note dari ekspedisi) sebelum melakukan proses penerbitan invoice & payment"):
- *  SATU aksi atomik yang set `ekspedisi` BARENG catatan+foto -- tidak mungkin ekspedisi ter-set
- *  tanpa catatan+foto ikut tersimpan, jadi gate "Delivery" yang SUDAH ADA
- *  (`disabled={!(berat>0 && k.ekspedisi)}` di app/vendor-maklon/pengiriman/page.tsx) otomatis juga
- *  menjamin catatan+foto sudah ada, TANPA perlu gate terpisah di jalur invoice sama sekali --
- *  delivery selalu terjadi sebelum invoice di alur yang ada. Validasi foto server-side sama persis
- *  polanya dengan material_claim_photos (lihat saveWeighRollAction/klaim fisik di atas). */
-export async function setKoliEkspedisiAction(koliId: string, ekspedisi: string, note: string, photo: { dataUrl: string; fileName?: string }): Promise<void> {
-  await requireVendorSession();
-  const db = supabaseServer();
+/** Item 2026-09-11 (feedback: "Checkbox Koli yang mau dikirim (disamakan ekspedisinya - jadi satu
+ *  resi)", migration 0026) -- pengganti setKoliEkspedisiAction lama (migration 0024): SATU aksi
+ *  atomik yang set `ekspedisi`+catatan+foto+no resi utk >=1 koli SEKALIGUS, SEMUANYA dapat
+ *  `resiGroupId` BARU yang sama (SETIAP koli, termasuk yang dikirim sendirian, SELALU lewat jalur
+ *  ini begitu ekspedisinya di-set -- "grup isi 1" bukan jalur khusus terpisah, lihat
+ *  koliOngkirShare di derive.ts). Foto (SAMA persis utk semua koli dalam grup) diduplikasi ke
+ *  tiap baris `delivery_koli_ekspedisi_photos` (pola sama material_claim_photos -- 1 baris per
+ *  koli, bukan per grup) supaya `getDeliveryKoliEkspedisiPhotoAction` (dipanggil per koliId di
+ *  seluruh app) tetap jalan apa adanya. Validasi foto server-side sama persis pola
+ *  material_claim_photos. */
+export async function setKoliEkspedisiResiGroupAction(
+  koliIds: string[],
+  ekspedisi: string,
+  note: string,
+  noResi: string,
+  photo: { dataUrl: string; fileName?: string }
+): Promise<void> {
+  const vendorId = await requireVendorSession();
+  if (koliIds.length === 0) return;
   if (!ekspedisi.trim()) throw new Error("Pilih ekspedisi dulu.");
   if (!note.trim()) throw new Error("Catatan ekspedisi wajib diisi.");
+  if (!noResi.trim()) throw new Error("No resi wajib diisi.");
   if (!photo.dataUrl.startsWith("data:image/")) throw new Error("Foto lampiran tidak valid -- harus berupa gambar.");
   const base64Part = photo.dataUrl.slice(photo.dataUrl.indexOf(",") + 1);
   const approxBytes = Math.floor((base64Part.length * 3) / 4);
   if (approxBytes > 700 * 1024) throw new Error("Foto lampiran terlalu besar -- ambil ulang dengan resolusi lebih kecil.");
-  const { data: koli } = await db.from("delivery_kolis").select("delivered_at").eq("id", koliId).maybeSingle();
-  if (!koli || koli.delivered_at) return;
+  const db = supabaseServer();
+
+  // Kepemilikan + belum delivered -- cegah vendor A menyentuh koli vendor B, & cegah ekspedisi/
+  // resi koli yang SUDAH terkirim diubah lewat sini (harusnya sudah final).
+  const { data: rows } = await db.from("delivery_kolis").select("id,vendor_produksi,delivered_at").in("id", koliIds);
+  const validIds = (rows ?? []).filter((r) => r.vendor_produksi === vendorId && !r.delivered_at).map((r) => r.id);
+  if (validIds.length === 0) return;
+
+  const resiGroupId = await nextReadableId("RESI");
   const notedAt = nowIso();
-  const { error: photoErr } = await db.from("delivery_koli_ekspedisi_photos").upsert({ delivery_koli_id: koliId, data_url: photo.dataUrl, file_name: photo.fileName ?? null, uploaded_at: notedAt });
+  const { error: photoErr } = await db
+    .from("delivery_koli_ekspedisi_photos")
+    .upsert(validIds.map((koliId) => ({ delivery_koli_id: koliId, data_url: photo.dataUrl, file_name: photo.fileName ?? null, uploaded_at: notedAt })));
   if (photoErr) throw new Error(`Gagal menyimpan foto lampiran: ${photoErr.message}`);
-  const { error } = await db.from("delivery_kolis").update({ ekspedisi, ekspedisi_note: note.trim(), ekspedisi_note_at: notedAt }).eq("id", koliId);
+  const { error } = await db
+    .from("delivery_kolis")
+    .update({ ekspedisi, ekspedisi_note: note.trim(), ekspedisi_note_at: notedAt, no_resi: noResi.trim(), resi_group_id: resiGroupId })
+    .in("id", validIds);
   if (error) throw new Error(error.message);
 }
 
@@ -3072,12 +3088,36 @@ export async function getDeliveryKoliEkspedisiPhotoAction(koliId: string): Promi
   return { dataUrl: data.data_url, fileName: data.file_name ?? undefined };
 }
 
-export async function markKoliDeliveredAction(koliId: string): Promise<void> {
-  await requireVendorSession();
+/** Item 2026-09-11 (feedback: "berat dan delivery itu digabung jadi satu aksi ... berat per koli
+ *  tetap dihitung per koli", migration 0026) -- pengganti setKoliWeightAction+markKoliDeliveredAction
+ *  lama (dulu dipanggil berurutan per koli dari UI) -- sekarang SATU aksi utk SELURUH grup resi
+ *  sekaligus: berat TIAP koli (fisiknya beda-beda) disimpan satu-satu, lalu SEMUA koli dalam
+ *  grup ditandai `delivered_at` BARENG. Ongkir yang DIBAYAR (dihitung dari total berat segrup,
+ *  diprorata balik per koli) murni derived read-time lewat koliOngkirShare (derive.ts) -- TIDAK
+ *  ada apa pun yang perlu dihitung/disimpan khusus di sini selain berat mentah tiap koli. */
+export async function deliverKoliResiGroupAction(items: { koliId: string; beratKoli: number }[]): Promise<void> {
+  const vendorId = await requireVendorSession();
+  if (items.length === 0) return;
+  if (items.some((it) => !(it.beratKoli > 0))) throw new Error("Berat semua koli dalam grup ini harus diisi (> 0) sebelum Delivery.");
   const db = supabaseServer();
-  const { data: koli } = await db.from("delivery_kolis").select("berat_koli").eq("id", koliId).single();
-  if (!koli?.berat_koli) return;
-  await db.from("delivery_kolis").update({ delivered_at: today() }).eq("id", koliId);
+  const koliIds = items.map((it) => it.koliId);
+  const { data: rows } = await db.from("delivery_kolis").select("id,vendor_produksi,ekspedisi,resi_group_id,delivered_at").in("id", koliIds);
+  if (!rows || rows.length !== koliIds.length) throw new Error("Sebagian koli tidak ditemukan.");
+  if (rows.some((r) => r.vendor_produksi !== vendorId)) throw new Error("Forbidden: sebagian koli bukan milik vendor Anda.");
+  if (rows.some((r) => r.delivered_at)) return; // sudah delivered semua -- no-op, idempotent
+  if (rows.some((r) => !r.ekspedisi)) throw new Error("Pilih ekspedisi dulu untuk semua koli di grup ini.");
+  // Koli TANPA resi_group_id (data lama sebelum migration 0026) dianggap grup isi-dirinya-sendiri
+  // (fallback ke id sendiri) -- mencegah client kirim campuran koli lama yang tidak benar2 satu
+  // grup fisik yang sama.
+  const groupIds = new Set(rows.map((r) => r.resi_group_id ?? r.id));
+  if (groupIds.size > 1) throw new Error("Koli yang dipilih bukan dari grup resi yang sama.");
+
+  for (const it of items) {
+    const { error } = await db.from("delivery_kolis").update({ berat_koli: it.beratKoli }).eq("id", it.koliId);
+    if (error) throw new Error(error.message);
+  }
+  const { error: deliverErr } = await db.from("delivery_kolis").update({ delivered_at: today() }).in("id", koliIds);
+  if (deliverErr) throw new Error(deliverErr.message);
 }
 
 // =========================================================================
@@ -3104,6 +3144,57 @@ export async function createVendorInvoiceAction(input: { vendorProduksi: string;
     input.lines.map((l) => ({ vendor_invoice_id: id, mrp_id: l.mrpId, warna: l.warna, lengan: l.lengan, usia: l.usia ?? null, qty: l.qty, rate_per_pc: l.ratePerPc, amount: l.qty * l.ratePerPc }))
   );
   await insertNotification(notif(`Invoice vendor baru ${id} menunggu review Procurement`, ["procurement"]));
+}
+
+function lineKeyLocal(mrpId: string, warna: string, lengan: Lengan, usia?: Usia): string {
+  return mrpId + "|" + warna + "|" + lengan + "|" + (usia ?? "");
+}
+
+/** Item 2026-09-11 (feedback: "ketika sudah final pengiriman nanti akan ada button submit
+ *  invoice, jadi tidak ada lagi action apa2 di halaman Invoice & Payment", migration 0026) --
+ *  pengganti alur "Create Invoice" manual (checkbox+qty+rate) yang DIHAPUS dari
+ *  invoice-vendor-panel.tsx -- invoice sekarang diajukan LANGSUNG dari grup resi yang sudah
+ *  delivered penuh, di halaman Pengiriman.
+ *
+ *  qty TIDAK PERNAH dipercaya dari client -- dihitung ULANG dari snapshot fresh
+ *  (`resiGroupInvoiceLines`, derive.ts), pola sama `clampDeliveryItemsBySourceBatch` -- cuma
+ *  `ratePerPc` per baris yang dipercaya dari client (keputusan bisnis, tidak bisa diturunkan
+ *  otomatis dari data manapun). Reuse `createVendorInvoiceAction` APA ADANYA (bukan menulis ulang
+ *  logic insert invoice) untuk baris hasil gabungan qty riil + rate dari client, lalu tandai
+ *  SEMUA koliIds `resi_invoiced_at` supaya grup yang sama tidak bisa disubmit dua kali. */
+export async function submitResiGroupInvoiceAction(
+  koliIds: string[],
+  rates: { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; ratePerPc: number }[]
+): Promise<void> {
+  const vendorId = await requireVendorSession();
+  if (koliIds.length === 0) return;
+  const db = supabaseServer();
+  const { data: rows } = await db.from("delivery_kolis").select("id,vendor_produksi,delivered_at,resi_invoiced_at,resi_group_id").in("id", koliIds);
+  if (!rows || rows.length !== koliIds.length) throw new Error("Sebagian koli tidak ditemukan.");
+  if (rows.some((r) => r.vendor_produksi !== vendorId)) throw new Error("Forbidden: sebagian koli bukan milik vendor Anda.");
+  if (rows.some((r) => !r.delivered_at)) throw new Error("Semua koli dalam grup ini harus sudah Delivery dulu sebelum submit invoice.");
+  if (rows.some((r) => r.resi_invoiced_at)) throw new Error("Grup pengiriman ini sudah pernah diajukan invoice-nya.");
+  const groupIds = new Set(rows.map((r) => r.resi_group_id ?? r.id));
+  if (groupIds.size > 1) throw new Error("Koli yang dipilih bukan dari grup resi yang sama.");
+
+  const snapshot = await getFlowSnapshot();
+  const lines = resiGroupInvoiceLines(koliIds, snapshot.deliveryKolis);
+  if (lines.length === 0) return;
+  const rateMap = new Map(rates.map((r) => [lineKeyLocal(r.mrpId, r.warna, r.lengan, r.usia), r.ratePerPc]));
+  const invoiceLines = lines.map((l) => ({
+    mrpId: l.mrpId,
+    warna: l.warna,
+    lengan: l.lengan,
+    usia: l.usia,
+    qty: l.qty,
+    ratePerPc: rateMap.get(lineKeyLocal(l.mrpId, l.warna, l.lengan, l.usia)) ?? 0,
+  }));
+  if (invoiceLines.some((l) => !(l.ratePerPc > 0))) throw new Error("Rate per pc harus diisi (> 0) untuk semua baris.");
+
+  await createVendorInvoiceAction({ vendorProduksi: vendorId, lines: invoiceLines });
+
+  const { error } = await db.from("delivery_kolis").update({ resi_invoiced_at: nowIso() }).in("id", koliIds);
+  if (error) throw new Error(error.message);
 }
 
 export async function setVendorInvoiceStatusAction(invoiceId: string, status: "SUBMITTED" | "REVISION" | "APPROVED" | "PAID"): Promise<void> {
