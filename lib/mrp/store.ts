@@ -81,14 +81,34 @@ function waitForNoInFlightWrites(): Promise<void> {
     check();
   });
 }
-function guardAction<Args extends unknown[], R>(fn: (...args: Args) => Promise<R>, countInFlight: boolean): (...args: Args) => Promise<R> {
+// BUG FIX 2026-09-11 (owner: "kenapa fitur reset data tidak bisa bekerja?"): `alertOnAuthError`
+// param baru -- SEBELUMNYA guardAction selalu memicu alert+redirect untuk SEMUA action begitu
+// errornya "Unauthorized"/"Forbidden", TERMASUK getFlowSnapshotAction (dipanggil dari
+// StoreHydrator saat mount/focus/poll -- lihat components/shell/store-hydrator.tsx). Snapshot itu
+// SENGAJA gagal diam-diam di halaman publik (mis. "/" sebelum login sama sekali) -- komentar
+// store-hydrator.tsx sendiri bilang begitu -- tapi guardAction MENYELA error itu duluan sebelum
+// sempat sampai ke `.catch(() => {})` milik StoreHydrator, jadi malah muncul alert "sesi
+// kedaluwarsa" + `window.location.href = "/"` di halaman "/" itu SENDIRI -- yang karena sudah di
+// "/", ganti jadi RELOAD, me-remount StoreHydrator, memicu fetchNow(force=true) lagi, Unauthorized
+// lagi, alert lagi -- infinite reload loop tiap kunjungan anonim/sesi kedaluwarsa, bukan cuma soal
+// reset data (tapi bikin apa pun yang butuh sesi valid, termasuk klik "Reset data" sendiri, terasa
+// "tidak bekerja" karena halaman keburu reload sebelum aksinya sempat diproses). Sekarang
+// getFlowSnapshotAction TIDAK memicu alert -- errornya di-throw apa adanya, dibiarkan diserap
+// pemanggilnya sendiri (StoreHydrator/scheduleRefresh, keduanya sudah py try/catch sendiri).
+// Action LAIN (termasuk resetAllAction) TETAP memicu alert seperti sebelumnya -- itu memang
+// signal yang benar kalau sesi mati DI TENGAH pemakaian aktif.
+function guardAction<Args extends unknown[], R>(
+  fn: (...args: Args) => Promise<R>,
+  countInFlight: boolean,
+  alertOnAuthError: boolean
+): (...args: Args) => Promise<R> {
   return async (...args: Args) => {
     if (countInFlight) inFlightWriteCount++;
     try {
       return await fn(...args);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (typeof window !== "undefined" && (message.startsWith("Unauthorized") || message.startsWith("Forbidden"))) {
+      if (alertOnAuthError && typeof window !== "undefined" && (message.startsWith("Unauthorized") || message.startsWith("Forbidden"))) {
         // Aksi yang gagal biasanya diikuti get().refresh() (juga dibungkus guardAction) -- tanpa
         // guard ini, refresh() akan gagal dengan error sesi yang SAMA lagi dan memicu alert +
         // redirect kedua. Cukup sekali per navigasi.
@@ -107,7 +127,10 @@ function guardAction<Args extends unknown[], R>(fn: (...args: Args) => Promise<R
 }
 
 const actions = Object.fromEntries(
-  Object.entries(rawActions).map(([key, fn]) => [key, guardAction(fn as (...args: unknown[]) => Promise<unknown>, key !== "getFlowSnapshotAction")])
+  Object.entries(rawActions).map(([key, fn]) => [
+    key,
+    guardAction(fn as (...args: unknown[]) => Promise<unknown>, key !== "getFlowSnapshotAction", key !== "getFlowSnapshotAction"),
+  ])
 ) as typeof rawActions;
 
 export type MrpDates = {
