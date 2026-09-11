@@ -397,11 +397,16 @@ export function countPengirimanPendingForMrp(
   }, 0);
 }
 
-/** MRP yang sudah delivered tapi masih ada qty belum diinvoice — siap diajukan di sub-tab
- *  "Invoice Vendor" (per pcs). Dedupe per MRP (bukan per baris warna/lengan) supaya angkanya
- *  masuk akal sebagai "jumlah MRP yang perlu dicek", konsisten dengan gaya badge lain. MRP yang
- *  sudah terkunci ke jalur Invoice Maklon (lihat `maklonPoInvoiceLockedBy`) dikecualikan —
- *  jalur ini sudah tidak bisa dipakai lagi untuk MRP itu, jadi tidak masuk hitungan "perlu dicek". */
+/** MRP yang sudah delivered tapi masih ada qty belum diinvoice. Dedupe per MRP (bukan per baris
+ *  warna/lengan) supaya angkanya masuk akal sebagai "jumlah MRP yang perlu dicek", konsisten
+ *  dengan gaya badge lain. MRP yang sudah terkunci ke jalur Invoice Maklon (lihat
+ *  `maklonPoInvoiceLockedBy`) dikecualikan — jalur ini sudah tidak bisa dipakai lagi untuk MRP
+ *  itu, jadi tidak masuk hitungan "perlu dicek".
+ *
+ *  Item migration 0026: TIDAK lagi dipakai langsung untuk badge apa pun ("Submit Invoice"
+ *  sekarang aksinya per resi-group di halaman Pengiriman, bukan per-MRP di sini) — dipertahankan
+ *  sebagai util hitung murni (masih benar secara definisi), dipanggil dari
+ *  `countVendorInvoicePaymentTotal` di bawah yang sekarang men-nol-kan hasilnya untuk badge. */
 export function countVendorInvoiceableMrp(
   vendorId: string,
   mrpDetails: MrpDetail[],
@@ -431,9 +436,13 @@ export function countVendorMaklonInvoiceReady(): number {
   return 0;
 }
 
-/** Total badge untuk halaman gabungan Invoice & Payment. Cuma sub-tab Invoice Vendor yang
- *  masih punya aksi nyata (submit invoice) — Invoice Maklon sekarang murni arsip, jadi tidak
- *  ikut disumbangkan ke total ini lagi. */
+/** DEPRECATED (migration 0026) — dulu total badge untuk halaman gabungan Invoice & Payment.
+ *  Section "Create Invoice" manual di sub-tab Invoice Vendor sudah dihapus total (submit invoice
+ *  sekarang aksinya per resi-group di halaman Pengiriman, lihat `submitResiGroupInvoiceAction`),
+ *  jadi halaman ini sekarang 100% arsip read-only untuk KEDUA sub-tab — tidak ada lagi satu pun
+ *  aksi yang bisa dipicu dari sini. Selalu 0 sekarang, pola sama `countVendorMaklonInvoiceReady`
+ *  di atas (dipertahankan, bukan dihapus, supaya pemanggil lama — app-shell.tsx & halaman
+ *  invoice-payment sendiri — tidak perlu ikut diubah kalau nanti dibutuhkan lagi). */
 export function countVendorInvoicePaymentTotal(
   vendorId: string,
   mrpDetails: MrpDetail[],
@@ -441,5 +450,13 @@ export function countVendorInvoicePaymentTotal(
   vendorInvoices: VendorInvoice[],
   maklonInvoices: MaklonInvoice[]
 ): number {
-  return countVendorInvoiceableMrp(vendorId, mrpDetails, deliveryKolis, vendorInvoices, maklonInvoices);
+  // Signature dipertahankan (bukan cuma `(): number`) supaya pemanggil lama tidak perlu diubah --
+  // parameter memang tidak dipakai lagi sekarang, di-`void` di sini biar bukan dead param yang
+  // membingungkan tapi juga tidak kena warning unused-vars.
+  void vendorId;
+  void mrpDetails;
+  void deliveryKolis;
+  void vendorInvoices;
+  void maklonInvoices;
+  return 0;
 }

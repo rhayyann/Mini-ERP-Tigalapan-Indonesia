@@ -700,6 +700,9 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     sourceBatchIds: (batchIdsByKoli[k.id] ?? []).map((r) => r.production_batch_id),
     ekspedisiNote: k.ekspedisi_note ?? undefined,
     ekspedisiNoteAt: k.ekspedisi_note_at ?? undefined,
+    resiGroupId: k.resi_group_id ?? undefined,
+    noResi: k.no_resi ?? undefined,
+    resiInvoicedAt: k.resi_invoiced_at ?? undefined,
   }));
 
   // ---- Vendor invoice ----

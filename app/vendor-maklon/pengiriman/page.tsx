@@ -8,13 +8,23 @@ import { Button } from "@/components/ui/button";
 import { VendorAuthGuard } from "@/components/mrp/vendor-auth-guard";
 import { useMrpStore } from "@/lib/mrp/store";
 import { usePendingActions } from "@/lib/mrp/usePendingActions";
-import { getDeliveryKoliEkspedisiPhotoAction } from "@/lib/mrp/actions";
-import { openPreviewWindow, fillPreviewWindow } from "@/lib/mrp/clientFiles";
-import { availableFgToShip, ekspedisiPrice, formatDate, formatDecimal, formatRupiah, mrpIdsWithClosedRolls, mrpIdsWithUnpackedFg, rollRemainingBySizeForMrp } from "@/lib/mrp/derive";
+import { viewEkspedisiPhoto } from "@/components/mrp/koli-ekspedisi-card";
+import {
+  availableFgToShip,
+  ekspedisiPrice,
+  formatDate,
+  formatDecimal,
+  formatRupiah,
+  koliOngkirShare,
+  mrpIdsWithClosedRolls,
+  mrpIdsWithUnpackedFg,
+  resiGroupInvoiceLines,
+  rollRemainingBySizeForMrp,
+} from "@/lib/mrp/derive";
 import { countPengirimanPendingForMrp, pendingMarker } from "@/lib/shell/badges";
 import { EKSPEDISI_LIST, VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { AvailableFgRow } from "@/lib/mrp/derive";
-import type { DeliveryKoliItem, Lengan, ShippableKind, Usia } from "@/lib/mrp/types";
+import type { DeliveryKoli, DeliveryKoliItem, Lengan, ShippableKind, Usia } from "@/lib/mrp/types";
 
 const USIA_LABEL: Record<Usia, string> = { KIDS: "Kids", DEWASA: "Dewasa" };
 
@@ -47,6 +57,13 @@ function rowKey(kind: DeliveryKoliItem["kind"], r: Pick<AvailableFgRow, "warna" 
  *  kind/usia) karena roll FG di sini selalu kind FG & tidak berusia. */
 function rollSizeKey(warna: string, lengan: Lengan, size: string): string {
   return [warna, lengan, size].join("|");
+}
+
+/** Kunci 1 baris invoice (mrpId+warna+lengan+usia) -- dipakai draft rate di dialog "Submit
+ *  Invoice", HARUS PERSIS SAMA format-nya dengan `lineKeyLocal` di actions.ts supaya rate yang
+ *  diketik di sini nyambung ke baris yang benar saat submit. */
+function invoiceLineKeyLocal(mrpId: string, warna: string, lengan: Lengan, usia?: Usia): string {
+  return mrpId + "|" + warna + "|" + lengan + "|" + (usia ?? "");
 }
 
 /** Ringkasan singkat "Isi" koli untuk tampilan default — daftar lengkap per item (bisa banyak
@@ -128,19 +145,23 @@ function dataUrlApproxBytes(dataUrl: string): number {
   return Math.round(b64.length * 0.75);
 }
 
-async function viewEkspedisiPhoto(koliId: string) {
-  const win = openPreviewWindow();
-  try {
-    const photo = await getDeliveryKoliEkspedisiPhotoAction(koliId);
-    if (!photo) {
-      win?.close();
-      return;
-    }
-    fillPreviewWindow(win, photo.dataUrl);
-  } catch (err) {
-    win?.close();
-    throw err;
+function groupByKey<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {
+  const map = new Map<string, T[]>();
+  for (const item of items) {
+    const key = keyFn(item);
+    const arr = map.get(key);
+    if (arr) arr.push(item);
+    else map.set(key, [item]);
   }
+  return map;
+}
+
+/** Item 2026-09-11 (migration 0026, "checkbox koli yang mau dikirim disamakan ekspedisinya - jadi
+ *  satu resi") -- kunci grup 1 koli: `resiGroupId`-nya kalau ada, fallback ke id-nya sendiri untuk
+ *  koli LAMA (sebelum migration ini) supaya tetap tampil sebagai "grup isi 1" yang wajar, bukan
+ *  error/kosong. */
+function resiKeyFor(k: DeliveryKoli): string {
+  return k.resiGroupId ?? k.id;
 }
 
 function PengirimanContent({ vendorId }: { vendorId: string }) {
@@ -151,9 +172,9 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   const maklonPOs = useMrpStore((s) => s.maklonPOs);
   const createDeliveryKoli = useMrpStore((s) => s.createDeliveryKoli);
   const updateDeliveryKoli = useMrpStore((s) => s.updateDeliveryKoli);
-  const setKoliWeight = useMrpStore((s) => s.setKoliWeight);
-  const markKoliDelivered = useMrpStore((s) => s.markKoliDelivered);
-  const setKoliEkspedisi = useMrpStore((s) => s.setKoliEkspedisi);
+  const setKoliEkspedisiResiGroup = useMrpStore((s) => s.setKoliEkspedisiResiGroup);
+  const deliverKoliResiGroup = useMrpStore((s) => s.deliverKoliResiGroup);
+  const submitResiGroupInvoice = useMrpStore((s) => s.submitResiGroupInvoice);
 
   // BUG FIX (2026-09-09): union dengan mrpIdsWithClosedRolls -- lihat catatan panjang di
   // definisinya (lib/mrp/derive.ts). Tanpa ini, MRP yang FG-nya semua lewat jalur "Tutup Roll"
@@ -167,6 +188,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   // Qty per baris "Isi koli" (Rework & sisa FG lama sebelum fitur roll), keyed by
   // rowKey(kind, warna|lengan|size|usia) — lihat rowKey().
   const [qtyDraft, setQtyDraft] = useState<Record<string, number>>({});
+  // Berat DRAFT per koli (belum tersimpan sampai "Delivery" grup diklik) -- keyed by koliId.
   const [weightDraft, setWeightDraft] = useState<Record<string, number>>({});
   const [editingKoliId, setEditingKoliId] = useState<string | null>(null);
   // Item 2026-09-10 (migration 0024, "roll boleh dikirim sebagian"): qty per baris "Isi qty per
@@ -178,13 +200,25 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   // Klik baris "Koli belum dikirim"/"Riwayat pengiriman" untuk expand/collapse rincian isi koli
   // per item — id koli unik lintas kedua tabel jadi aman pakai 1 Set gabungan.
   const [expandedKoli, setExpandedKoli] = useState<Set<string>>(new Set());
+  // Item 2026-09-11 (migration 0026): checkbox pilih koli mana (yang BELUM punya ekspedisi/resi)
+  // mau dikirim bareng ke ekspedisi yang sama.
+  const [selectedForEkspedisi, setSelectedForEkspedisi] = useState<Set<string>>(new Set());
   // Item revisi 2026-09-07 (owner: aksi vendor produksi terasa lambat -- tidak ada tanda loading
-  // sama sekali sebelum ini): dipakai tombol "Delivery →" di bawah, per koli (banyak koli
-  // independen di daftar yang sama, tidak boleh saling mengunci).
+  // sama sekali sebelum ini): dipakai tombol "Delivery →"/"Submit Invoice" di bawah, per GRUP
+  // resi (banyak grup independen di daftar yang sama, tidak boleh saling mengunci).
   const { isPending, run: runPendingAction } = usePendingActions();
 
   function toggleKoliExpanded(koliId: string) {
     setExpandedKoli((prev) => {
+      const next = new Set(prev);
+      if (next.has(koliId)) next.delete(koliId);
+      else next.add(koliId);
+      return next;
+    });
+  }
+
+  function toggleSelectedForEkspedisi(koliId: string) {
+    setSelectedForEkspedisi((prev) => {
       const next = new Set(prev);
       if (next.has(koliId)) next.delete(koliId);
       else next.add(koliId);
@@ -329,7 +363,8 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
         await updateDeliveryKoli(editingKoliId, { ekspedisi: existing?.ekspedisi ?? "", noKoli: noKoli.trim(), items: allItems });
         cancelEdit();
       } else {
-        // Ekspedisi belum dipilih di sini — dipilih belakangan langsung di tabel "Koli belum dikirim".
+        // Ekspedisi & resi belum dipilih di sini — dipilih belakangan lewat checkbox + "Set
+        // Ekspedisi & Resi" di tabel "Koli belum dikirim" di bawah (migration 0026).
         await createDeliveryKoli({ mrpId, vendorProduksi: vendorId, ekspedisi: "", noKoli: noKoli.trim(), items: allItems });
         setNoKoli("");
         setQtyDraft({});
@@ -340,14 +375,15 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
     }
   }
 
-  // Item 2026-09-10 (migration 0024, feedback: "Saat pilih ekspedisi juga nanti akan ada input
-  // gambar lampiran (note dari ekspedisi) sebelum melakukan proses penerbitan invoice & payment"):
-  // pemilihan ekspedisi lewat `<select>` polos DIGANTI dialog kecil (pola sama dialog klaim fisik
-  // di production-cutting-tab.tsx) -- ekspedisi + catatan (wajib) + foto (wajib) disubmit SEKALIGUS
-  // lewat setKoliEkspedisiAction, satu aksi atomik.
-  const [ekspedisiDialogKoliId, setEkspedisiDialogKoliId] = useState<string | null>(null);
+  // Item 2026-09-11 (migration 0026, feedback: "Checkbox Koli yang mau dikirim (disamakan
+  // ekspedisinya - jadi satu resi)"): dialog "Set Ekspedisi & Resi" sekarang beroperasi pada
+  // SEKUMPULAN koliIds sekaligus (bukan 1 koliId lagi) -- ekspedisi+catatan+foto+NO RESI (field
+  // baru, dulu tergabung bebas di catatan) diterapkan identik ke semua koli terpilih dalam SATU
+  // aksi atomik (setKoliEkspedisiResiGroupAction), semuanya dapat resiGroupId BARU yang sama.
+  const [ekspedisiDialogKoliIds, setEkspedisiDialogKoliIds] = useState<string[] | null>(null);
   const [ekspedisiDraft, setEkspedisiDraft] = useState("");
   const [ekspedisiNoteDraft, setEkspedisiNoteDraft] = useState("");
+  const [noResiDraft, setNoResiDraft] = useState("");
   const [ekspedisiPhotoDataUrl, setEkspedisiPhotoDataUrl] = useState<string | null>(null);
   const [ekspedisiPhotoFileName, setEkspedisiPhotoFileName] = useState<string | undefined>(undefined);
   const [ekspedisiPhotoError, setEkspedisiPhotoError] = useState<string | null>(null);
@@ -356,19 +392,22 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   const [ekspedisiError, setEkspedisiError] = useState<string | null>(null);
   const ekspedisiPhotoInputRef = useRef<HTMLInputElement>(null);
 
-  function openEkspedisiDialog(k: (typeof deliveryKolis)[number]) {
-    setEkspedisiDialogKoliId(k.id);
-    setEkspedisiDraft(k.ekspedisi || "");
-    setEkspedisiNoteDraft(k.ekspedisiNote ?? "");
+  function openEkspedisiDialog(koliIds: string[]) {
+    if (koliIds.length === 0) return;
+    setEkspedisiDialogKoliIds(koliIds);
+    setEkspedisiDraft("");
+    setEkspedisiNoteDraft("");
+    setNoResiDraft("");
     setEkspedisiPhotoDataUrl(null);
     setEkspedisiPhotoFileName(undefined);
     setEkspedisiPhotoError(null);
     setEkspedisiError(null);
   }
   function closeEkspedisiDialog() {
-    setEkspedisiDialogKoliId(null);
+    setEkspedisiDialogKoliIds(null);
     setEkspedisiDraft("");
     setEkspedisiNoteDraft("");
+    setNoResiDraft("");
     setEkspedisiPhotoDataUrl(null);
     setEkspedisiPhotoFileName(undefined);
     setEkspedisiPhotoError(null);
@@ -394,11 +433,12 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
     }
   }
   async function submitEkspedisi() {
-    if (!ekspedisiDialogKoliId || !ekspedisiDraft || !ekspedisiNoteDraft.trim() || !ekspedisiPhotoDataUrl || ekspedisiSubmitting) return;
+    if (!ekspedisiDialogKoliIds || !ekspedisiDraft || !ekspedisiNoteDraft.trim() || !noResiDraft.trim() || !ekspedisiPhotoDataUrl || ekspedisiSubmitting) return;
     setEkspedisiSubmitting(true);
     setEkspedisiError(null);
     try {
-      await setKoliEkspedisi(ekspedisiDialogKoliId, ekspedisiDraft, ekspedisiNoteDraft.trim(), { dataUrl: ekspedisiPhotoDataUrl, fileName: ekspedisiPhotoFileName });
+      await setKoliEkspedisiResiGroup(ekspedisiDialogKoliIds, ekspedisiDraft, ekspedisiNoteDraft.trim(), noResiDraft.trim(), { dataUrl: ekspedisiPhotoDataUrl, fileName: ekspedisiPhotoFileName });
+      setSelectedForEkspedisi(new Set());
       closeEkspedisiDialog();
     } catch (e) {
       setEkspedisiError(e instanceof Error ? e.message : "Gagal menyimpan ekspedisi.");
@@ -411,22 +451,65 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   const pending = myKolis.filter((k) => !k.deliveredAt);
   const delivered = myKolis.filter((k) => k.deliveredAt);
 
-  function doDelivery(koliId: string) {
-    const weight = weightDraft[koliId];
-    const k = deliveryKolis.find((d) => d.id === koliId);
-    if (!weight || weight <= 0 || !k?.ekspedisi || isPending(koliId)) return;
-    // Bug fix sekalian (ketemu waktu menambah loading state): dulu setKoliWeight & markKoliDelivered
-    // dipanggil TANPA await, bisa balapan -- markKoliDelivered (yang DIAM-DIAM no-op kalau berat_koli
-    // belum tersimpan di server, lihat catatan di store.ts) berpotensi sampai ke server LEBIH DULU
-    // dari setKoliWeight, membuat "Delivery" gagal diam-diam tanpa error sama sekali. Sekarang
-    // di-await berurutan.
-    runPendingAction(
-      koliId,
-      (async () => {
-        await setKoliWeight(koliId, weight);
-        await markKoliDelivered(koliId);
-      })()
-    );
+  // Item 2026-09-11 (migration 0026): "Koli belum dikirim" sekarang 2 bagian -- koli yang BELUM
+  // punya ekspedisi/resi (checkbox pilih mau digabung ke resi mana), dan koli yang SUDAH (siap
+  // diisi berat + Delivery per GRUP).
+  const pendingWithoutEkspedisi = pending.filter((k) => !k.resiGroupId);
+  const pendingWithEkspedisi = pending.filter((k) => k.resiGroupId);
+  const pendingGroups = Array.from(groupByKey(pendingWithEkspedisi, resiKeyFor).entries());
+  const deliveredGroups = Array.from(groupByKey(delivered, resiKeyFor).entries());
+
+  // Item 2026-09-11 (migration 0026, owner: "berat dan delivery itu digabung jadi satu aksi ...
+  // yang dibayarkan itu adalah berat total koli yang dikirimkan ke satu ekspedisi"): SATU tombol
+  // "Delivery" per GRUP resi -- enabled cuma kalau SEMUA koli dalam grup sudah diisi berat > 0.
+  function doDeliveryGroup(groupKey: string, kolis: DeliveryKoli[]) {
+    const items = kolis.map((k) => ({ koliId: k.id, beratKoli: weightDraft[k.id] ?? 0 }));
+    if (items.some((it) => !(it.beratKoli > 0)) || isPending(groupKey)) return;
+    runPendingAction(groupKey, deliverKoliResiGroup(items));
+  }
+
+  // Item 2026-09-11 (migration 0026, "Submit Invoice"): dialog kecil -- qty per baris OTOMATIS
+  // dari isi koli grup ini (read-only, dihitung ULANG server-side juga -- lihat
+  // submitResiGroupInvoiceAction), rate pre-filled dari default vendor tapi BISA diedit sebelum
+  // submit.
+  const [invoiceDialogKoliIds, setInvoiceDialogKoliIds] = useState<string[] | null>(null);
+  const [invoiceRatesDraft, setInvoiceRatesDraft] = useState<Record<string, number>>({});
+  const [invoiceSubmitting, setInvoiceSubmitting] = useState(false);
+  const [invoiceError, setInvoiceError] = useState<string | null>(null);
+  const vendorMeta = VENDOR_PRODUKSI[vendorId];
+
+  function openInvoiceDialog(koliIds: string[]) {
+    const lines = resiGroupInvoiceLines(koliIds, deliveryKolis);
+    const rates: Record<string, number> = {};
+    for (const l of lines) rates[invoiceLineKeyLocal(l.mrpId, l.warna, l.lengan, l.usia)] = vendorMeta?.ratePerPc ?? 0;
+    setInvoiceRatesDraft(rates);
+    setInvoiceDialogKoliIds(koliIds);
+    setInvoiceError(null);
+  }
+  function closeInvoiceDialog() {
+    setInvoiceDialogKoliIds(null);
+    setInvoiceRatesDraft({});
+    setInvoiceError(null);
+  }
+  const invoiceDialogLines = invoiceDialogKoliIds ? resiGroupInvoiceLines(invoiceDialogKoliIds, deliveryKolis) : [];
+  const invoiceDialogTotal = invoiceDialogLines.reduce((s, l) => s + l.qty * (invoiceRatesDraft[invoiceLineKeyLocal(l.mrpId, l.warna, l.lengan, l.usia)] ?? 0), 0);
+  async function submitInvoiceConfirm() {
+    if (!invoiceDialogKoliIds || invoiceSubmitting) return;
+    if (invoiceDialogLines.some((l) => !(invoiceRatesDraft[invoiceLineKeyLocal(l.mrpId, l.warna, l.lengan, l.usia)] > 0))) {
+      setInvoiceError("Rate per pc harus diisi (> 0) untuk semua baris.");
+      return;
+    }
+    setInvoiceSubmitting(true);
+    setInvoiceError(null);
+    try {
+      const rates = invoiceDialogLines.map((l) => ({ mrpId: l.mrpId, warna: l.warna, lengan: l.lengan, usia: l.usia, ratePerPc: invoiceRatesDraft[invoiceLineKeyLocal(l.mrpId, l.warna, l.lengan, l.usia)] }));
+      await submitResiGroupInvoice(invoiceDialogKoliIds, rates);
+      closeInvoiceDialog();
+    } catch (e) {
+      setInvoiceError(e instanceof Error ? e.message : "Gagal submit invoice.");
+    } finally {
+      setInvoiceSubmitting(false);
+    }
   }
 
   return (
@@ -436,7 +519,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
       activeHref="/vendor-maklon/pengiriman"
       breadcrumb={["Dashboard", "Pengiriman"]}
       title="Pengiriman"
-      subtitle="Buat koli pengiriman lalu masukkan berat koli sebelum delivery"
+      subtitle="Buat koli pengiriman, gabung ke satu resi lalu Delivery, dan submit invoice langsung dari sini"
       roleOverride={VENDOR_PRODUKSI[vendorId]?.name ?? vendorId}
       entityOverride="Vendor Produksi"
     >
@@ -473,7 +556,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
             <input value={noKoli} onChange={(e) => setNoKoli(e.target.value)} placeholder="Contoh: KOLI-001" className="input mt-1" />
           </div>
         </div>
-        <div className="mt-2 font-sans text-[11px] text-text-muted">Ekspedisi dipilih belakangan di tabel &quot;Koli belum dikirim&quot; di bawah.</div>
+        <div className="mt-2 font-sans text-[11px] text-text-muted">Ekspedisi &amp; resi dipilih belakangan di tabel &quot;Koli belum dikirim&quot; di bawah — bisa digabung dengan koli lain jadi satu resi.</div>
 
         {mrpId && (
           <div className="mt-4">
@@ -597,168 +680,243 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
 
       <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
         <div className="border-b border-border-subtle px-4 py-3 font-sans text-[13px] font-semibold text-text-primary">Koli belum dikirim</div>
-        <div className="overflow-x-auto">
-          <div className="min-w-[980px]">
-            <div
-              className="grid gap-x-2 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
-              style={{ gridTemplateColumns: "80px 100px 130px 1fr 100px 110px 60px 80px" }}
-            >
-              <span>No MRP</span>
-              <span>No Koli</span>
-              <span>Ekspedisi</span>
-              <span>Isi</span>
-              <span className="text-right">Berat koli (kg)</span>
-              <span className="text-right">Estimasi ongkir</span>
-              <span />
-              <span />
-            </div>
-            {pending.length === 0 && <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">Tidak ada koli menunggu pengiriman.</div>}
-            {pending.map((k) => {
-              const berat = weightDraft[k.id] ?? 0;
-              const ongkir = k.ekspedisi && berat > 0 ? ekspedisiPrice(k.ekspedisi, berat) : null;
-              const isExpanded = expandedKoli.has(k.id);
-              return (
-                <Fragment key={k.id}>
-                  <div
-                    className="grid items-center gap-x-2 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0"
-                    style={{ gridTemplateColumns: "80px 100px 130px 1fr 100px 110px 60px 80px" }}
-                  >
-                    <span className="font-mono">{k.mrpId}</span>
-                    <span className="font-mono font-medium">{k.noKoli}</span>
-                    <span>
-                      {k.ekspedisi ? (
-                        <button onClick={() => openEkspedisiDialog(k)} className="text-left font-sans text-[11.5px] text-[#31414F] underline decoration-dotted hover:text-action-primary">
-                          {k.ekspedisi}
+
+        {/* Item 2026-09-11 (migration 0026): koli yang BELUM punya ekspedisi/resi -- checkbox
+           pilih mau digabung ke resi yang mana. */}
+        <div className="border-b border-border-subtle px-4 py-3">
+          <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">Belum ada ekspedisi — pilih koli yang mau dikirim bareng (satu resi)</div>
+          {pendingWithoutEkspedisi.length === 0 ? (
+            <div className="mt-2 font-sans text-xs text-text-muted">Tidak ada koli menunggu ekspedisi.</div>
+          ) : (
+            <>
+              <div className="mt-2 overflow-hidden rounded-md border border-border-subtle bg-white">
+                <div className="grid grid-cols-5 gap-x-2 border-b border-[#F1F4F7] bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                  <span />
+                  <span>No MRP</span>
+                  <span>No Koli</span>
+                  <span>Isi</span>
+                  <span className="text-right">Edit</span>
+                </div>
+                {pendingWithoutEkspedisi.map((k) => {
+                  const isExpanded = expandedKoli.has(k.id);
+                  return (
+                    <Fragment key={k.id}>
+                      <div className="grid grid-cols-5 items-center gap-x-2 border-b border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F] last:border-b-0">
+                        <input type="checkbox" checked={selectedForEkspedisi.has(k.id)} onChange={() => toggleSelectedForEkspedisi(k.id)} className="h-3.5 w-3.5" />
+                        <span className="font-mono">{k.mrpId}</span>
+                        <span className="font-mono font-medium">{k.noKoli}</span>
+                        <button
+                          onClick={() => toggleKoliExpanded(k.id)}
+                          className="flex items-center gap-1 text-left font-sans text-xs text-[#31414F] hover:text-action-primary"
+                          title="Klik untuk lihat rincian isi koli per item"
+                        >
+                          {isExpanded ? <ChevronDown className="h-3.5 w-3.5 flex-none text-text-muted" /> : <ChevronRight className="h-3.5 w-3.5 flex-none text-text-muted" />}
+                          {summarizeItems(k.items)}
                         </button>
-                      ) : (
-                        <button onClick={() => openEkspedisiDialog(k)} className="rounded-md border border-[#CBD5DF] bg-white px-2 py-1 font-sans text-[10.5px] font-medium text-action-primary">
-                          Pilih ekspedisi
+                        <span className="text-right">
+                          <Button onClick={() => editKoli(k)} variant="ghost" size="xs">
+                            Edit
+                          </Button>
+                        </span>
+                      </div>
+                      {isExpanded && (
+                        <div className="border-b border-[#F1F4F7] bg-[#FAFBFC] px-3 py-3 last:border-b-0">
+                          <ItemsDetailPanel items={k.items} />
+                        </div>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </div>
+              <div className="mt-2">
+                <button
+                  onClick={() => openEkspedisiDialog(Array.from(selectedForEkspedisi))}
+                  disabled={selectedForEkspedisi.size === 0}
+                  className="rounded-md bg-action-primary px-3.5 py-2 font-sans text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Set Ekspedisi &amp; Resi ({selectedForEkspedisi.size} koli)
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Item 2026-09-11 (migration 0026): koli yang SUDAH punya ekspedisi/resi -- dikelompokkan
+           per grup resi, berat diisi per koli tapi Delivery jadi SATU aksi per grup. Ongkir yang
+           ditampilkan (grup & per koli) live-preview dari berat DRAFT (belum tersimpan), pola
+           perhitungan SAMA PERSIS koliOngkirShare (derive.ts) cuma pakai draft, bukan data
+           tersimpan. */}
+        <div className="px-4 py-3">
+          <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">Sudah ada ekspedisi — isi berat tiap koli lalu Delivery per grup</div>
+          {pendingGroups.length === 0 ? (
+            <div className="mt-2 font-sans text-xs text-text-muted">Tidak ada grup pengiriman menunggu Delivery.</div>
+          ) : (
+            <div className="mt-2 flex flex-col gap-3">
+              {pendingGroups.map(([groupKey, kolis]) => {
+                const first = kolis[0];
+                const totalDraftWeight = kolis.reduce((s, k) => s + (weightDraft[k.id] ?? 0), 0);
+                const totalEstOngkir = first.ekspedisi && totalDraftWeight > 0 ? ekspedisiPrice(first.ekspedisi, totalDraftWeight) : null;
+                const allWeighed = kolis.every((k) => (weightDraft[k.id] ?? 0) > 0);
+                return (
+                  <div key={groupKey} className="overflow-hidden rounded-md border border-border-subtle bg-white">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#F1F4F7] bg-[#F7F9FB] px-3 py-2 font-sans text-[11.5px] text-[#31414F]">
+                      <span className="font-mono font-semibold">{first.noResi || "—"}</span>
+                      <span>
+                        Ekspedisi: <span className="font-medium">{first.ekspedisi}</span>
+                      </span>
+                      {first.ekspedisiNoteAt && (
+                        <button onClick={() => viewEkspedisiPhoto(first.id)} className="font-semibold text-action-primary underline">
+                          Lihat / Download foto
                         </button>
                       )}
-                    </span>
-                    <button
-                      onClick={() => toggleKoliExpanded(k.id)}
-                      className="flex items-center gap-1 text-left font-sans text-xs text-[#31414F] hover:text-action-primary"
-                      title="Klik untuk lihat rincian isi koli per item"
-                    >
-                      {isExpanded ? (
-                        <ChevronDown className="h-3.5 w-3.5 flex-none text-text-muted" />
-                      ) : (
-                        <ChevronRight className="h-3.5 w-3.5 flex-none text-text-muted" />
-                      )}
-                      {summarizeItems(k.items)}
-                    </button>
-                    <span className="flex justify-end">
-                      <NumberInput value={berat} decimals={2} onChange={(v) => setWeightDraft((prev) => ({ ...prev, [k.id]: v }))} className="input w-[100px] text-right" />
-                    </span>
-                    <span className="text-right font-mono text-[11px] text-text-muted">{ongkir != null ? formatRupiah(ongkir) : "—"}</span>
-                    <span className="text-right">
-                      <Button onClick={() => editKoli(k)} variant="ghost" size="xs">
-                        Edit
-                      </Button>
-                    </span>
-                    <span className="text-right">
-                      <Button
-                        onClick={() => doDelivery(k.id)}
-                        disabled={!(berat > 0 && k.ekspedisi) || isPending(k.id)}
-                        title={!k.ekspedisi ? "Pilih ekspedisi dulu" : undefined}
-                        variant="success"
-                        size="xs"
-                      >
-                        {isPending(k.id) ? "Mengirim…" : "Delivery →"}
-                      </Button>
-                    </span>
-                  </div>
-                  {isExpanded && (
-                    <div className="border-b border-[#F1F4F7] bg-[#FAFBFC] px-4 py-3 last:border-b-0">
-                      <ItemsDetailPanel items={k.items} />
+                      <span className="ml-auto text-right font-mono text-text-muted">Estimasi ongkir grup: {totalEstOngkir != null ? formatRupiah(totalEstOngkir) : "—"}</span>
                     </div>
-                  )}
-                </Fragment>
-              );
-            })}
-          </div>
+                    {first.ekspedisiNote && <div className="border-b border-[#F1F4F7] px-3 py-1.5 font-sans text-[10.5px] text-text-muted">Catatan: {first.ekspedisiNote}</div>}
+                    <div className="grid grid-cols-6 gap-x-2 border-b border-[#F1F4F7] bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                      <span>No MRP</span>
+                      <span>No Koli</span>
+                      <span>Isi</span>
+                      <span className="text-right">Berat (kg)</span>
+                      <span className="text-right">Ongkir (porsi)</span>
+                      <span className="text-right">Edit</span>
+                    </div>
+                    {kolis.map((k) => {
+                      const isExpanded = expandedKoli.has(k.id);
+                      const myWeight = weightDraft[k.id] ?? 0;
+                      const myOngkirShare = totalEstOngkir != null && totalDraftWeight > 0 ? totalEstOngkir * (myWeight / totalDraftWeight) : null;
+                      return (
+                        <Fragment key={k.id}>
+                          <div className="grid grid-cols-6 items-center gap-x-2 border-b border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F] last:border-b-0">
+                            <span className="font-mono">{k.mrpId}</span>
+                            <span className="font-mono font-medium">{k.noKoli}</span>
+                            <button
+                              onClick={() => toggleKoliExpanded(k.id)}
+                              className="flex items-center gap-1 text-left font-sans text-xs text-[#31414F] hover:text-action-primary"
+                              title="Klik untuk lihat rincian isi koli per item"
+                            >
+                              {isExpanded ? <ChevronDown className="h-3.5 w-3.5 flex-none text-text-muted" /> : <ChevronRight className="h-3.5 w-3.5 flex-none text-text-muted" />}
+                              {summarizeItems(k.items)}
+                            </button>
+                            <span className="flex justify-end">
+                              <NumberInput value={myWeight} decimals={2} onChange={(v) => setWeightDraft((prev) => ({ ...prev, [k.id]: v }))} className="input w-[90px] text-right" />
+                            </span>
+                            <span className="text-right font-mono text-[11px] text-text-muted">{myOngkirShare != null ? formatRupiah(myOngkirShare) : "—"}</span>
+                            <span className="text-right">
+                              <Button onClick={() => editKoli(k)} variant="ghost" size="xs">
+                                Edit
+                              </Button>
+                            </span>
+                          </div>
+                          {isExpanded && (
+                            <div className="border-b border-[#F1F4F7] bg-[#FAFBFC] px-3 py-3 last:border-b-0">
+                              <ItemsDetailPanel items={k.items} />
+                            </div>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                    <div className="px-3 py-2.5">
+                      <Button onClick={() => doDeliveryGroup(groupKey, kolis)} disabled={!allWeighed || isPending(groupKey)} variant="success" size="xs">
+                        {isPending(groupKey) ? "Mengirim…" : `Delivery → (${kolis.length} koli)`}
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
       <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
         <div className="border-b border-border-subtle px-4 py-3 font-sans text-[13px] font-semibold text-text-primary">Riwayat pengiriman</div>
-        <div className="overflow-x-auto">
-          <div className="min-w-[1080px]">
-            <div className="grid grid-cols-8 gap-x-2 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
-              <span>No MRP</span>
-              <span>No Koli</span>
-              <span>Ekspedisi</span>
-              <span className="text-right">Berat (kg)</span>
-              <span className="text-right">Ongkir</span>
-              <span>Tanggal delivery</span>
-              <span>Catatan ekspedisi</span>
-              <span>Isi</span>
-            </div>
-            {delivered.length === 0 && <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">Belum ada koli terkirim.</div>}
-            {delivered.map((k) => {
-              const isExpanded = expandedKoli.has(k.id);
-              // Revisi 2026-09-10 (migration 0024): field manual "Ongkir batch ini" DIHAPUS --
-              // ongkir sekarang SELALU otomatis dari tarif ekspedisi × berat koli (formula SAMA
-              // dengan "Estimasi ongkir" di tabel "Koli belum dikirim" di atas), tidak ada lagi
-              // override manual/label "(manual)".
-              const ongkir = k.ekspedisi && (k.beratKoli ?? 0) > 0 ? ekspedisiPrice(k.ekspedisi, k.beratKoli ?? 0) : null;
+        {deliveredGroups.length === 0 ? (
+          <div className="px-4 py-6 text-center font-sans text-xs text-text-muted">Belum ada koli terkirim.</div>
+        ) : (
+          <div className="flex flex-col gap-3 px-4 py-3">
+            {deliveredGroups.map(([groupKey, kolis]) => {
+              const first = kolis[0];
+              const totalWeight = kolis.reduce((s, k) => s + (k.beratKoli ?? 0), 0);
+              const totalOngkir = kolis.reduce((s, k) => s + koliOngkirShare(k, deliveryKolis), 0);
+              const koliIds = kolis.map((k) => k.id);
+              const alreadyInvoiced = kolis.some((k) => k.resiInvoicedAt);
               return (
-                <Fragment key={k.id}>
-                  <div className="grid grid-cols-8 items-center gap-x-2 border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0">
-                    <span className="font-mono">{k.mrpId}</span>
-                    <span className="font-mono font-medium">{k.noKoli}</span>
-                    <span>{k.ekspedisi}</span>
-                    <span className="text-right font-mono">{formatDecimal(k.beratKoli ?? 0)}</span>
-                    <span className="text-right font-mono text-[11px]">{ongkir != null ? formatRupiah(ongkir) : "—"}</span>
-                    <span className="font-mono text-[11px] text-text-muted">{formatDate(k.deliveredAt)}</span>
-                    <span className="min-w-0">
-                      {k.ekspedisiNoteAt ? (
-                        <div className="flex flex-col gap-0.5">
-                          <span className="truncate text-[11px] text-[#31414F]" title={k.ekspedisiNote}>
-                            {k.ekspedisiNote}
-                          </span>
-                          <button onClick={() => viewEkspedisiPhoto(k.id)} className="text-left font-sans text-[10.5px] font-semibold text-action-primary underline">
-                            Lihat / Download foto
-                          </button>
-                        </div>
+                <div key={groupKey} className="overflow-hidden rounded-md border border-border-subtle bg-white">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#F1F4F7] bg-[#F7F9FB] px-3 py-2 font-sans text-[11.5px] text-[#31414F]">
+                    <span className="font-mono font-semibold">{first.noResi || "—"}</span>
+                    <span>
+                      Ekspedisi: <span className="font-medium">{first.ekspedisi}</span>
+                    </span>
+                    <span>
+                      Total berat: <span className="font-mono">{formatDecimal(totalWeight)} kg</span>
+                    </span>
+                    <span>
+                      Total ongkir: <span className="font-mono">{formatRupiah(totalOngkir)}</span>
+                    </span>
+                    <span className="font-mono text-[11px] text-text-muted">{formatDate(first.deliveredAt)}</span>
+                    {first.ekspedisiNoteAt && (
+                      <button onClick={() => viewEkspedisiPhoto(first.id)} className="font-semibold text-action-primary underline">
+                        Lihat / Download foto
+                      </button>
+                    )}
+                    <span className="ml-auto">
+                      {alreadyInvoiced ? (
+                        <span className="rounded-full bg-success-bg px-2.5 py-1 font-sans text-[10.5px] font-semibold text-success-fg">Sudah diinvoice</span>
                       ) : (
-                        <span className="font-sans text-[11px] text-text-muted">—</span>
+                        <Button onClick={() => openInvoiceDialog(koliIds)} variant="accent" size="xs">
+                          Submit Invoice →
+                        </Button>
                       )}
                     </span>
-                    <button
-                      onClick={() => toggleKoliExpanded(k.id)}
-                      className="flex items-center gap-1 text-left font-sans text-xs text-[#31414F] hover:text-action-primary"
-                      title="Klik untuk lihat rincian isi koli per item"
-                    >
-                      {isExpanded ? (
-                        <ChevronDown className="h-3.5 w-3.5 flex-none text-text-muted" />
-                      ) : (
-                        <ChevronRight className="h-3.5 w-3.5 flex-none text-text-muted" />
-                      )}
-                      {summarizeItems(k.items)}
-                    </button>
                   </div>
-                  {isExpanded && (
-                    <div className="border-b border-[#F1F4F7] bg-[#FAFBFC] px-4 py-3 last:border-b-0">
-                      <ItemsDetailPanel items={k.items} />
-                    </div>
-                  )}
-                </Fragment>
+                  {first.ekspedisiNote && <div className="border-b border-[#F1F4F7] px-3 py-1.5 font-sans text-[10.5px] text-text-muted">Catatan: {first.ekspedisiNote}</div>}
+                  <div className="grid grid-cols-5 gap-x-2 border-b border-[#F1F4F7] bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                    <span>No MRP</span>
+                    <span>No Koli</span>
+                    <span>Isi</span>
+                    <span className="text-right">Berat (kg)</span>
+                    <span className="text-right">Ongkir (porsi)</span>
+                  </div>
+                  {kolis.map((k) => {
+                    const isExpanded = expandedKoli.has(k.id);
+                    return (
+                      <Fragment key={k.id}>
+                        <div className="grid grid-cols-5 items-center gap-x-2 border-b border-[#F1F4F7] px-3 py-1.5 font-sans text-xs text-[#31414F] last:border-b-0">
+                          <span className="font-mono">{k.mrpId}</span>
+                          <span className="font-mono font-medium">{k.noKoli}</span>
+                          <button
+                            onClick={() => toggleKoliExpanded(k.id)}
+                            className="flex items-center gap-1 text-left font-sans text-xs text-[#31414F] hover:text-action-primary"
+                            title="Klik untuk lihat rincian isi koli per item"
+                          >
+                            {isExpanded ? <ChevronDown className="h-3.5 w-3.5 flex-none text-text-muted" /> : <ChevronRight className="h-3.5 w-3.5 flex-none text-text-muted" />}
+                            {summarizeItems(k.items)}
+                          </button>
+                          <span className="text-right font-mono">{formatDecimal(k.beratKoli ?? 0)}</span>
+                          <span className="text-right font-mono text-[11px] text-text-muted">{formatRupiah(koliOngkirShare(k, deliveryKolis))}</span>
+                        </div>
+                        {isExpanded && (
+                          <div className="border-b border-[#F1F4F7] bg-[#FAFBFC] px-3 py-3 last:border-b-0">
+                            <ItemsDetailPanel items={k.items} />
+                          </div>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </div>
               );
             })}
           </div>
-        </div>
+        )}
       </div>
 
-      {/* Item 2026-09-10 (migration 0024): dialog pilih ekspedisi -- catatan + foto lampiran
-         WAJIB diisi bareng ekspedisi, satu aksi atomik (setKoliEkspedisiAction). Pola dialog SAMA
-         PERSIS dialog klaim fisik di production-cutting-tab.tsx. */}
-      {ekspedisiDialogKoliId && (
+      {/* Item 2026-09-11 (migration 0026): dialog "Set Ekspedisi & Resi" -- sekarang beroperasi
+         pada >=1 koliIds, + field "No Resi" baru (terpisah dari catatan). */}
+      {ekspedisiDialogKoliIds && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0B131B]/45 p-4">
           <div className="w-full max-w-[480px] rounded-lg bg-white shadow-[0_8px_24px_rgba(11,19,27,.2)]">
             <div className="border-b border-border-subtle px-5 py-3.5">
-              <span className="font-sans text-[13px] font-semibold text-text-primary">Pilih ekspedisi</span>
+              <span className="font-sans text-[13px] font-semibold text-text-primary">Set Ekspedisi &amp; Resi — {ekspedisiDialogKoliIds.length} koli</span>
             </div>
             <div className="px-5 py-4">
               <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Ekspedisi</div>
@@ -770,11 +928,13 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                   </option>
                 ))}
               </select>
+              <div className="mt-3 font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">No Resi (wajib)</div>
+              <input value={noResiDraft} onChange={(e) => setNoResiDraft(e.target.value)} placeholder="Contoh: JX1234567890" className="input mt-1 w-full" />
               <div className="mt-3 font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Catatan ekspedisi (wajib)</div>
               <textarea
                 value={ekspedisiNoteDraft}
                 onChange={(e) => setEkspedisiNoteDraft(e.target.value)}
-                placeholder="Contoh: no resi, estimasi tiba, kontak ekspedisi..."
+                placeholder="Contoh: estimasi tiba, kontak ekspedisi..."
                 rows={3}
                 className="input mt-1 w-full"
               />
@@ -803,11 +963,70 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
               </button>
               <Button
                 onClick={submitEkspedisi}
-                disabled={!ekspedisiDraft || !ekspedisiNoteDraft.trim() || !ekspedisiPhotoDataUrl || ekspedisiSubmitting}
+                disabled={!ekspedisiDraft || !ekspedisiNoteDraft.trim() || !noResiDraft.trim() || !ekspedisiPhotoDataUrl || ekspedisiSubmitting}
                 variant="accent"
                 size="sm"
               >
-                {ekspedisiSubmitting ? "Menyimpan…" : "Simpan ekspedisi"}
+                {ekspedisiSubmitting ? "Menyimpan…" : "Simpan ekspedisi & resi"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Item 2026-09-11 (migration 0026): dialog "Submit Invoice" -- qty per baris OTOMATIS dari
+         isi koli grup ini (read-only di sini, dihitung ULANG server-side juga), rate pre-filled
+         dari default vendor tapi bisa diedit. */}
+      {invoiceDialogKoliIds && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0B131B]/45 p-4">
+          <div className="w-full max-w-[560px] rounded-lg bg-white shadow-[0_8px_24px_rgba(11,19,27,.2)]">
+            <div className="border-b border-border-subtle px-5 py-3.5">
+              <span className="font-sans text-[13px] font-semibold text-text-primary">Submit Invoice — {invoiceDialogKoliIds.length} koli</span>
+            </div>
+            <div className="px-5 py-4">
+              <div className="overflow-hidden rounded-md border border-[#E4E9EE]">
+                <div className="grid grid-cols-5 gap-x-2 bg-[#F2F5F8] px-3 py-1.5 font-sans text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                  <span>MRP</span>
+                  <span>Warna</span>
+                  <span>Lengan</span>
+                  <span className="text-right">Qty</span>
+                  <span className="text-right">Rate/pc</span>
+                </div>
+                {invoiceDialogLines.map((l) => {
+                  const key = invoiceLineKeyLocal(l.mrpId, l.warna, l.lengan, l.usia);
+                  return (
+                    <div key={key} className="grid grid-cols-5 items-center gap-x-2 border-t border-[#EEF1F4] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                      <span className="font-mono">{l.mrpId}</span>
+                      <span>
+                        {l.warna}
+                        {l.usia ? ` (${l.usia})` : ""}
+                      </span>
+                      <span>{l.lengan}</span>
+                      <span className="text-right font-mono">{l.qty} pcs</span>
+                      <span className="flex justify-end">
+                        <NumberInput
+                          value={invoiceRatesDraft[key] ?? 0}
+                          currency
+                          onChange={(v) => setInvoiceRatesDraft((prev) => ({ ...prev, [key]: Math.max(0, v) }))}
+                          className="input w-[110px] text-right"
+                        />
+                      </span>
+                    </div>
+                  );
+                })}
+                <div className="grid grid-cols-5 gap-x-2 border-t border-[#EEF1F4] bg-[#F7F9FB] px-3 py-1.5 font-sans text-[11.5px] font-semibold text-[#31414F]">
+                  <span className="col-span-4">Total invoice</span>
+                  <span className="text-right font-mono">{formatRupiah(invoiceDialogTotal)}</span>
+                </div>
+              </div>
+              {invoiceError && <div className="mt-2 font-sans text-[10.5px] text-danger-fg">{invoiceError}</div>}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-3.5">
+              <button onClick={closeInvoiceDialog} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-[7px] font-sans text-xs font-semibold text-action-primary">
+                Batal
+              </button>
+              <Button onClick={submitInvoiceConfirm} disabled={invoiceSubmitting} variant="accent" size="sm">
+                {invoiceSubmitting ? "Mengirim…" : "Submit Invoice"}
               </Button>
             </div>
           </div>

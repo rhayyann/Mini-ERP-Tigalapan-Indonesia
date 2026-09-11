@@ -106,6 +106,7 @@ function InvoiceLinesDetail({
                 deliveredAt={g.deliveredAt}
                 ekspedisiNote={g.ekspedisiNote}
                 ekspedisiNoteAt={g.ekspedisiNoteAt}
+                noResi={g.noResi}
                 vendorName={vendorName}
               />
               <table className="w-full border-collapse overflow-hidden rounded border border-[#EEF1F4]">

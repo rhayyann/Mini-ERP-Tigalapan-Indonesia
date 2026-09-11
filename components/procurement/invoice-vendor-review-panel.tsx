@@ -394,6 +394,7 @@ export function InvoiceVendorReviewPanel() {
                             deliveredAt={g.deliveredAt}
                             ekspedisiNote={g.ekspedisiNote}
                             ekspedisiNoteAt={g.ekspedisiNoteAt}
+                            noResi={g.noResi}
                           />
                         ))}
                       </div>

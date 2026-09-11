@@ -403,11 +403,26 @@ export type DeliveryKoli = {
   sourceBatchIds?: string[];
   /** Item 2026-09-10 (feedback: "Saat pilih ekspedisi juga nanti akan ada input gambar lampiran
    *  (note dari ekspedisi)"): keterangan WAJIB diisi bareng `ekspedisi` (satu aksi atomik, lihat
-   *  setKoliEkspedisiAction) -- byte foto lampirannya sendiri TIDAK ikut sini (lihat
+   *  setKoliEkspedisiResiGroupAction sejak migration 0026 -- dulu setKoliEkspedisiAction, sudah
+   *  dihapus) -- byte foto lampirannya sendiri TIDAK ikut sini (lihat
    *  delivery_koli_ekspedisi_photos, migration 0024, pola sama material_claim_photos), cuma flag
-   *  `ekspedisiNoteAt` yang menandakan ada/tidaknya. */
+   *  `ekspedisiNoteAt` yang menandakan ada/tidaknya. Sejak migration 0026, No Resi TIDAK lagi
+   *  digabung di sini -- lihat `noResi` terpisah di bawah. */
   ekspedisiNote?: string;
   ekspedisiNoteAt?: string;
+  /** Item 2026-09-11 (feedback: "Checkbox Koli yang mau dikirim (disamakan ekspedisinya - jadi
+   *  satu resi)", migration 0026) -- menyatukan >=1 koli yang dikirim bareng lewat SATU aksi "Set
+   *  Ekspedisi & Resi" (lihat setKoliEkspedisiResiGroupAction). SETIAP koli (termasuk yang dikirim
+   *  sendirian) SELALU dapat resiGroupId begitu ekspedisinya di-set -- "grup isi 1" adalah kasus
+   *  NORMAL (bukan jalur khusus terpisah) di semua perhitungan yang baca field ini, lihat
+   *  koliOngkirShare (lib/mrp/derive.ts). Kosong untuk koli LAMA (sebelum migration 0026). */
+  resiGroupId?: string;
+  /** Nomor resi/tracking dari ekspedisi -- dulu tergabung bebas di `ekspedisiNote` (migration
+   *  0024), sekarang field tersendiri (migration 0026). */
+  noResi?: string;
+  /** Menandai grup resi ini (semua koli dgn resiGroupId yang sama) SUDAH pernah dibuatkan invoice
+   *  vendor lewat "Submit Invoice" (lihat submitResiGroupInvoiceAction) -- mencegah submit dobel. */
+  resiInvoicedAt?: string;
 };
 
 export type VendorInvoiceLine = { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; qty: number; ratePerPc: number; amount: number };

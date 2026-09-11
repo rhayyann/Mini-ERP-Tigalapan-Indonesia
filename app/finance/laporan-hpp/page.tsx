@@ -1,14 +1,48 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import * as XLSX from "xlsx";
 import { AppShell } from "@/components/shell/app-shell";
 import { KpiCard } from "@/components/ui/kpi-card";
+import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
 import { formatPcs, formatRupiah, hppRowsForInvoicePerRoll, type HppRow } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
 type HppTableRow = HppRow & { rowId: string };
+
+/** Item 2026-09-11 (feedback: "Tambahkan fitur download lampiran HPP (Per no MRP)") -- export
+ *  Excel dari `itemRows` (HppRow[], SUDAH dihitung lewat hppRowsForInvoicePerRoll -- granularitas
+ *  per roll/koli, lebih detail dari lampiran invoice lama di Procurement) untuk 1 baris
+ *  MRP+vendor, TANPA menghitung ulang apa pun -- pola export SAMA PERSIS
+ *  `exportInvoiceLampiranExcel`/`downloadInvoiceLampiran` di
+ *  components/procurement/invoice-vendor-review-panel.tsx (SheetJS json_to_sheet + writeFile),
+ *  cuma sumber datanya beda (baris HPP per MRP di halaman ini, bukan per invoice). */
+function exportMrpHppExcel(m: MrpHppSummary): XLSX.WorkSheet {
+  const rows = m.itemRows.map((d) => ({
+    MRP: d.mrpLabel,
+    "WARNA / LENGAN": `${d.warna} · ${d.lengan}`,
+    ITEM: d.item,
+    "BATCH KOLI": d.noKoli ?? "—",
+    FG: d.fg,
+    REJECT: d.reject,
+    REWORK: d.rework,
+    "YIELD (%)": Number(d.yieldPct.toFixed(1)),
+    "BIAYA PRODUKSI/ITEM": Math.round(d.biayaProduksiPerItem),
+    "COGS BAHAN/ITEM": Math.round(d.cogsBahanPerItem),
+    "ONGKIR/ITEM": Math.round(d.ongkirPerItem),
+    "HPP/ITEM": Math.round(d.hppPerItem),
+  }));
+  return XLSX.utils.json_to_sheet(rows);
+}
+
+function downloadMrpHpp(m: MrpHppSummary) {
+  const wb = XLSX.utils.book_new();
+  const ws = exportMrpHppExcel(m);
+  XLSX.utils.book_append_sheet(wb, ws, "HPP");
+  XLSX.writeFile(wb, `HPP-${m.mrpId}-${m.vendorProduksi}.xlsx`);
+}
 
 type MrpHppSummary = {
   mrpId: string;
@@ -152,6 +186,18 @@ export default function FinanceLaporanHppPage() {
     { key: "biayaProduksi", label: "Total Biaya Produksi", default: true, align: "right", render: (m) => formatRupiah(m.totalBiayaProduksi) },
     { key: "cogsBahan", label: "Total COGS Bahan", default: true, align: "right", render: (m) => formatRupiah(m.totalCogsBahan) },
     { key: "ongkir", label: "Total Ongkir", default: true, align: "right", render: (m) => formatRupiah(m.totalOngkir) },
+    {
+      key: "download",
+      label: "Lampiran",
+      default: true,
+      render: (m) => (
+        <span onClick={(e) => e.stopPropagation()}>
+          <Button onClick={() => downloadMrpHpp(m)} variant="ghost" size="xs">
+            Download
+          </Button>
+        </span>
+      ),
+    },
   ];
 
   return (
