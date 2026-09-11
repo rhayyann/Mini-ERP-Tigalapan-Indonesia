@@ -7,10 +7,17 @@ import { KpiCard } from "@/components/ui/kpi-card";
 import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatPcs, formatRupiah, hppRowsForInvoicePerRoll, type HppRow } from "@/lib/mrp/derive";
+import { formatDate, formatPcs, formatRupiah, hppRowsForInvoicePerRoll, type HppRow } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
+import type { DeliveryKoli } from "@/lib/mrp/types";
 
-type HppTableRow = HppRow & { rowId: string };
+/** Item 2026-09-11 (user-reported: "Batch koli" cuma label bebas yang diketik vendor, TIDAK
+ *  dijamin unik -- kalau 2 koli FISIK berbeda kebetulan/sengaja dinamai sama, mis. "1", 2 baris
+ *  breakdown ini kelihatan seperti duplikat padahal itu 2 pengiriman beda tanggal/resi). Tambah
+ *  `tanggalKirim`/`noResi` (lookup `koliId` -> DeliveryKoli, dihitung SEKALI saat membangun `rows`
+ *  supaya tabel & export Excel pakai nilai yang sama persis) supaya 2 baris begitu tetap bisa
+ *  dibedakan tanpa pindah ke halaman Payment Maklon > Lampiran ekspedisi. */
+type HppTableRow = HppRow & { rowId: string; tanggalKirim?: string; noResi?: string };
 
 /** Item 2026-09-11 (feedback: "Tambahkan fitur download lampiran HPP (Per no MRP)") -- export
  *  Excel dari `itemRows` (HppRow[], SUDAH dihitung lewat hppRowsForInvoicePerRoll -- granularitas
@@ -25,6 +32,8 @@ function exportMrpHppExcel(m: MrpHppSummary): XLSX.WorkSheet {
     "WARNA / LENGAN": `${d.warna} · ${d.lengan}`,
     ITEM: d.item,
     "BATCH KOLI": d.noKoli ?? "—",
+    "TANGGAL KIRIM": d.tanggalKirim ? formatDate(d.tanggalKirim) : "—",
+    "NO RESI": d.noResi ?? "—",
     FG: d.fg,
     REJECT: d.reject,
     REWORK: d.rework,
@@ -67,12 +76,14 @@ type MrpHppSummary = {
 function MrpHppDetailTable({ rows }: { rows: HppTableRow[] }) {
   return (
     <div className="overflow-x-auto rounded-md border border-[#E4E9EE] bg-white">
-      <table className="w-full min-w-[980px] border-collapse">
+      <table className="w-full min-w-[1180px] border-collapse">
         <thead>
           <tr className="border-b border-[#E4E9EE] bg-[#F2F5F8] font-sans text-[10px] font-semibold uppercase tracking-wider text-text-muted">
             <th className="px-3 py-2 text-left">Warna / lengan</th>
             <th className="px-3 py-2 text-left">Item</th>
             <th className="px-3 py-2 text-left">Batch koli</th>
+            <th className="px-3 py-2 text-left">Tanggal kirim</th>
+            <th className="px-3 py-2 text-left">No resi</th>
             <th className="px-3 py-2 text-right">FG</th>
             <th className="px-3 py-2 text-right">Reject</th>
             <th className="px-3 py-2 text-right">Rework</th>
@@ -91,6 +102,8 @@ function MrpHppDetailTable({ rows }: { rows: HppTableRow[] }) {
               </td>
               <td className="px-3 py-1.5">{r.item}</td>
               <td className="px-3 py-1.5 font-mono text-text-muted">{r.noKoli ?? "—"}</td>
+              <td className="px-3 py-1.5 font-mono text-text-muted">{r.tanggalKirim ? formatDate(r.tanggalKirim) : "—"}</td>
+              <td className="px-3 py-1.5 font-mono text-text-muted">{r.noResi ?? "—"}</td>
               <td className="px-3 py-1.5 text-right font-mono">{formatPcs(r.fg)}</td>
               <td className="px-3 py-1.5 text-right font-mono">{formatPcs(r.reject)}</td>
               <td className="px-3 py-1.5 text-right font-mono text-rework-fg">{formatPcs(r.rework)}</td>
@@ -131,11 +144,12 @@ export default function FinanceLaporanHppPage() {
   // Roll" -- lalu fallback OTOMATIS ke perhitungan pool lama (dengan ongkir auto-hitung tarif
   // ekspedisi seperti sebelumnya) per baris invoice yang grupnya belum py roll ber-closedAt (MRP
   // lama, sebelum fitur ini ada), jadi histori tidak hilang/kosong.
+  const kolisById = new Map<string, DeliveryKoli>(deliveryKolis.map((k) => [k.id, k]));
   const rows: HppTableRow[] = relevantInvoices.flatMap((inv) =>
-    hppRowsForInvoicePerRoll(inv, relevantInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis).map((r, i) => ({
-      ...r,
-      rowId: inv.id + "-" + i,
-    }))
+    hppRowsForInvoicePerRoll(inv, relevantInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis).map((r, i) => {
+      const koli = r.koliId ? kolisById.get(r.koliId) : undefined;
+      return { ...r, rowId: inv.id + "-" + i, tanggalKirim: koli?.deliveredAt, noResi: koli?.noResi };
+    })
   );
 
   const totalFg = rows.reduce((s, r) => s + r.fg, 0);
