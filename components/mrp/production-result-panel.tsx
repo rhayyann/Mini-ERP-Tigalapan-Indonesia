@@ -470,28 +470,55 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                             </div>
                           );
                         })()}
-                        {/* Nice-to-have (item 15): status roll read-only untuk transparansi --
-                           bukan lagi tempat input, murni menunjukkan hasil pemetaan otomatis dari
-                           isian by size di atas. Detail per-roll lengkap tetap ada di Pengiriman. */}
+                        {/* Status roll read-only untuk transparansi soal isian by size di atas,
+                           TAPI kolom Aksi tetap ada -- "Tutup Roll" manual (bug fix 2026-09-11,
+                           user-reported: sejak item 15 menghapus tombol tutup-roll-manual, roll
+                           HANYA bisa tertutup kalau FG mencapai 100% hasil cutting-nya, jadi
+                           reject = cutting aktual - FG SELALU 0 begitu "Selesai Produksi" bisa
+                           diklik -- lebih parah, grup dengan reject sungguhan tidak akan PERNAH
+                           bisa "Selesai Produksi" sama sekali karena rollnya tidak akan pernah
+                           capai 100%). Tombol ini menutup roll dengan FG APA ADANYA sekarang
+                           (closeProductionBatchAction tidak pernah mensyaratkan FG=target, itu
+                           murni gate sisi UI yang dihapus -- lihat komentar di atas) -- sisa
+                           selisih cutting-vs-FG roll ini otomatis terhitung reject saat grup
+                           di-"Selesai Produksi"-kan (recomputeAutoRejectForGroup, actions.ts). */}
                         {groupBatches.length > 0 && (
                           <div className="mt-3 overflow-hidden rounded-md border border-[#EEF1F4] bg-white">
-                            <div className="grid grid-cols-3 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                            <div className="grid grid-cols-4 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                               <span>Roll</span>
                               <span className="text-right">FG / hasil cutting</span>
                               <span className="text-right">Status</span>
+                              <span className="text-right">Aksi</span>
                             </div>
                             {groupBatches.map((b) => {
                               const rollTarget = b.sizeQty ?? {};
                               const totalTarget = Object.values(rollTarget).reduce((a, c) => a + c, 0);
                               const totalFg = Object.values(b.fgSizeQty ?? {}).reduce((a, c) => a + c, 0);
+                              const closeKey = "close-" + b.id;
                               return (
-                                <div key={b.id} className="grid grid-cols-3 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                                <div key={b.id} className="grid grid-cols-4 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
                                   <span className="font-mono">{b.codeRoll || b.id}</span>
                                   <span className="text-right font-mono">
                                     {totalFg} / {totalTarget}
                                   </span>
                                   <span className="text-right">
                                     {b.closedAt ? <StatusPill tone="success">Ditutup</StatusPill> : <StatusPill tone="neutral">Terbuka</StatusPill>}
+                                  </span>
+                                  <span className="text-right">
+                                    {!b.closedAt && (
+                                      <button
+                                        onClick={() => runAction(closeKey, closeProductionBatch(b.id, b.fgSizeQty ?? {}))}
+                                        disabled={isPending(closeKey)}
+                                        title={
+                                          totalFg < totalTarget
+                                            ? `Sisa ${totalTarget - totalFg} pcs roll ini akan tercatat reject saat grup "Selesai Produksi".`
+                                            : undefined
+                                        }
+                                        className="font-sans text-[10.5px] font-semibold text-action-primary underline disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        {isPending(closeKey) ? "Menutup…" : "Tutup Roll"}
+                                      </button>
+                                    )}
                                   </span>
                                 </div>
                               );
