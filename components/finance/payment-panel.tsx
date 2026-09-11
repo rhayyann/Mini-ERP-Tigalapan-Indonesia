@@ -104,6 +104,9 @@ export function PaymentPanel() {
   // seleksi berikutnya yang beda supplier/tagihan.
   const [depositAmount, setDepositAmount] = useState(0);
   const [showDepositDetail, setShowDepositDetail] = useState(false);
+  // B2: increment ini setelah "Bayar" sukses untuk memaksa DataTable menutup baris yang sedang
+  // ter-expand (lihat collapseSignal di data-table.tsx) -- TIDAK mereset filter/kolom tabel.
+  const [collapseSignal, setCollapseSignal] = useState(0);
 
   if (!mounted) return null;
 
@@ -206,6 +209,10 @@ export function PaymentPanel() {
     setProofFileName(undefined);
     setProofError("");
     setDepositAmount(0);
+    // B2: seluruh await di atas sukses (tidak throw) -- picu auto-collapse baris yang sedang
+    // ter-expand (lihat collapseSignal di data-table.tsx). Kalau salah satu await di atas throw,
+    // fungsi ini berhenti lebih awal & baris tidak (t)erkolaps.
+    setCollapseSignal((v) => v + 1);
   }
 
   // Round-3 fix (Reviewer should-fix #2): "Ganti"/"Upload" dulu langsung setUploadingFor(i.id)
@@ -539,6 +546,7 @@ export function PaymentPanel() {
           { label: "Status", options: Array.from(new Set(invoices.map((i) => i.status))), test: (i, v) => i.status === v },
         ]}
         emptyText="Belum ada invoice. Input di halaman Paying Voucher (Invoice) terlebih dahulu."
+        collapseSignal={collapseSignal}
         // Item revisi 2026-09-06: klik baris untuk lihat detail material (rincian per warna + add
         // buy) DAN detail maklon (biaya PO Produksi terkait) sekaligus, supaya Finance bisa lihat
         // apa yang sebenarnya harus dibayar tanpa pindah halaman.

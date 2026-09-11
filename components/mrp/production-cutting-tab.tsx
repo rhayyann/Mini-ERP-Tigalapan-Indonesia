@@ -151,6 +151,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const materialClaimReturRequests = useMrpStore((s) => s.materialClaimReturRequests);
   const materialClaimReturDeliveries = useMrpStore((s) => s.materialClaimReturDeliveries);
   const materialClaimReturReceipts = useMrpStore((s) => s.materialClaimReturReceipts);
+  // Flow bertahap 2026-09-11 (C1 di spec) -- dipakai hanya untuk teks banner (KLAIM_DITERIMA /
+  // PV_DIBUAT), TIDAK mengubah `locked`/`unlockedForReweigh` sama sekali.
+  const materialClaimAcceptances = useMrpStore((s) => s.materialClaimAcceptances);
+  const materialClaimReplacements = useMrpStore((s) => s.materialClaimReplacements);
   const confirmMaterialClaimReturReceived = useMrpStore((s) => s.confirmMaterialClaimReturReceived);
 
   const [selectedMrpId, setSelectedMrpId] = useState("");
@@ -429,7 +433,15 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const claimReasonByKey = new Map(claimsList.map((c) => [c.key, c.reason]));
   function isRowLocked(r: PendingWeighRoll): boolean {
     const key = weighKey(r);
-    const stage: MaterialClaimStage = materialClaimStage(key, materialClaimResolutions, materialClaimReturRequests, materialClaimReturDeliveries, materialClaimReturReceipts);
+    const stage: MaterialClaimStage = materialClaimStage(
+      key,
+      materialClaimResolutions,
+      materialClaimReturRequests,
+      materialClaimReturDeliveries,
+      materialClaimReturReceipts,
+      materialClaimReplacements,
+      materialClaimAcceptances
+    );
     const hasActiveClaim = activeClaimKeys.has(key) && stage !== "SELESAI";
     return hasActiveClaim && stage !== "RETUR_DITERIMA";
   }
@@ -842,7 +854,9 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                   materialClaimResolutions,
                   materialClaimReturRequests,
                   materialClaimReturDeliveries,
-                  materialClaimReturReceipts
+                  materialClaimReturReceipts,
+                  materialClaimReplacements,
+                  materialClaimAcceptances
                 );
                 const hasActiveClaim = activeClaimKeys.has(key) && stage !== "SELESAI";
                 const locked = hasActiveClaim && stage !== "RETUR_DITERIMA";
@@ -870,6 +884,18 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                   RETUR_DITERIMA: {
                     tone: "bg-success-bg text-success-fg",
                     text: "Roll pengganti sudah dikonfirmasi diterima — silakan timbang & ganti code roll di bawah kalau perlu, lalu Simpan.",
+                  },
+                  // C1 (flow bertahap 2026-09-11): dua stage baru, sama-sama terkunci (tidak ada
+                  // perubahan mekanisme timbang/unlock, lihat komentar `locked` di atas) -- roll
+                  // pengganti masuk lewat Good Receive sebagai roll BARU dari invoice PV pengganti,
+                  // bukan lewat unlock roll lama ini.
+                  KLAIM_DITERIMA: {
+                    tone: "bg-info-bg text-info-fg",
+                    text: "Klaim sudah diterima Procurement — menunggu PV pengganti dibuat. Roll ini masih terkunci.",
+                  },
+                  PV_DIBUAT: {
+                    tone: "bg-info-bg text-info-fg",
+                    text: "PV pengganti sudah dibuat Procurement — roll pengganti akan datang sebagai roll BARU di Good Receive (code roll diisi di sana). Roll ini masih terkunci.",
                   },
                 };
                 return (

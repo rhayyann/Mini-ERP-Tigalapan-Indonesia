@@ -1764,6 +1764,33 @@ async function fetchOneInvoiceForClaims(db: SupabaseClient, invoiceId: string): 
   };
 }
 
+/** Step 1 flow klaim bertahap (2026-09-11): Procurement "Terima Klaim" -- gerbang wajib sebelum
+ *  "Buat PV Pengganti" bisa dipakai (lihat gate baru di createClaimReplacementInvoiceAction).
+ *  Tanpa notifikasi, tanpa catatan tambahan -- murni penanda "sudah dilihat/ditindaklanjuti". */
+export async function acceptMaterialClaimAction(key: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "procurement");
+  const parsed = parseClaimKey(key);
+  if (!parsed) return;
+  const db = supabaseServer();
+  const { error } = await db
+    .from("raw_material_invoice_rolls")
+    .update({ claim_accepted_at: today() })
+    .eq("invoice_color_id", parsed.invoiceColorId)
+    .eq("roll_index", parsed.rollIndex);
+  if (error) throw new Error(error.message);
+  try {
+    const openId = await findOpenClaimHistoryId(db, parsed.invoiceId, parsed.warna, parsed.lengan, parsed.rollIndex);
+    if (openId) await db.from("material_claim_history").update({ accepted_at: today() }).eq("id", openId);
+  } catch {
+    // arsip opsional.
+  }
+}
+
+/** @deprecated — jalur lama, tidak lagi dipicu dari UI sejak flow bertahap 2026-09-11 (Terima
+ *  Klaim -> Buat PV Pengganti -> Tandai Sudah Dikirim, lihat acceptMaterialClaimAction &
+ *  markClaimReplacementShippedAction). Dibiarkan hidup APA ADANYA (tidak dihapus) supaya klaim
+ *  yang masih in-flight di stage RETUR_DIMINTA/RETUR_DIKIRIM/RETUR_DITERIMA dari sebelum flow ini
+ *  tetap bisa diselesaikan lewat jalur lamanya -- lihat keputusan desain D1 di spec. */
 export async function requestMaterialClaimReturAction(key: string, note: string): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
   const parsed = parseClaimKey(key);
@@ -1802,6 +1829,23 @@ export async function cancelMaterialClaimReturRequestAction(key: string): Promis
     .update({ claim_retur_note: null, claim_retur_requested_at: null, claim_retur_delivered_note: null, claim_retur_delivered_at: null, claim_retur_received_at: null })
     .eq("invoice_color_id", parsed.invoiceColorId)
     .eq("roll_index", parsed.rollIndex);
+  // A9 (flow bertahap 2026-09-11): ikut me-null-kan progres tahap "diterima Procurement -> PV
+  // pengganti dibuat", konsisten dengan semantik "Batalkan mereset SELURUH progres" di atas. Ini
+  // TIDAK menghapus invoice PV pengganti yang sudah terlanjur dibuat (claim_replacement_invoice_id)
+  // maupun baris vendor_deposits terkait -- keduanya harus diurus manual, UI menampilkan konfirmasi
+  // soal ini sebelum memanggil action ini (lihat cancelMaterialClaimReturRequest di store.ts).
+  // Query TERPISAH dari update legacy di atas & dibungkus try/catch (soft-fail) supaya "Batalkan"
+  // untuk klaim retur legacy TETAP jalan apa adanya sebelum migration 0028 (kolom baru ini) di-apply
+  // user -- kalau kolomnya belum ada, Supabase akan menolak seluruh update kalau digabung 1 query.
+  try {
+    await db
+      .from("raw_material_invoice_rolls")
+      .update({ claim_accepted_at: null, claim_replacement_invoice_id: null, claim_replacement_at: null })
+      .eq("invoice_color_id", parsed.invoiceColorId)
+      .eq("roll_index", parsed.rollIndex);
+  } catch {
+    // kolom belum ada (migration 0028 belum di-apply) -- abaikan, bukan bagian wajib dari "Batalkan".
+  }
   try {
     const openId = await findOpenClaimHistoryId(db, parsed.invoiceId, parsed.warna, parsed.lengan, parsed.rollIndex);
     if (openId) await db.from("material_claim_history").update({ retur_note: null, retur_requested_at: null, retur_delivered_note: null, retur_delivered_at: null, retur_received_at: null }).eq("id", openId);
@@ -1813,6 +1857,8 @@ export async function cancelMaterialClaimReturRequestAction(key: string): Promis
 /** Procurement menandai roll pengganti (hasil "Minta Retur") sudah dikirim ke vendor -- biasanya
  *  dipicu setelah supplier mengabari lewat WA. Tahap antara "Retur diminta" dan vendor benar2
  *  timbang ulang di Cutting, supaya progresnya kelihatan di ERP bukan cuma di chat WA. */
+/** @deprecated — jalur lama, tidak lagi dipicu dari UI sejak flow bertahap 2026-09-11. Lihat
+ *  komentar @deprecated di requestMaterialClaimReturAction & keputusan desain D1 di spec. */
 export async function markMaterialClaimReturDeliveredAction(key: string, note?: string): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
   const parsed = parseClaimKey(key);
@@ -1845,6 +1891,10 @@ export async function markMaterialClaimReturDeliveredAction(key: string, note?: 
 /** Vendor mengonfirmasi roll pengganti (hasil "Minta Retur") sudah diterima secara fisik --
  *  dicatat terpisah dari timbang ulang (net_kg) karena konfirmasi terima bisa duluan sebelum
  *  sempat ditimbang. Tombolnya ada di halaman Produksi > Cutting, section "Timbang roll". */
+/** @deprecated — jalur lama, tidak lagi dipicu dari UI sejak flow bertahap 2026-09-11. Lihat
+ *  komentar @deprecated di requestMaterialClaimReturAction & keputusan desain D1 di spec. Tombol
+ *  "Tandai Diterima" di production-cutting-tab.tsx TETAP memanggil ini -- satu-satunya jalur
+ *  keluar untuk klaim yang sudah terlanjur di stage RETUR_DIKIRIM dari sebelum flow ini. */
 export async function confirmMaterialClaimReturReceivedAction(key: string): Promise<void> {
   const vendorId = await requireVendorSession();
   const parsed = parseClaimKey(key);
@@ -1905,6 +1955,27 @@ export async function createClaimReplacementInvoiceAction(
   if (!parsed) throw new Error("Klaim tidak valid.");
   if (!(rateBaru > 0) || !(beratBaruKg > 0)) throw new Error("Rate & berat roll pengganti harus lebih dari 0.");
   const db = supabaseServer();
+
+  // A7 (flow bertahap 2026-09-11): step 1 ("Terima Klaim", lihat acceptMaterialClaimAction) wajib
+  // dulu sebelum PV pengganti bisa dibuat -- ditegakkan di server, bukan sekadar sembunyikan
+  // tombol di UI (pola sama seperti gate klaim aktif di receiveRawMaterialRollAction:1160-1164).
+  // Kalau kolom `claim_accepted_at` belum ada sama sekali (migration 0028 belum di-apply user),
+  // query di bawah akan gagal & `rollRow` jadi null/undefined -- jatuh ke pesan error yang sama,
+  // bukan crash React minified.
+  // Klaim LEGACY (dibuat sebelum flow bertahap ini ada, sudah di salah satu stage retur fisik
+  // RETUR_DIMINTA/RETUR_DIKIRIM/RETUR_DITERIMA) tidak pernah punya cara mengisi `claim_accepted_at`
+  // dari UI -- tombol "Terima Klaim" cuma ada untuk klaim yang masih di stage BELUM. Anggap klaim
+  // yang sudah sampai retur diminta (`claim_retur_requested_at` terisi) implicitly "sudah diterima
+  // Procurement", karena Procurement pasti sudah melihat lampirannya sebelum meminta retur.
+  const { data: rollRow } = await db
+    .from("raw_material_invoice_rolls")
+    .select("claim_accepted_at, claim_retur_requested_at")
+    .eq("invoice_color_id", parsed.invoiceColorId)
+    .eq("roll_index", parsed.rollIndex)
+    .maybeSingle();
+  if (!rollRow?.claim_accepted_at && !rollRow?.claim_retur_requested_at) {
+    throw new Error("Klaim ini belum diterima Procurement — klik 'Terima Klaim' dulu.");
+  }
 
   const openId = await findOpenClaimHistoryId(db, parsed.invoiceId, parsed.warna, parsed.lengan, parsed.rollIndex);
   if (!openId) throw new Error("Klaim ini tidak ditemukan di arsip atau sudah selesai -- tidak bisa dibuat PV pengganti.");
@@ -2008,18 +2079,21 @@ export async function createClaimReplacementInvoiceAction(
     if (mrpRow && !mrpRow.first_payment_at) await db.from("mrp").update({ first_payment_at: today() }).eq("id", claimRow.mrp_id);
   }
 
-  await db.from("material_claim_history").update({ resolution_kind: "RETUR_REORDER", resolved_at: today(), replacement_invoice_id: invoiceId }).eq("id", openId);
+  // A7 (flow bertahap 2026-09-11): `resolved_at` arsip TIDAK ditulis di sini lagi -- klaim baru
+  // benar-benar SELESAI (arsip tertutup) di step 3 ("Tandai Sudah Dikirim", lihat
+  // markClaimReplacementShippedAction), bukan begitu PV pengganti dibuat.
+  await db.from("material_claim_history").update({ resolution_kind: "RETUR_REORDER", replacement_invoice_id: invoiceId }).eq("id", openId);
 
-  // Item 3 (feedback batch 2026-09-07): sebelumnya cuma arsip (di atas) yang ditutup -- kolom LIVE
-  // `raw_material_invoice_rolls.claim_resolved_at` (yang benar-benar dibaca `materialClaimStage`
-  // via `materialClaimResolutions`, lihat repo/snapshot.ts) tidak pernah disentuh, jadi roll LAMA
-  // yang sudah diklaim tetap nyangkut selamanya di daftar "Timbang roll" Cutting (lihat
-  // pendingWeighRolls di derive.ts) meski PV penggantinya sudah dibuat -- munculnya sebagai
-  // "duplikat" 2 roll yang dilaporkan owner. Update ini pakai pola SAMA PERSIS seperti
-  // resolveMaterialClaimAction supaya sumber kebenarannya tetap satu.
+  // Item 3 (feedback batch 2026-09-07), direvisi A7 (flow bertahap 2026-09-11): dulu langsung
+  // menulis `claim_resolved_at` di sini (roll LAMA langsung dianggap SELESAI begitu PV pengganti
+  // dibuat) -- itu penyebab akar keluhan user (PV pengganti auto-LUNAS tapi tidak pernah di-set
+  // DELIVERY, roll pengganti tidak pernah sampai ke Good Receive vendor). Sekarang cuma menulis
+  // `claim_replacement_invoice_id`/`claim_replacement_at` -- stage klaim ini jadi PV_DIBUAT (bukan
+  // SELESAI), roll LAMA TETAP muncul di "Timbang roll" Cutting sampai step 3 (lihat C3 di spec)
+  // menutupnya bersamaan dengan set invoice ke DELIVERY, supaya tidak pernah ada duplikat 2 roll.
   await db
     .from("raw_material_invoice_rolls")
-    .update({ claim_resolved_note: `Diganti PV ${invoiceId}`, claim_resolved_at: today() })
+    .update({ claim_replacement_invoice_id: invoiceId, claim_replacement_at: today() })
     .eq("invoice_color_id", parsed.invoiceColorId)
     .eq("roll_index", parsed.rollIndex);
 
@@ -2035,6 +2109,54 @@ export async function createClaimReplacementInvoiceAction(
   );
 
   return invoiceId;
+}
+
+/** Step 3 flow klaim bertahap (2026-09-11): Procurement "Tandai Sudah Dikirim" -- SATU klik yang
+ *  melakukan DUA hal sekaligus (keputusan desain D3 di spec, sengaja tidak dipecah jadi 2 aksi
+ *  UI terpisah -- itulah akar keluhan user, langkah kedua selalu terlupa):
+ *  (a) memindahkan invoice PV pengganti dari PAID ke DELIVERY (logika sama persis
+ *  setInvoicesDeliveryAction) supaya roll pengganti langsung muncul di Good Receive vendor untuk
+ *  diisi code roll barunya, lalu
+ *  (b) menutup klaim (roll LAMA jadi SELESAI + arsip ditutup) -- lihat C3 di spec kenapa urutan
+ *  ini (DELIVERY dulu baru resolve, dalam SATU transaksi/aksi) mencegah roll lama & roll pengganti
+ *  tampil dobel di Cutting. */
+export async function markClaimReplacementShippedAction(key: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "procurement");
+  const parsed = parseClaimKey(key);
+  if (!parsed) throw new Error("Klaim tidak valid.");
+  const db = supabaseServer();
+
+  const { data: rollRow } = await db
+    .from("raw_material_invoice_rolls")
+    .select("claim_replacement_invoice_id")
+    .eq("invoice_color_id", parsed.invoiceColorId)
+    .eq("roll_index", parsed.rollIndex)
+    .maybeSingle();
+  const replacementInvoiceId: string | null = rollRow?.claim_replacement_invoice_id ?? null;
+  if (!replacementInvoiceId) throw new Error("Klaim ini belum punya PV pengganti.");
+
+  const { data: replInv } = await db.from("raw_material_invoices").select("id,status").eq("id", replacementInvoiceId).maybeSingle();
+  if (!replInv) throw new Error(`PV pengganti ${replacementInvoiceId} tidak ditemukan.`);
+  if (replInv.status === "PAID") {
+    await db.from("raw_material_invoices").update({ status: "DELIVERY", delivered_at: today() }).eq("id", replInv.id);
+  } else if (replInv.status === "INVOICED") {
+    throw new Error(`PV pengganti ${replInv.id} belum dibayar Finance — bayar dulu di Payment sebelum menandai pengiriman.`);
+  }
+  // status DELIVERY/RECEIVING/dst -- sudah lewat tahap PAID, lewati saja (idempotent).
+
+  const { error } = await db
+    .from("raw_material_invoice_rolls")
+    .update({ claim_resolved_note: `Roll pengganti PV ${replacementInvoiceId} dikirim`, claim_resolved_at: today() })
+    .eq("invoice_color_id", parsed.invoiceColorId)
+    .eq("roll_index", parsed.rollIndex);
+  if (error) throw new Error(error.message);
+
+  try {
+    const openId = await findOpenClaimHistoryId(db, parsed.invoiceId, parsed.warna, parsed.lengan, parsed.rollIndex);
+    if (openId) await db.from("material_claim_history").update({ resolved_at: today() }).eq("id", openId);
+  } catch {
+    // arsip opsional.
+  }
 }
 
 /** Pakai sebagian/semua saldo deposit vendor (supplier) untuk mengurangi pembayaran invoice yang
