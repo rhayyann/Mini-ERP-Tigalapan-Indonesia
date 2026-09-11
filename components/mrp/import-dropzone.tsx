@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { parseMrpImportFile, type ParsedMrpImport } from "@/lib/mrp/parseImport";
 import { formatPcs } from "@/lib/mrp/derive";
+import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
 export function ImportDropzone({ onConfirm }: { onConfirm: (parsed: ParsedMrpImport, customId?: string) => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -106,7 +107,7 @@ export function ImportDropzone({ onConfirm }: { onConfirm: (parsed: ParsedMrpImp
                   <span className="text-right font-mono">{formatPcs(g.totalQty)}</span>
                   <span className="text-right font-mono">{g.ribKg.toLocaleString("id-ID", { maximumFractionDigits: 3 })}</span>
                   <span className="text-right font-mono">{g.rollEstimate}</span>
-                  <span className="font-mono">{g.vendorDefault}</span>
+                  <span className="font-mono">{VENDOR_PRODUKSI[g.vendorDefault]?.name ?? g.vendorDefault}</span>
                 </div>
               ))}
             </div>
