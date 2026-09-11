@@ -490,6 +490,11 @@ export async function getFlowSnapshot(): Promise<FlowState> {
   const materialClaimReturRequests: FlowState["materialClaimReturRequests"] = {};
   const materialClaimReturDeliveries: FlowState["materialClaimReturDeliveries"] = {};
   const materialClaimReturReceipts: FlowState["materialClaimReturReceipts"] = {};
+  // A2 (flow klaim bertahap 2026-09-11): dari kolom baru claim_accepted_at / claim_replacement_*
+  // (migration 0028) -- kalau migration belum di-apply, kolomnya tidak ada di `r` (undefined),
+  // dict-nya tetap kosong (soft-fail, bukan crash) sampai user apply migration-nya.
+  const materialClaimAcceptances: FlowState["materialClaimAcceptances"] = {};
+  const materialClaimReplacements: FlowState["materialClaimReplacements"] = {};
 
   const invoices: RawMaterialInvoice[] = (invoiceRows.data ?? []).map((inv) => {
     const colors = colorsByInvoice[inv.id] ?? [];
@@ -535,6 +540,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
         if (r.claim_retur_note != null) materialClaimReturRequests[claimKey] = { note: r.claim_retur_note, requestedAt: r.claim_retur_requested_at ?? "" };
         if (r.claim_retur_delivered_at != null) materialClaimReturDeliveries[claimKey] = { note: r.claim_retur_delivered_note ?? "", deliveredAt: r.claim_retur_delivered_at };
         if (r.claim_retur_received_at != null) materialClaimReturReceipts[claimKey] = { receivedAt: r.claim_retur_received_at };
+        if (r.claim_accepted_at != null) materialClaimAcceptances[claimKey] = { acceptedAt: r.claim_accepted_at };
+        if (r.claim_replacement_invoice_id != null) materialClaimReplacements[claimKey] = { invoiceId: r.claim_replacement_invoice_id, at: r.claim_replacement_at ?? "" };
       }
     }
     const addBuys: AddBuyItem[] = (addBuysByInvoice[inv.id] ?? []).map((a) => ({
@@ -852,6 +859,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     materialClaimReturRequests,
     materialClaimReturDeliveries,
     materialClaimReturReceipts,
+    materialClaimAcceptances,
+    materialClaimReplacements,
     materialClaimHistory,
     vendorDeposits,
     vendorProduksiList,

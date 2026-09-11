@@ -56,9 +56,14 @@ export default function MaterialClaimsPage() {
   const materialClaimReturRequests = useMrpStore((s) => s.materialClaimReturRequests);
   const materialClaimReturDeliveries = useMrpStore((s) => s.materialClaimReturDeliveries);
   const materialClaimReturReceipts = useMrpStore((s) => s.materialClaimReturReceipts);
+  // Flow bertahap 2026-09-11: dua dict baru untuk stage KLAIM_DITERIMA / PV_DIBUAT (lihat A2/D2).
+  const materialClaimAcceptances = useMrpStore((s) => s.materialClaimAcceptances);
+  const materialClaimReplacements = useMrpStore((s) => s.materialClaimReplacements);
   const materialClaimHistory = useMrpStore((s) => s.materialClaimHistory);
   const resolveMaterialClaim = useMrpStore((s) => s.resolveMaterialClaim);
   const unresolveMaterialClaim = useMrpStore((s) => s.unresolveMaterialClaim);
+  const acceptMaterialClaim = useMrpStore((s) => s.acceptMaterialClaim);
+  const markClaimReplacementShipped = useMrpStore((s) => s.markClaimReplacementShipped);
   const requestMaterialClaimRetur = useMrpStore((s) => s.requestMaterialClaimRetur);
   const cancelMaterialClaimReturRequest = useMrpStore((s) => s.cancelMaterialClaimReturRequest);
   const markMaterialClaimReturDelivered = useMrpStore((s) => s.markMaterialClaimReturDelivered);
@@ -87,12 +92,22 @@ export default function MaterialClaimsPage() {
 
   const rows = materialClaimsList(invoices);
   function stage(key: string): MaterialClaimStage {
-    return materialClaimStage(key, materialClaimResolutions, materialClaimReturRequests, materialClaimReturDeliveries, materialClaimReturReceipts);
+    return materialClaimStage(
+      key,
+      materialClaimResolutions,
+      materialClaimReturRequests,
+      materialClaimReturDeliveries,
+      materialClaimReturReceipts,
+      materialClaimReplacements,
+      materialClaimAcceptances
+    );
   }
   const unresolvedCount = rows.filter((r) => stage(r.key) !== "SELESAI").length;
 
   const stageLabel: Record<MaterialClaimStage, { label: string; tone: "warning" | "info" | "success" }> = {
     BELUM: { label: "Belum ditindak", tone: "warning" },
+    KLAIM_DITERIMA: { label: "Klaim diterima", tone: "info" },
+    PV_DIBUAT: { label: "PV Dibuat", tone: "info" },
     RETUR_DIMINTA: { label: "Retur diminta", tone: "info" },
     RETUR_DIKIRIM: { label: "Retur dikirim", tone: "info" },
     RETUR_DITERIMA: { label: "Retur diterima vendor", tone: "info" },
@@ -168,26 +183,63 @@ export default function MaterialClaimsPage() {
             </div>
           );
         }
-        // Revisi 2026-09-06 (v2): "Buat PV Pengganti" sekarang jadi SATU-SATUNYA aksi utama,
-        // tersedia dari stage manapun (tidak perlu "Minta Retur" dulu) -- lihat komentar di
-        // createClaimReplacementInvoiceAction. Aksi tracking retur fisik (opsional, terpisah dari
-        // penyelesaian finansial) ditaruh sebagai link kecil di bawahnya, bukan tombol sejajar.
+        // A8 (flow bertahap 2026-09-11): SATU tombol primer per tahap -- BELUM -> "Terima Klaim"
+        // -> KLAIM_DITERIMA -> "Buat PV Pengganti" -> PV_DIBUAT -> "Tandai Sudah Dikirim" -> SELESAI.
+        // Link "Minta Retur"/"Selesai" (manual close) DIHAPUS dari sini (D1 -- action-nya tetap
+        // ada, cuma tidak lagi dipicu dari UI baru). Stage legacy (RETUR_*) pertahankan perilaku
+        // lama apa adanya supaya klaim in-flight dari sebelum flow ini tetap bisa diselesaikan.
+        if (s === "BELUM") {
+          return (
+            <button onClick={() => acceptMaterialClaim(r.key)} className="rounded-md bg-action-primary px-2.5 py-[6px] font-sans text-[11px] font-semibold text-white">
+              Terima Klaim
+            </button>
+          );
+        }
+        if (s === "KLAIM_DITERIMA") {
+          return (
+            <div className="flex flex-col items-start gap-1">
+              <button onClick={() => setReplacingKey(r.key)} className="rounded-md bg-action-primary px-2.5 py-[6px] font-sans text-[11px] font-semibold text-white">
+                Buat PV Pengganti
+              </button>
+              <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="font-sans text-[10.5px] font-semibold text-action-primary underline">
+                Batalkan
+              </button>
+            </div>
+          );
+        }
+        if (s === "PV_DIBUAT") {
+          const replacement = materialClaimReplacements[r.key];
+          const replInvoice = replacement ? invoices.find((i) => i.id === replacement.invoiceId) : undefined;
+          const waitingPayment = replInvoice?.status === "INVOICED";
+          return (
+            <div className="flex flex-col items-start gap-1">
+              <button
+                onClick={() => markClaimReplacementShipped(r.key)}
+                disabled={waitingPayment}
+                title={waitingPayment ? "Menunggu pembayaran Finance" : undefined}
+                className="rounded-md bg-action-primary px-2.5 py-[6px] font-sans text-[11px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Tandai Sudah Dikirim
+              </button>
+              <span className="font-sans text-[10.5px] text-text-muted">
+                PV pengganti {replacement?.invoiceId ?? "—"} — {replInvoice?.status ?? "—"}
+                {waitingPayment && " (Menunggu pembayaran Finance)"}
+              </span>
+              <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="font-sans text-[10.5px] font-semibold text-action-primary underline">
+                Batalkan
+              </button>
+            </div>
+          );
+        }
+        // Jalur legacy (RETUR_DIMINTA / RETUR_DIKIRIM / RETUR_DITERIMA) -- perilaku dipertahankan
+        // PERSIS seperti sebelumnya (D1), termasuk masih menampilkan "Buat PV Pengganti" karena
+        // action itu sendiri tidak pernah mewajibkan retur fisik selesai dulu.
         return (
           <div className="flex flex-col items-start gap-1">
             <button onClick={() => setReplacingKey(r.key)} className="rounded-md bg-action-primary px-2.5 py-[6px] font-sans text-[11px] font-semibold text-white">
               Buat PV Pengganti
             </button>
             <div className="flex flex-wrap items-center gap-x-2 font-sans text-[10.5px] text-text-muted">
-              {s === "BELUM" && (
-                <>
-                  <button onClick={() => requestMaterialClaimRetur(r.key, "")} className="font-semibold text-action-primary underline">
-                    Minta Retur
-                  </button>
-                  <button onClick={() => resolveMaterialClaim(r.key, "")} className="font-semibold text-action-primary underline">
-                    Selesai
-                  </button>
-                </>
-              )}
               {s === "RETUR_DIMINTA" && (
                 <button onClick={() => markMaterialClaimReturDelivered(r.key)} className="font-semibold text-action-primary underline">
                   Tandai Sudah Dikirim
@@ -195,11 +247,9 @@ export default function MaterialClaimsPage() {
               )}
               {s === "RETUR_DIKIRIM" && <span>Menunggu konfirmasi vendor</span>}
               {s === "RETUR_DITERIMA" && <span>Retur diterima vendor</span>}
-              {s !== "BELUM" && (
-                <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="font-semibold text-action-primary underline">
-                  Batalkan
-                </button>
-              )}
+              <button onClick={() => cancelMaterialClaimReturRequest(r.key)} className="font-semibold text-action-primary underline">
+                Batalkan
+              </button>
             </div>
           </div>
         );
@@ -340,10 +390,12 @@ export default function MaterialClaimsPage() {
         <>
           <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
             Daftar ini otomatis berisi roll bahan yang diklaim vendor produksi — selisih berat KURANG dari toleransi (lebih ringan dari invoice), ATAU cacat
-            FISIK (shading/kotor/dll, ditemukan vendor saat menghamparkan roll untuk resting/cutting — lihat badge &quot;Fisik&quot;). Klik{" "}
-            <b>Buat PV Pengganti</b> untuk pesan ulang bahan itu dengan rate & berat terkini — selisih dari nilai PV lama otomatis tercatat sebagai saldo
-            deposit di supplier itu (lihat Payment di Finance). Link kecil di bawahnya untuk melacak retur fisik (opsional) — begitu vendor timbang ulang
-            dengan hasil sesuai toleransi, klaim otomatis tertutup sendiri.
+            FISIK (shading/kotor/dll, ditemukan vendor saat menghamparkan roll untuk resting/cutting — lihat badge &quot;Fisik&quot;). Prosesnya 3 langkah: (1){" "}
+            <b>Terima Klaim</b> — tandai klaim ini sudah dilihat/ditindaklanjuti; (2) <b>Buat PV Pengganti</b> — pesan ulang bahan itu dengan rate & berat
+            terkini (selisih dari nilai PV lama otomatis tercatat sebagai saldo deposit di supplier itu, lihat Payment di Finance); (3){" "}
+            <b>Tandai Sudah Dikirim</b> — sekali klik setelah PV pengganti LUNAS, sekaligus mengirim PV pengganti itu ke Good Receive vendor (roll
+            penggantinya baru bisa diisi code roll di sana) dan menutup klaim ini. Klaim lama yang masih berstatus retur (diminta/dikirim/diterima) tetap
+            bisa diselesaikan lewat jalur lamanya.
           </div>
 
           <DataTable
@@ -359,7 +411,7 @@ export default function MaterialClaimsPage() {
               { label: "Supplier", options: Array.from(new Set(rows.map((r) => r.supplier))), test: (r, v) => r.supplier === v },
               {
                 label: "Status",
-                options: ["Belum ditindak", "Retur diminta", "Retur dikirim", "Retur diterima vendor", "Sudah ditindak"],
+                options: ["Belum ditindak", "Klaim diterima", "PV Dibuat", "Retur diminta", "Retur dikirim", "Retur diterima vendor", "Sudah ditindak"],
                 test: (r, v) => stageLabel[stage(r.key)].label === v,
               },
               {

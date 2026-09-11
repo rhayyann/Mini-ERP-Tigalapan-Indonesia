@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 export type ColumnDef<T> = {
@@ -32,6 +32,7 @@ export function DataTable<T>({
   rowClassName,
   bodyMaxHeight,
   renderExpanded,
+  collapseSignal,
 }: {
   title: string;
   subtitle?: string;
@@ -56,11 +57,25 @@ export function DataTable<T>({
    *  halaman MRP PPIC. Tidak diisi = tabel tetap seperti biasa, tidak ada perubahan sama sekali
    *  buat pemakai DataTable lain. */
   renderExpanded?: (row: T) => ReactNode;
+  /** Opsional (B1, flow "auto-collapse setelah Bayar" di Finance/Payment) — ubah nilainya (mis.
+   *  increment sebuah counter) dari luar untuk memaksa SELURUH baris yang sedang ter-expand
+   *  tertutup lagi, tanpa mereset pilihan kolom (`visible`) atau filter (`filterValues`) apa pun.
+   *  Tidak diisi = perilaku expand/collapse 100% seperti sebelumnya, tidak ada efek sama sekali —
+   *  jangan pakai `key` di komponen ini buat maksud yang sama (itu me-remount seluruh state,
+   *  termasuk kolom & filter). */
+  collapseSignal?: number;
 }) {
   const [visible, setVisible] = useState<Set<string>>(new Set(columns.filter((c) => c.default).map((c) => c.key)));
   const [colOpen, setColOpen] = useState(false);
   const [filterValues, setFilterValues] = useState<string[]>((filterDefs ?? []).map(() => ""));
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
+  const prevCollapseSignal = useRef(collapseSignal);
+  useEffect(() => {
+    if (collapseSignal !== undefined && collapseSignal !== prevCollapseSignal.current) {
+      prevCollapseSignal.current = collapseSignal;
+      setExpandedKeys(new Set());
+    }
+  }, [collapseSignal]);
 
   function toggleExpanded(key: string) {
     setExpandedKeys((prev) => {

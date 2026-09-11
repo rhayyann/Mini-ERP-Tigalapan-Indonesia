@@ -180,6 +180,14 @@ export type FlowState = {
    *  ulang karena konfirmasi terima bisa duluan sebelum sempat ditimbang (lihat
    *  confirmMaterialClaimReturReceivedAction). */
   materialClaimReturReceipts: Record<string, { receivedAt: string }>;
+  /** Procurement menandai klaim sudah DITERIMA (step 1 dari flow bertahap 2026-09-11, sebelum
+   *  "Buat PV Pengganti" bisa diklik) -- lihat acceptMaterialClaimAction. Stage KLAIM_DITERIMA. */
+  materialClaimAcceptances: Record<string, { acceptedAt: string }>;
+  /** Procurement sudah membuat PV pengganti untuk klaim ini (step 2) TAPI belum menandai
+   *  "Sudah Dikirim" (step 3) -- lihat createClaimReplacementInvoiceAction &
+   *  markClaimReplacementShippedAction. Stage PV_DIBUAT; `invoiceId` dipakai UI untuk menampilkan
+   *  nomor PV pengganti & status pembayarannya (dari `invoices`). */
+  materialClaimReplacements: Record<string, { invoiceId: string; at: string }>;
   /** Arsip/histori permanen tiap siklus klaim selisih berat, termasuk yang SUDAH SELESAI (auto
    *  atau manual) -- lihat migration 0011_material_claim_history.sql & tab "Riwayat/Arsip" di
    *  app/procurement/material-claims/page.tsx. Beda dari materialClaimResolutions/
@@ -364,6 +372,11 @@ type FlowActions = {
   setRejectRemark: (poId: string, remark: string) => Promise<void>;
   resolveMaterialClaim: (key: string, note: string) => Promise<void>;
   unresolveMaterialClaim: (key: string) => Promise<void>;
+  /** Step 1 flow bertahap (2026-09-11) -- Procurement "Terima Klaim". Lihat acceptMaterialClaimAction. */
+  acceptMaterialClaim: (key: string) => Promise<void>;
+  /** Step 3 flow bertahap (2026-09-11) -- Procurement "Tandai Sudah Dikirim", sekaligus memindahkan
+   *  invoice PV pengganti dari PAID ke DELIVERY. Lihat markClaimReplacementShippedAction. */
+  markClaimReplacementShipped: (key: string) => Promise<void>;
   requestMaterialClaimRetur: (key: string, note: string) => Promise<void>;
   cancelMaterialClaimReturRequest: (key: string) => Promise<void>;
   markMaterialClaimReturDelivered: (key: string, note?: string) => Promise<void>;
@@ -407,6 +420,8 @@ const emptyState: FlowState = {
   materialClaimReturRequests: {},
   materialClaimReturDeliveries: {},
   materialClaimReturReceipts: {},
+  materialClaimAcceptances: {},
+  materialClaimReplacements: {},
   materialClaimHistory: [],
   vendorDeposits: [],
   productionYieldResolutions: {},
@@ -1458,25 +1473,76 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     }
     backgroundRefresh();
   },
-  // Batalkan mereset SELURUH progres retur (diminta -> dikirim -> diterima) -- lihat komentar
-  // sama di cancelMaterialClaimReturRequestAction -- jadi optimistic-nya juga harus menghapus
-  // key ini dari KETIGA record sekaligus, bukan cuma materialClaimReturRequests.
+  // Batalkan mereset SELURUH progres klaim (retur diminta -> dikirim -> diterima, DAN sejak flow
+  // bertahap 2026-09-11 juga diterima Procurement -> PV pengganti dibuat) -- lihat komentar sama
+  // di cancelMaterialClaimReturRequestAction -- jadi optimistic-nya juga harus menghapus key ini
+  // dari KELIMA record sekaligus, bukan cuma materialClaimReturRequests.
   cancelMaterialClaimReturRequest: async (key) => {
     const previousRequests = get().materialClaimReturRequests;
     const previousDeliveries = get().materialClaimReturDeliveries;
     const previousReceipts = get().materialClaimReturReceipts;
+    const previousAcceptances = get().materialClaimAcceptances;
+    const previousReplacements = get().materialClaimReplacements;
+    // A9: kalau klaim ini sudah punya PV pengganti, ingatkan Finance/Procurement bahwa invoice-nya
+    // TETAP ADA (tidak ikut dihapus) & harus diurus manual -- server juga tidak menyentuh invoice
+    // maupun vendor_deposits sama sekali, cuma me-null-kan progres di sisi klaim.
+    const existingReplacement = previousReplacements[key];
+    if (existingReplacement && !window.confirm(`Klaim ini sudah punya PV pengganti (${existingReplacement.invoiceId}). Membatalkan klaim TIDAK menghapus PV pengganti tersebut maupun saldo deposit yang sudah tercatat -- keduanya tetap ada & harus diurus manual. Lanjutkan membatalkan?`)) {
+      return;
+    }
     const nextRequests = { ...previousRequests };
     delete nextRequests[key];
     const nextDeliveries = { ...previousDeliveries };
     delete nextDeliveries[key];
     const nextReceipts = { ...previousReceipts };
     delete nextReceipts[key];
-    set({ materialClaimReturRequests: nextRequests, materialClaimReturDeliveries: nextDeliveries, materialClaimReturReceipts: nextReceipts });
+    const nextAcceptances = { ...previousAcceptances };
+    delete nextAcceptances[key];
+    const nextReplacements = { ...previousReplacements };
+    delete nextReplacements[key];
+    set({
+      materialClaimReturRequests: nextRequests,
+      materialClaimReturDeliveries: nextDeliveries,
+      materialClaimReturReceipts: nextReceipts,
+      materialClaimAcceptances: nextAcceptances,
+      materialClaimReplacements: nextReplacements,
+    });
     try {
       await actions.cancelMaterialClaimReturRequestAction(key);
     } catch (err) {
-      set({ materialClaimReturRequests: previousRequests, materialClaimReturDeliveries: previousDeliveries, materialClaimReturReceipts: previousReceipts });
-      window.alert("Gagal membatalkan retur -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      set({
+        materialClaimReturRequests: previousRequests,
+        materialClaimReturDeliveries: previousDeliveries,
+        materialClaimReturReceipts: previousReceipts,
+        materialClaimAcceptances: previousAcceptances,
+        materialClaimReplacements: previousReplacements,
+      });
+      window.alert("Gagal membatalkan klaim -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
+    backgroundRefresh();
+  },
+  // Step 1 flow bertahap (2026-09-11) -- pola optimistic sama persis requestMaterialClaimRetur.
+  acceptMaterialClaim: async (key) => {
+    const previous = get().materialClaimAcceptances;
+    set({ materialClaimAcceptances: { ...previous, [key]: { acceptedAt: localDateString(new Date()) } } });
+    try {
+      await actions.acceptMaterialClaimAction(key);
+    } catch (err) {
+      set({ materialClaimAcceptances: previous });
+      window.alert("Gagal menandai klaim diterima -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
+    backgroundRefresh();
+  },
+  // Step 3 flow bertahap (2026-09-11) -- TIDAK optimistic (server memutuskan boleh/tidaknya
+  // berdasarkan status invoice PV pengganti saat ini -- INVOICED ditolak, lihat
+  // markClaimReplacementShippedAction), pola sama seperti createClaimReplacementInvoice di bawah.
+  markClaimReplacementShipped: async (key) => {
+    try {
+      await actions.markClaimReplacementShippedAction(key);
+    } catch (err) {
+      window.alert("Gagal menandai PV pengganti terkirim -- " + (err instanceof Error ? err.message : String(err)));
       throw err;
     }
     backgroundRefresh();
@@ -1513,6 +1579,12 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   // 1 round-trip di sini bukan trade-off yang terasa.
   createClaimReplacementInvoice: async (key, rateBaru, beratBaruKg, buktiInvoiceDataUrl, buktiInvoiceFileName) => {
     const newInvoiceId = await actions.createClaimReplacementInvoiceAction(key, rateBaru, beratBaruKg, buktiInvoiceDataUrl, buktiInvoiceFileName);
+    // Baris klaim ini sekarang PV_DIBUAT (bukan lagi SELESAI, lihat A7) -- id invoice baru cuma
+    // diketahui SETELAH server selesai (digenerate server), jadi update dict-nya di sini (segera
+    // setelah await sukses, sebelum menunggu roundtrip backgroundRefresh) supaya UI langsung
+    // pindah stage tanpa jeda terlihat.
+    const previous = get().materialClaimReplacements;
+    set({ materialClaimReplacements: { ...previous, [key]: { invoiceId: newInvoiceId, at: localDateString(new Date()) } } });
     backgroundRefresh();
     return newInvoiceId;
   },

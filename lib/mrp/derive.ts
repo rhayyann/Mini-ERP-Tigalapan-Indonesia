@@ -916,27 +916,41 @@ export type MaterialClaimRow = {
   note?: string;
 };
 
-/** Tahap alur retur klaim selisih berat — dipakai di halaman Procurement (Klaim Material) DAN
- *  di tab Cutting vendor (buat mengunci/membuka aksi timbang ulang roll yang diklaim, lihat
- *  production-cutting-tab.tsx). Satu sumber kebenaran supaya kedua sisi selalu sinkron:
- *  BELUM (baru terkirim, belum ada tindakan) -> RETUR_DIMINTA (Procurement sudah minta retur ke
- *  supplier) -> RETUR_DIKIRIM (Procurement tandai roll pengganti sudah dikirim) -> RETUR_DITERIMA
- *  (vendor konfirmasi terima fisik -- BARU di titik ini vendor boleh timbang ulang) -> SELESAI
- *  (ditutup manual tanpa retur, mis. diterima apa adanya) atau otomatis hilang dari
- *  materialClaimsList begitu roll ditimbang ulang & hasilnya sesuai toleransi. */
-export type MaterialClaimStage = "BELUM" | "RETUR_DIMINTA" | "RETUR_DIKIRIM" | "RETUR_DITERIMA" | "SELESAI";
+/** Tahap alur klaim selisih berat — dipakai di halaman Procurement (Klaim Material) DAN di tab
+ *  Cutting vendor (buat mengunci/membuka aksi timbang ulang roll yang diklaim, lihat
+ *  production-cutting-tab.tsx). Satu sumber kebenaran supaya kedua sisi selalu sinkron.
+ *
+ *  JALUR AKTIF (satu-satunya yang bisa dicapai klaim BARU, sejak flow bertahap 2026-09-11):
+ *  BELUM (baru terkirim, belum ada tindakan) -> KLAIM_DITERIMA (Procurement klik "Terima Klaim")
+ *  -> PV_DIBUAT (Procurement klik "Buat PV Pengganti", lihat createClaimReplacementInvoiceAction)
+ *  -> SELESAI (Procurement klik "Tandai Sudah Dikirim" -- sekaligus memindahkan invoice PV
+ *  pengganti ke DELIVERY, lihat markClaimReplacementShippedAction) atau otomatis hilang dari
+ *  materialClaimsList begitu roll ditimbang ulang & hasilnya sesuai toleransi.
+ *
+ *  JALUR LEGACY (mekanismenya TIDAK diubah -- cuma untuk baris yang sudah terlanjur ada di DB
+ *  dari sebelum flow bertahap ini, tidak ada transisi baru yang bisa masuk ke sini lagi):
+ *  RETUR_DIMINTA (Procurement sudah minta retur ke supplier) -> RETUR_DIKIRIM (Procurement tandai
+ *  roll pengganti sudah dikirim) -> RETUR_DITERIMA (vendor konfirmasi terima fisik -- BARU di
+ *  titik ini vendor boleh timbang ulang) -> SELESAI. */
+export type MaterialClaimStage = "BELUM" | "KLAIM_DITERIMA" | "PV_DIBUAT" | "RETUR_DIMINTA" | "RETUR_DIKIRIM" | "RETUR_DITERIMA" | "SELESAI";
 
 export function materialClaimStage(
   key: string,
   resolutions: Record<string, unknown>,
   returRequests: Record<string, unknown>,
   returDeliveries: Record<string, unknown>,
-  returReceipts: Record<string, unknown>
+  returReceipts: Record<string, unknown>,
+  replacements: Record<string, unknown> = {},
+  acceptances: Record<string, unknown> = {}
 ): MaterialClaimStage {
+  // Urutan prioritas: legacy (retur) didahulukan supaya klaim in-flight dari sebelum flow
+  // bertahap ini tidak berubah artinya, baru jalur aktif (PV_DIBUAT/KLAIM_DITERIMA) di bawahnya.
   if (resolutions[key]) return "SELESAI";
   if (returReceipts[key]) return "RETUR_DITERIMA";
   if (returDeliveries[key]) return "RETUR_DIKIRIM";
   if (returRequests[key]) return "RETUR_DIMINTA";
+  if (replacements[key]) return "PV_DIBUAT";
+  if (acceptances[key]) return "KLAIM_DITERIMA";
   return "BELUM";
 }
 
