@@ -43,7 +43,7 @@ import {
   rollRemainingBySizeForMrp,
   resiGroupInvoiceLines,
 } from "./derive";
-import { ENTITAS_LIST } from "./seed";
+import { ENTITAS_LIST, VENDOR_PRODUKSI } from "./seed";
 import type { ParsedMrpImport } from "./parseImport";
 import type { MrpDetail } from "./store";
 import type {
@@ -893,6 +893,11 @@ export async function withdrawVendorProductionAction(mrpId: string, fromVendor: 
   await requireInternalRole(await requireSession(), "procurement");
   if (fromVendor === toVendor) throw new Error("Vendor tujuan harus berbeda dari vendor asal.");
   const db = supabaseServer();
+  // BUG FIX (2026-09-11, sama akar dengan fix dropdown vendor code di UI): teks notifikasi/catatan
+  // audit di bawah dulu embed KODE vendor mentah (mis. "GI-01") -- disamakan dengan pola
+  // VENDOR_PRODUKSI[id]?.name ?? id yang dipakai di seluruh tampilan lain.
+  const fromVendorName = VENDOR_PRODUKSI[fromVendor]?.name ?? fromVendor;
+  const toVendorName = VENDOR_PRODUKSI[toVendor]?.name ?? toVendor;
 
   const snapshot1 = await getFlowSnapshot();
   const maklonPO = snapshot1.maklonPOs.find((p) => p.mrpId === mrpId && p.vendorProduksi === fromVendor);
@@ -966,7 +971,7 @@ export async function withdrawVendorProductionAction(mrpId: string, fromVendor: 
         await db.from("maklon_pos").update({ qty: newQty, amount: fromMaklon.qty > 0 ? Math.round((fromMaklon.amount / fromMaklon.qty) * newQty) : 0 }).eq("id", fromMaklon.id);
         await db.from("maklon_po_cancelled_lines").insert({
           maklon_po_id: fromMaklon.id,
-          note: `Vendor berhenti produksi — WIP (${pcsMoved} pcs) dipindahkan ke ${toVendor}`,
+          note: `Vendor berhenti produksi — WIP (${pcsMoved} pcs) dipindahkan ke ${toVendorName}`,
           rolls: wipBatches.length,
           pcs: pcsMoved,
           from_vendor: "Procurement",
@@ -982,7 +987,7 @@ export async function withdrawVendorProductionAction(mrpId: string, fromVendor: 
           .eq("id", toMaklon.id);
         await db.from("maklon_po_cancelled_lines").insert({
           maklon_po_id: toMaklon.id,
-          note: `Menerima WIP (${pcsMoved} pcs) dari vendor lain (${fromVendor} berhenti produksi)`,
+          note: `Menerima WIP (${pcsMoved} pcs) dari vendor lain (${fromVendorName} berhenti produksi)`,
           rolls: wipBatches.length,
           pcs: pcsMoved,
           from_vendor: "Procurement",
@@ -1002,7 +1007,7 @@ export async function withdrawVendorProductionAction(mrpId: string, fromVendor: 
         });
         await db.from("maklon_po_cancelled_lines").insert({
           maklon_po_id: newMaklonId,
-          note: `Menerima WIP (${pcsMoved} pcs) dari vendor lain (${fromVendor} berhenti produksi)`,
+          note: `Menerima WIP (${pcsMoved} pcs) dari vendor lain (${fromVendorName} berhenti produksi)`,
           rolls: wipBatches.length,
           pcs: pcsMoved,
           from_vendor: "Procurement",
@@ -1012,7 +1017,7 @@ export async function withdrawVendorProductionAction(mrpId: string, fromVendor: 
     }
   }
 
-  await insertNotification(notif(`Vendor ${fromVendor} berhenti produksi untuk ${mrpId} — sisa pekerjaan dipindahkan ke ${toVendor}.`, ["procurement", "finance"]));
+  await insertNotification(notif(`Vendor ${fromVendorName} berhenti produksi untuk ${mrpId} — sisa pekerjaan dipindahkan ke ${toVendorName}.`, ["procurement", "finance"]));
   await insertNotification(
     notif(`PO Produksi ${mrpId} Anda dihentikan — sisa bahan/WIP dipindahkan ke vendor lain. Finish Good yang sudah ada tetap bisa Anda kirim & tagih.`, ["vendorMaklon"], fromVendor)
   );

@@ -387,11 +387,20 @@ export function vendorProduksiRows(detail: MrpDetail, hargaMaklon: HargaMaklonRo
   });
 }
 
+/** BUG FIX (2026-09-11, user-reported: SCM Approval MRP masih menampilkan "BAYU, GI-01" -- kode
+ *  mentah, bukan "BAYU, YOGI 01") -- fungsi ini dulu mengembalikan KODE vendor mentah
+ *  (`AduanPolaRow.vendor`/`LenganGroup.vendorDefault`), dipakai LANGSUNG sebagai teks tampilan di
+ *  3 halaman (SCM Approval MRP, SCM Monitoring, MRP Saya PPIC) tanpa pernah lewat lookup nama
+ *  seperti pola `VENDOR_PRODUKSI[id]?.name ?? id` yang dipakai konsisten di tempat lain. Sekarang
+ *  mengembalikan NAMA (uppercase, ikut VENDOR_PRODUKSI) -- aman karena ketiga pemanggilnya HANYA
+ *  memakai hasil ini untuk tampilan & filter yang membandingkan terhadap dirinya sendiri (bukan
+ *  terhadap kode vendorId di tempat lain), jadi tidak ada yang bergantung pada nilai KODE mentah. */
 export function vendorsForMrp(detail: MrpDetail | undefined): string[] {
   if (!detail) return [];
   const fromAduan = detail.aduanRows.map((a) => a.vendor);
   const fromDefault = detail.lenganGroups.map((g) => g.vendorDefault);
-  return Array.from(new Set([...fromAduan, ...fromDefault])).filter(Boolean);
+  const codes = Array.from(new Set([...fromAduan, ...fromDefault])).filter(Boolean);
+  return codes.map((v) => VENDOR_PRODUKSI[v]?.name ?? v);
 }
 
 export type MrpWarnaBreakdown = {
