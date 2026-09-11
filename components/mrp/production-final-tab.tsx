@@ -9,6 +9,7 @@ import {
   cumulativeSizeQtyForGroup,
   cuttingSizesForGroup,
   fgMurniAndReworkForGroup,
+  openMaterialClaimsForGroup,
   productionGroupMetaFor,
   reworkBySizeForGroup,
   reworkedAwayBySize,
@@ -32,6 +33,13 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
   const productionResults = useMrpStore((s) => s.productionResults);
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const maklonPOs = useMrpStore((s) => s.maklonPOs);
+  const rawInvoices = useMrpStore((s) => s.invoices);
+  const materialClaimResolutions = useMrpStore((s) => s.materialClaimResolutions);
+  const materialClaimReturRequests = useMrpStore((s) => s.materialClaimReturRequests);
+  const materialClaimReturDeliveries = useMrpStore((s) => s.materialClaimReturDeliveries);
+  const materialClaimReturReceipts = useMrpStore((s) => s.materialClaimReturReceipts);
+  const materialClaimReplacements = useMrpStore((s) => s.materialClaimReplacements);
+  const materialClaimAcceptances = useMrpStore((s) => s.materialClaimAcceptances);
   const markProductionGroupDone = useMrpStore((s) => s.markProductionGroupDone);
   const undoProductionGroupDone = useMrpStore((s) => s.undoProductionGroupDone);
   const closeProductionPo = useMrpStore((s) => s.closeProductionPo);
@@ -164,6 +172,37 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
             const reworkPerSize = reworkedAwayBySize(groupKey, productionResults);
             const currentRejectPerSize = cumulativeSizeQtyForGroup(groupKey, "REJECT", productionResults);
             const fgFromReworkPerSize = reworkBySizeForGroup(groupKey, productionResults);
+            // BUG FIX (2026-09-12, user-reported): "Selesai Produksi" (tahap 2) BUKAN gate
+            // Pengiriman lagi -- FG sudah shippable sejak tahap 1 -- jadi tidak ada alasan
+            // buru-buru mengunci tahap 2 selama masih ada klaim material yang belum selesai untuk
+            // warna/lengan ini (roll penggantinya bisa jadi masih "dalam perjalanan" lewat proses
+            // klaim, dan begitu tahap 2 terkunci, roll baru itu TIDAK BISA lagi di-cutting --
+            // lihat guard done_at di updateBatchToCuttingAction). Warning, bukan hard-block --
+            // vendor tetap boleh lanjut kalau memang yakin klaimnya tidak relevan lagi.
+            const openClaims = openMaterialClaimsForGroup(
+              selectedMrpId,
+              vendorId,
+              g.warna,
+              g.lengan,
+              rawInvoices,
+              materialClaimResolutions,
+              materialClaimReturRequests,
+              materialClaimReturDeliveries,
+              materialClaimReturReceipts,
+              materialClaimReplacements,
+              materialClaimAcceptances
+            );
+            function confirmAndMarkDone() {
+              if (
+                openClaims.length > 0 &&
+                !window.confirm(
+                  `Grup ${g.warna} · ${g.lengan} masih punya ${openClaims.length} klaim material yang belum selesai (roll pengganti bisa jadi masih dalam proses). Setelah "Selesai Produksi", roll BARU untuk warna/lengan ini tidak akan bisa di-cutting lagi kecuali dibuka kunci dulu. Tetap lanjutkan?`
+                )
+              ) {
+                return;
+              }
+              runAction(groupKey, markProductionGroupDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan));
+            }
             return (
               <div key={groupKey} className="border-b border-[#F1F4F7] last:border-b-0">
                 <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-[13px] font-sans text-xs text-[#31414F]">
@@ -218,11 +257,12 @@ export function ProductionFinalTab({ vendorId }: { vendorId: string }) {
                       </button>
                     ) : isFgConfirmed ? (
                       <button
-                        onClick={() => runAction(groupKey, markProductionGroupDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
+                        onClick={confirmAndMarkDone}
                         disabled={isPending(groupKey)}
+                        title={openClaims.length > 0 ? `${openClaims.length} klaim material grup ini belum selesai -- akan diminta konfirmasi dulu` : undefined}
                         className="rounded-md bg-action-primary px-3 py-[6px] font-sans text-[11px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        {isPending(groupKey) ? "Menyimpan…" : "Selesai Produksi"}
+                        {isPending(groupKey) ? "Menyimpan…" : openClaims.length > 0 ? `Selesai Produksi ⚠ ${openClaims.length} klaim aktif` : "Selesai Produksi"}
                       </button>
                     ) : (
                       <span className="font-sans text-[10.5px] text-text-muted">Selesaikan dulu Finish Good (tab Finish Good)</span>
