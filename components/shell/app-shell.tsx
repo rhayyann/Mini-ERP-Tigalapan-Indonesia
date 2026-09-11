@@ -32,9 +32,10 @@ import {
   countVendorInvoicesAwaitingReview,
   countVendorPengirimanReady,
   countVendorProduksiActionable,
+  countWarehousePendingReceipt,
 } from "@/lib/shell/badges";
 
-const GATED_ROLES: InternalRole[] = ["ppic", "procurement", "finance", "scm", "produksi"];
+const GATED_ROLES: InternalRole[] = ["ppic", "procurement", "finance", "scm", "produksi", "warehouse"];
 
 export function AppShell({
   role,
@@ -103,10 +104,12 @@ export function AppShell({
   const vendorInvoices = useMrpStore((s) => s.vendorInvoices);
   const maklonInvoices = useMrpStore((s) => s.maklonInvoices);
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
+  const staticMrps = useMrpStore((s) => s.staticMrps);
   const productionResults = useMrpStore((s) => s.productionResults);
   const productionBatches = useMrpStore((s) => s.productionBatches);
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
+  const warehouseReceipts = useMrpStore((s) => s.warehouseReceipts);
   const materialClaimResolutions = useMrpStore((s) => s.materialClaimResolutions);
   const materialClaimReturRequests = useMrpStore((s) => s.materialClaimReturRequests);
   const materialClaimReturDeliveries = useMrpStore((s) => s.materialClaimReturDeliveries);
@@ -175,6 +178,20 @@ export function AppShell({
   } else if (role === "produksi") {
     badgeOverrides = {
       "/produksi/yield-alerts": countProductionYieldUnresolved(productionBatches, mrpDetails, productionYieldResolutions),
+    };
+  } else if (role === "warehouse") {
+    badgeOverrides = {
+      "/warehouse/penerimaan": countWarehousePendingReceipt(
+        deliveryKolis,
+        vendorInvoices,
+        mrpDetails,
+        staticMrps,
+        productionBatches,
+        productionResults,
+        productionGroupMeta,
+        invoices,
+        warehouseReceipts
+      ),
     };
   } else if (role === "vendorMaklon" && vendorId) {
     badgeOverrides = {

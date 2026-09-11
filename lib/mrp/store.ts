@@ -23,6 +23,7 @@ import type {
   VendorDepositEntry,
   VendorInvoice,
   VendorInvoiceAdjustmentKind,
+  WarehouseReceipt,
 } from "./types";
 import type { ParsedMrpImport } from "./parseImport";
 import type { EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
@@ -167,6 +168,9 @@ export type FlowState = {
   productionResults: ProductionResult[];
   deliveryKolis: DeliveryKoli[];
   vendorInvoices: VendorInvoice[];
+  /** Spec Portal Warehouse (migration 0031) -- arsip penerimaan gudang, 1 entri = 1 resi group
+   *  yang sudah "Bongkar" (lihat receiveWarehouseResiGroupAction). */
+  warehouseReceipts: WarehouseReceipt[];
   notifications: Notification[];
   productionGroupMeta: ProductionGroupMeta[];
   rejectRemarks: Record<string, string>;
@@ -308,6 +312,13 @@ type FlowActions = {
   setVendorInvoiceStatus: (invoiceId: string, status: VendorInvoice["status"]) => Promise<void>;
   addVendorInvoiceAdjustment: (invoiceId: string, input: { kind: VendorInvoiceAdjustmentKind; label: string; amount: number; note?: string }) => Promise<void>;
   payVendorInvoice: (invoiceId: string) => Promise<void>;
+  /** Spec "Finalkan HPP" — lihat finalizeHppForInvoiceAction/unfinalizeHppForInvoiceAction di
+   *  actions.ts. Penanda saja, bukan lock (lihat komentar di lib/mrp/types.ts). */
+  finalizeHppForInvoice: (invoiceId: string) => Promise<void>;
+  unfinalizeHppForInvoice: (invoiceId: string) => Promise<void>;
+  /** Spec Portal Warehouse — "Bongkar Koli", SELALU per resi group & SELALU utuh (Q5). Lihat
+   *  receiveWarehouseResiGroupAction di actions.ts — qty TIDAK dipercaya dari client. */
+  receiveWarehouseResiGroup: (resiGroupId: string, note?: string) => Promise<void>;
   markNotificationRead: (id: string) => Promise<void>;
   markAllNotificationsRead: (ids: string[]) => Promise<void>;
   dismissNotification: (id: string) => Promise<void>;
@@ -413,6 +424,7 @@ const emptyState: FlowState = {
   productionResults: [],
   deliveryKolis: [],
   vendorInvoices: [],
+  warehouseReceipts: [],
   notifications: [],
   productionGroupMeta: [],
   rejectRemarks: {},
@@ -947,6 +959,24 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
       window.alert("Gagal membayar invoice vendor -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
       throw err;
     }
+    backgroundRefresh();
+  },
+  // TIDAK dibuat optimistic -- penanda ini dipakai sebagai GATE Warehouse (lihat gateReason di
+  // warehouseReceivableGroups), lebih aman menunggu konfirmasi server (termasuk guard "invoice
+  // masih revisi"/idempotensi) daripada menampilkan status final sebelum benar-benar tersimpan.
+  finalizeHppForInvoice: async (invoiceId) => {
+    await actions.finalizeHppForInvoiceAction(invoiceId);
+    backgroundRefresh();
+  },
+  unfinalizeHppForInvoice: async (invoiceId) => {
+    await actions.unfinalizeHppForInvoiceAction(invoiceId);
+    backgroundRefresh();
+  },
+  // TIDAK dibuat optimistic -- item & hpp_per_item hasil "Bongkar" dibangun ULANG di server dari
+  // snapshot fresh (qty TIDAK dipercaya dari client sama sekali, lihat receiveWarehouseResiGroupAction),
+  // jadi tidak ada cara menebak hasilnya di client sebelum server selesai.
+  receiveWarehouseResiGroup: async (resiGroupId, note) => {
+    await actions.receiveWarehouseResiGroupAction(resiGroupId, note);
     backgroundRefresh();
   },
   // PERFORMA (revisi 2026-09-06): "semua tombol aksi harus terasa instan, jangan sampai user

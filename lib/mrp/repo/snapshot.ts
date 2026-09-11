@@ -27,6 +27,8 @@ import type {
   VendorInvoice,
   VendorInvoiceAdjustment,
   VendorInvoiceLine,
+  WarehouseReceipt,
+  WarehouseReceiptItem,
 } from "../types";
 import type { EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "../masterData";
 import type { FlowState, MrpDates, MrpDetail } from "../store";
@@ -75,6 +77,9 @@ type RawTables = Record<
   | "vendorInvoiceRows"
   | "vendorInvoiceLineRows"
   | "vendorInvoiceAdjustmentRows"
+  | "warehouseReceiptRows"
+  | "warehouseReceiptKoliRows"
+  | "warehouseReceiptItemRows"
   | "materialClaimHistoryRows"
   | "vendorDepositRows"
   | "notificationRows"
@@ -122,6 +127,9 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     vendorInvoiceRows,
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
+    warehouseReceiptRows,
+    warehouseReceiptKoliRows,
+    warehouseReceiptItemRows,
     materialClaimHistoryRows,
     vendorDepositRows,
     notificationRows,
@@ -167,6 +175,11 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     db.from("vendor_invoices").select("*").order("submitted_at").order("id"),
     db.from("vendor_invoice_lines").select("*").order("id"),
     db.from("vendor_invoice_adjustments").select("*").order("added_at").order("id"),
+    // Migration 0031 (Portal Warehouse) -- tabel belum tentu ada di environment yang belum
+    // di-migrate, `.data ?? []` di bawah gracefully jadi kosong sama seperti tabel opsional lain.
+    db.from("warehouse_receipts").select("*").order("created_at").order("id"),
+    db.from("warehouse_receipt_kolis").select("*").order("id"),
+    db.from("warehouse_receipt_items").select("*").order("id"),
     db.from("material_claim_history").select("*").order("id"),
     db.from("vendor_deposits").select("*").order("created_at").order("id"),
     db.from("notifications").select("*").order("time").order("id"),
@@ -210,6 +223,9 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     vendorInvoiceRows,
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
+    warehouseReceiptRows,
+    warehouseReceiptKoliRows,
+    warehouseReceiptItemRows,
     materialClaimHistoryRows,
     vendorDepositRows,
     notificationRows,
@@ -263,6 +279,9 @@ async function fetchFlowRowsFast(db: SupabaseClient): Promise<RawTables> {
     vendorInvoiceRows: wrap("vendor_invoices"),
     vendorInvoiceLineRows: wrap("vendor_invoice_lines"),
     vendorInvoiceAdjustmentRows: wrap("vendor_invoice_adjustments"),
+    warehouseReceiptRows: wrap("warehouse_receipts"),
+    warehouseReceiptKoliRows: wrap("warehouse_receipt_kolis"),
+    warehouseReceiptItemRows: wrap("warehouse_receipt_items"),
     materialClaimHistoryRows: wrap("material_claim_history"),
     vendorDepositRows: wrap("vendor_deposits"),
     notificationRows: wrap("notifications"),
@@ -319,6 +338,9 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     vendorInvoiceRows,
     vendorInvoiceLineRows,
     vendorInvoiceAdjustmentRows,
+    warehouseReceiptRows,
+    warehouseReceiptKoliRows,
+    warehouseReceiptItemRows,
     materialClaimHistoryRows,
     vendorDepositRows,
     notificationRows,
@@ -744,6 +766,36 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     paidAt: v.paid_at ?? undefined,
     dueDate: v.due_date ?? undefined,
     ongkirTotal: v.ongkir_total == null ? undefined : Number(v.ongkir_total),
+    // Migration 0030 — graceful (undefined) kalau migration belum di-apply (kolom tidak ada di
+    // `v`, jadi bernilai undefined apa adanya, `?? undefined` di bawah cuma jaga-jaga eksplisit).
+    hppFinalizedAt: v.hpp_finalized_at ?? undefined,
+    hppFinalizedBy: v.hpp_finalized_by ?? undefined,
+  }));
+
+  // ---- Warehouse (migration 0031) -- pola sama deliveryKoliBatchRows di atas, tabel belum tentu
+  // ada di environment yang belum di-migrate, `.data ?? []` gracefully jadi kosong. ----
+  const koliIdsByReceipt = groupBy(warehouseReceiptKoliRows.data ?? [], (r) => r.warehouse_receipt_id);
+  const itemsByReceipt = groupBy(warehouseReceiptItemRows.data ?? [], (r) => r.warehouse_receipt_id);
+  const warehouseReceipts: WarehouseReceipt[] = (warehouseReceiptRows.data ?? []).map((r) => ({
+    id: r.id,
+    resiGroupId: r.resi_group_id,
+    mrpId: r.mrp_id,
+    vendorProduksi: r.vendor_produksi,
+    vendorInvoiceId: r.vendor_invoice_id ?? undefined,
+    receivedAt: r.received_at,
+    note: r.note ?? undefined,
+    createdAt: r.created_at,
+    koliIds: (koliIdsByReceipt[r.id] ?? []).map((k) => k.delivery_koli_id),
+    items: (itemsByReceipt[r.id] ?? []).map<WarehouseReceiptItem>((it) => ({
+      warna: it.warna,
+      lengan: it.lengan,
+      size: it.size,
+      kind: it.kind,
+      qty: it.qty,
+      hppPerItem: Number(it.hpp_per_item),
+      deliveryKoliId: it.delivery_koli_id ?? undefined,
+      sourceBatchId: it.source_batch_id ?? undefined,
+    })),
   }));
 
   // ---- Arsip/histori klaim selisih berat (lihat migration 0011_material_claim_history.sql) ----
@@ -852,6 +904,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     productionResults,
     deliveryKolis,
     vendorInvoices,
+    warehouseReceipts,
     notifications,
     productionGroupMeta,
     rejectRemarks,

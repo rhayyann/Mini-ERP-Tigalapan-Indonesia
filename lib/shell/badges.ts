@@ -13,10 +13,11 @@ import {
   mrpIdsWithUnpackedFg,
   pendingWeighRollsCount,
   productionYieldAlertsList,
+  warehouseReceivableGroups,
   warnaLenganGroupsWithFg,
 } from "@/lib/mrp/derive";
 import type { MrpDetail } from "@/lib/mrp/store";
-import type { DeliveryKoli, MaklonInvoice, MaklonPO, MaterialPO, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, VendorInvoice } from "@/lib/mrp/types";
+import type { DeliveryKoli, MaklonInvoice, MaklonPO, MaterialPO, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, VendorInvoice, WarehouseReceipt } from "@/lib/mrp/types";
 
 /** Minimal shape yang dibutuhkan dari `MrpDetail` — dideklarasikan lokal (bukan import
  *  dari lib/mrp/store) supaya lib/shell tidak bergantung ke store, cukup ke bentuk datanya. */
@@ -383,6 +384,26 @@ const SHIPPABLE_SOURCES: ShippableKind[] = ["FG", "REWORK"];
  *  menjumlahkan PCS yang masih belum dikemas untuk SATU MRP, dipakai marker dropdown "pilih MRP"
  *  di app/vendor-maklon/pengiriman/page.tsx. Unit = pcs (beda dari counterpart-nya yang unitnya
  *  "MRP"), supaya marker-nya informatif ("berapa banyak" bukan cuma "MRP ini punya sisa"). */
+/** Spec Portal Warehouse, requirement 16 -- resi group yang LOLOS gate HPP tapi belum dibongkar
+ *  (konsisten dengan definisi "butuh aksi user" badge lain di file ini). Grup yang masih menunggu
+ *  Finance/belum ada invoice (gateReason terisi) TIDAK dihitung -- Warehouse belum bisa berbuat
+ *  apa-apa untuk grup itu (bukan "pending aksi Warehouse", tapi "pending aksi Finance"). */
+export function countWarehousePendingReceipt(
+  deliveryKolis: DeliveryKoli[],
+  vendorInvoices: VendorInvoice[],
+  mrpDetails: MrpDetail[],
+  staticMrps: Mrp[],
+  productionBatches: ProductionBatch[],
+  productionResults: ProductionResult[],
+  productionGroupMeta: ProductionGroupMeta[],
+  rawInvoices: RawMaterialInvoice[],
+  warehouseReceipts: WarehouseReceipt[]
+): number {
+  return warehouseReceivableGroups(deliveryKolis, vendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, warehouseReceipts).filter(
+    (g) => !g.gateReason
+  ).length;
+}
+
 export function countPengirimanPendingForMrp(
   mrpId: string,
   vendorId: string,

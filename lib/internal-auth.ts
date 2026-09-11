@@ -2,7 +2,7 @@
 // ke client -- bisa dibaca siapapun lewat DevTools/view-source). Sekarang password
 // dicek server-only dari env var INTERNAL_PASSWORD_<ROLE> (lihat lib/auth/actions.ts),
 // jadi file ini cuma menyimpan info non-sensitif (label/homeHref) yang aman dipakai UI.
-export type InternalRole = "ppic" | "procurement" | "finance" | "scm" | "produksi";
+export type InternalRole = "ppic" | "procurement" | "finance" | "scm" | "produksi" | "warehouse";
 
 export type InternalAccount = {
   role: InternalRole;
@@ -19,6 +19,10 @@ export const INTERNAL_ACCOUNTS: InternalAccount[] = [
   // lintas MRP — read-only, tidak ada aksi approval/input.
   { role: "scm", label: "SCM", homeHref: "/scm/approval-mrp" },
   { role: "produksi", label: "Produksi", homeHref: "/produksi/monitoring" },
+  // Warehouse: entitas internal yang menerima koli barang jadi (FG) kiriman Vendor Produksi &
+  // "membongkar"-nya jadi item stok gudang (Spec Portal Warehouse) -- satu akun umum, sama pola
+  // PPIC/SCM/Finance (Q2), bukan multi-akun/multi-lokasi.
+  { role: "warehouse", label: "Warehouse", homeHref: "/warehouse/penerimaan" },
 ];
 
 export function internalAccountFor(role: InternalRole): InternalAccount | undefined {

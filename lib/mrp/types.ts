@@ -274,7 +274,7 @@ export type RawMaterialInvoice = {
   addBuyReceipts: Record<string, AddBuyReceipt>;
 };
 
-export type NotificationAudience = "ppic" | "procurement" | "finance" | "scm" | "produksi" | "vendorMaklon" | "vendorSupplier" | "admin";
+export type NotificationAudience = "ppic" | "procurement" | "finance" | "scm" | "produksi" | "warehouse" | "vendorMaklon" | "vendorSupplier" | "admin";
 
 export type Notification = {
   id: string;
@@ -425,6 +425,40 @@ export type DeliveryKoli = {
   resiInvoicedAt?: string;
 };
 
+/** Spec Portal Warehouse (migration 0031) — 1 baris item hasil "Bongkar Koli" Warehouse, level
+ *  (warna, lengan, size, kind), dijumlahkan dari `DeliveryKoliItem` seluruh koli dalam 1 resi
+ *  group (lihat warehouseReceivableGroups, lib/mrp/derive.ts). `hppPerItem` adalah SNAPSHOT (nilai
+ *  HPP live saat dibongkar, disimpan — TIDAK dihitung ulang lagi sesudahnya) — lihat catatan
+ *  "Snapshot vs live" di spec. `sourceBatchId` diisi kalau item ini bisa ditelusuri ke SATU roll
+ *  spesifik (sama syarat kosongnya dengan `DeliveryKoliItem.sourceBatchId`). */
+export type WarehouseReceiptItem = {
+  warna: string;
+  lengan: Lengan;
+  size: string;
+  kind: DeliveryItemKind;
+  qty: number;
+  hppPerItem: number;
+  deliveryKoliId?: string;
+  sourceBatchId?: string;
+};
+
+/** Spec Portal Warehouse (migration 0031) — SATU penerimaan gudang = SATU resi group, dibongkar
+ *  UTUH sekaligus (Q5 final, tidak ada bongkar sebagian/koreksi qty). `vendorInvoiceId` diisi kalau
+ *  seluruh item dalam resi ini bisa ditelusuri ke tepat 1 invoice (umumnya begitu) — kosong kalau
+ *  gabungan >1 invoice (masih valid, cuma tidak ada 1 nomor invoice representatif tunggal). */
+export type WarehouseReceipt = {
+  id: string;
+  resiGroupId: string;
+  mrpId: string;
+  vendorProduksi: string;
+  vendorInvoiceId?: string;
+  receivedAt: string;
+  note?: string;
+  createdAt: string;
+  koliIds: string[];
+  items: WarehouseReceiptItem[];
+};
+
 export type VendorInvoiceLine = { mrpId: string; warna: string; lengan: Lengan; usia?: Usia; qty: number; ratePerPc: number; amount: number };
 
 export type VendorInvoiceStatus = "SUBMITTED" | "REVISION" | "APPROVED" | "PAID";
@@ -457,6 +491,13 @@ export type VendorInvoice = {
   /** Total ongkos kirim untuk invoice ini, dari invoice ekspedisi — dipakai untuk menghitung
    *  ongkir per pc di laporan HPP. Diisi manual (belum ada sumber data ekspedisi terstruktur). */
   ongkirTotal?: number;
+  /** Spec Portal Warehouse (migration 0030) — penanda Finance sudah mengunci/mengonfirmasi angka
+   *  HPP invoice ini SECARA EKSPLISIT (klik "Finalkan HPP" di Laporan HPP), jadi gate Warehouse
+   *  boleh membongkar koli-koli yang biayanya ditelusuri ke invoice ini. Ini PENANDA, BUKAN LOCK —
+   *  mengisi field ini TIDAK mengubah perilaku modul lain manapun (cutting/rework/ongkir tetap
+   *  boleh berubah, Laporan HPP tetap dihitung live) — lihat finalizeHppForInvoiceAction. */
+  hppFinalizedAt?: string;
+  hppFinalizedBy?: string;
 };
 
 export type ProductionGroupMeta = {

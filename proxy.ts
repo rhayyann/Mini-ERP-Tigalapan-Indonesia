@@ -28,6 +28,7 @@ const INTERNAL_ROLE_PREFIXES: [prefix: string, role: InternalRole][] = [
   ["/finance", "finance"],
   ["/scm", "scm"],
   ["/produksi", "produksi"],
+  ["/warehouse", "warehouse"],
 ];
 
 const PUBLIC_PATHS = ["/", "/vendor-maklon/login", "/gate-to-gate"];
