@@ -1015,6 +1015,37 @@ export function materialClaimsList(invoices: RawMaterialInvoice[]): MaterialClai
   return out.sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
 }
 
+/** BUG FIX (2026-09-12, user-reported: roll pengganti klaim tidak bisa di-cutting karena grup
+ *  warna/lenganNya sudah "Selesai Produksi" -- Final Produksi tahap 2 terlanjur dikunci SEBELUM
+ *  roll pengganti klaim sempat tiba & di-cutting). "Final Produksi" (tahap 2) BUKAN gate
+ *  Pengiriman lagi (FG sudah shippable sejak tahap 1) -- jadi TIDAK ADA alasan buru-buru
+ *  mengunci tahap 2 selama masih ada klaim material yang belum selesai untuk warna/lengan itu
+ *  (rollnya bisa jadi masih "dalam perjalanan" lewat proses klaim). Dipakai sebagai WARNING
+ *  (window.confirm di production-final-tab.tsx), BUKAN hard-block server -- vendor tetap boleh
+ *  lanjut kalau memang yakin (mis. klaim itu untuk roll yang sudah tidak relevan lagi). */
+export function openMaterialClaimsForGroup(
+  mrpId: string,
+  vendorProduksi: string,
+  warna: string,
+  lengan: Lengan,
+  invoices: RawMaterialInvoice[],
+  resolutions: Record<string, unknown>,
+  returRequests: Record<string, unknown>,
+  returDeliveries: Record<string, unknown>,
+  returReceipts: Record<string, unknown>,
+  replacements: Record<string, unknown> = {},
+  acceptances: Record<string, unknown> = {}
+): MaterialClaimRow[] {
+  return materialClaimsList(invoices).filter(
+    (c) =>
+      c.mrpId === mrpId &&
+      c.vendorProduksi === vendorProduksi &&
+      c.warna === warna &&
+      c.lengan === lengan &&
+      materialClaimStage(c.key, resolutions, returRequests, returDeliveries, returReceipts, replacements, acceptances) !== "SELESAI"
+  );
+}
+
 /** Revisi 2026-09-06: saldo deposit VENDOR (supplier) berjalan -- SUM(amount CREDIT) dikurangi
  *  SUM(amount DEBIT) untuk supplier itu. Sengaja dihitung LIVE dari seluruh baris ledger (bukan 1
  *  kolom running-total tersendiri) supaya tidak ada 2 sumber kebenaran saldo yang bisa selisih --
