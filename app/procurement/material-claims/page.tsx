@@ -407,7 +407,11 @@ export default function MaterialClaimsPage() {
             firstColumnRender={(r) => <span className="font-mono">{r.mrpId}</span>}
             filterDefs={[
               { label: "No MRP", options: Array.from(new Set(rows.map((r) => r.mrpId))), test: (r, v) => r.mrpId === v },
-              { label: "Vendor produksi", options: Array.from(new Set(rows.map((r) => r.vendorProduksi))), test: (r, v) => r.vendorProduksi === v },
+              {
+                label: "Vendor produksi",
+                options: Array.from(new Set(rows.map((r) => VENDOR_PRODUKSI[r.vendorProduksi]?.name ?? r.vendorProduksi))),
+                test: (r, v) => (VENDOR_PRODUKSI[r.vendorProduksi]?.name ?? r.vendorProduksi) === v,
+              },
               { label: "Supplier", options: Array.from(new Set(rows.map((r) => r.supplier))), test: (r, v) => r.supplier === v },
               {
                 label: "Status",
@@ -442,8 +446,8 @@ export default function MaterialClaimsPage() {
               { label: "No MRP", options: Array.from(new Set(archivedHistory.map((h) => h.mrpId ?? "—"))), test: (h, v) => (h.mrpId ?? "—") === v },
               {
                 label: "Vendor produksi",
-                options: Array.from(new Set(archivedHistory.map((h) => h.vendorProduksi ?? "—"))),
-                test: (h, v) => (h.vendorProduksi ?? "—") === v,
+                options: Array.from(new Set(archivedHistory.map((h) => (h.vendorProduksi ? (VENDOR_PRODUKSI[h.vendorProduksi]?.name ?? h.vendorProduksi) : "—")))),
+                test: (h, v) => (h.vendorProduksi ? (VENDOR_PRODUKSI[h.vendorProduksi]?.name ?? h.vendorProduksi) : "—") === v,
               },
               {
                 label: "Cara selesai",

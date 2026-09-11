@@ -14,21 +14,32 @@
  *  ke client) sudah DIHAPUS. Password login vendor sekarang cuma hidup sebagai hash bcrypt di
  *  kolom vendors_produksi.password_hash (lihat supabase/migrations/0002_seed_master_data.sql),
  *  dicek server-only lewat lib/auth/actions.ts#loginVendorAction — tidak pernah lagi bisa dibaca
- *  dari bundle JS. */
+ *  dari bundle JS.
+ *
+ *  `name` SEMUA KAPITAL (2026-09-11, user-reported: tampilan sempat menunjukkan KODE vendor
+ *  mentah, mis. "GI-01", bukan nama lengkapnya "Yogi 01" -- di beberapa tempat memang bug
+ *  (dropdown filter yang belum lewat lookup nama, lihat fix di material-claims/page.tsx &
+ *  po-approval/page.tsx), tapi sekaligus jadi momentum menyeragamkan gaya tampilan nama vendor
+ *  jadi UPPERCASE di semua tempat -- HAMPIR SEMUA render vendor di app ini sudah lewat pola
+ *  `VENDOR_PRODUKSI[id]?.name ?? id`, jadi cukup uppercase-kan `name` di sini, tidak perlu ubah
+ *  puluhan call site satu-satu). Padanan di DB (`vendors_produksi.name`, sumber prioritas untuk
+ *  `vendorProduksiRows` di derive.ts) ikut di-uppercase di migration 0029 — JANGAN biarkan 2
+ *  sumber ini beda kapitalisasi lagi. `normalizeVendorCode` (parseImport.ts) sudah
+ *  case-insensitive (`.toUpperCase()` saat cocokkan), jadi import MRP tidak terpengaruh. */
 export const VENDOR_PRODUKSI: Record<
   string,
   { name: string; baseCapacity: number; ratePerPc: number; estDays: number; retentionPct: number; productionLeadDays: number }
 > = {
-  BAYU: { name: "Bayu", baseCapacity: 8500, ratePerPc: 7000, estDays: 14, retentionPct: 10, productionLeadDays: 7 },
-  "GI-01": { name: "Yogi 01", baseCapacity: 6200, ratePerPc: 6900, estDays: 11, retentionPct: 10, productionLeadDays: 7 },
-  "GI-02": { name: "Yogi 02", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
-  CE: { name: "Cecep", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
-  KK: { name: "Koko", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
-  CP: { name: "Custom Project", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
-  MKS: { name: "Konveksi Makassar", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
-  AWL: { name: "Awal", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
-  ART: { name: "Artha", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
-  ELMN: { name: "Elang", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  BAYU: { name: "BAYU", baseCapacity: 8500, ratePerPc: 7000, estDays: 14, retentionPct: 10, productionLeadDays: 7 },
+  "GI-01": { name: "YOGI 01", baseCapacity: 6200, ratePerPc: 6900, estDays: 11, retentionPct: 10, productionLeadDays: 7 },
+  "GI-02": { name: "YOGI 02", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  CE: { name: "CECEP", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  KK: { name: "KOKO", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  CP: { name: "CUSTOM PROJECT", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  MKS: { name: "KONVEKSI MAKASSAR", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  AWL: { name: "AWAL", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  ART: { name: "ARTHA", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
+  ELMN: { name: "ELANG", baseCapacity: 5000, ratePerPc: 7000, estDays: 12, retentionPct: 10, productionLeadDays: 7 },
 };
 
 export const SUPPLIERS = ["Supplier Rajut Jaya", "Supplier ABC", "Supplier Cemerlang"];
