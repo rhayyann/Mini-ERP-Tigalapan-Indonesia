@@ -111,71 +111,133 @@ function MaklonPoItemProgress({ po }: { po: MaklonPO }) {
   );
 }
 
+type MrpGroup = { mrpId: string; vendorPOs: MaklonPO[] };
+
+/** Baris ringkas 1 vendor (dipakai di dalam drill-down langkah 1) -- mirror kolom
+ *  "Progress kirim/tagih" yang tadinya di kolom tabel utama, sekarang jadi baris klik-able. */
+function VendorPoRow({
+  po,
+  selected,
+  onSelect,
+  deliveryKolis,
+  vendorInvoices,
+  maklonInvoices,
+}: {
+  po: MaklonPO;
+  selected: boolean;
+  onSelect: () => void;
+  deliveryKolis: ReturnType<typeof useMrpStore.getState>["deliveryKolis"];
+  vendorInvoices: ReturnType<typeof useMrpStore.getState>["vendorInvoices"];
+  maklonInvoices: ReturnType<typeof useMrpStore.getState>["maklonInvoices"];
+}) {
+  const badge = maklonPoBadgeWithApproval(po, vendorInvoices);
+  const lockedBy = maklonPoInvoiceLockedBy(po.mrpId, po.vendorProduksi, maklonInvoices, vendorInvoices);
+  const prog = lockedBy === "maklon" ? null : maklonPoDeliveryProgress(po, deliveryKolis, vendorInvoices);
+  return (
+    <button
+      onClick={onSelect}
+      className={"flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left " + (selected ? "border-action-primary bg-info-bg" : "border-[#E4E9EE] bg-white hover:bg-[#FAFBFC]")}
+    >
+      <span className="w-[140px] flex-none truncate font-sans text-[12px] font-semibold text-[#31414F]">{VENDOR_PRODUKSI[po.vendorProduksi]?.name ?? po.vendorProduksi}</span>
+      <span className="w-[90px] flex-none font-mono text-[11px] text-text-muted">{formatPcs(po.qty)} pcs</span>
+      <span className="w-[110px] flex-none font-mono text-[11px] text-text-muted">{formatRupiah(po.amount)}</span>
+      <StatusPill tone={badge.tone} className="flex-none">
+        {badge.label}
+      </StatusPill>
+      <span className="flex-1">
+        {prog ? (
+          <span className="flex items-center gap-1.5">
+            <span className="relative block h-1.5 w-full overflow-hidden rounded-full bg-[#EEF0F3]">
+              <span className="absolute inset-y-0 left-0 rounded-full bg-accent-blue" style={{ width: `${prog.invoicedPct}%` }} />
+              <span className="absolute inset-y-0 left-0 rounded-full bg-success" style={{ width: `${prog.deliveredPct}%` }} />
+            </span>
+            <span className="flex-none font-mono text-[10.5px] text-text-muted">{prog.deliveredPct}%</span>
+          </span>
+        ) : (
+          <span className="font-sans text-[10.5px] text-text-muted">Ditagih via Invoice Maklon (lump sum)</span>
+        )}
+      </span>
+      <span className="flex-none text-text-muted">{selected ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+    </button>
+  );
+}
+
+/** Item 2026-09-12 (user-requested, revisi ke-3): hierarki 2 langkah -- 1 baris per MRP di tabel
+ *  utama (bukan 1 baris per MRP+vendor lagi), klik baris MRP membuka daftar vendor yang mengerjakan
+ *  MRP itu, klik salah satu vendor baru menampilkan MaklonPoItemProgress-nya. Pola sama persis
+ *  dengan drill-down MRP->vendor->item di app/finance/laporan-hpp/page.tsx (MrpVendorDrilldown),
+ *  dipakai lagi di sini supaya konsisten. State pilihan vendor lokal per baris MRP (reset tiap
+ *  collapse->expand karena DataTable cuma me-mount renderExpanded selagi baris itu expanded). */
+function MrpVendorDrilldown({ group }: { group: MrpGroup }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
+  const vendorInvoices = useMrpStore((s) => s.vendorInvoices);
+  const maklonInvoices = useMrpStore((s) => s.maklonInvoices);
+
+  const selected = group.vendorPOs.find((p) => p.id === selectedId) ?? null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      {selected && (
+        <button onClick={() => setSelectedId(null)} className="self-start font-sans text-[11.5px] font-semibold text-action-primary underline">
+          ← Ganti vendor ({group.vendorPOs.length} vendor mengerjakan MRP ini)
+        </button>
+      )}
+      {!selected ? (
+        <div className="flex flex-col gap-1.5">
+          {group.vendorPOs.map((po) => (
+            <VendorPoRow
+              key={po.id}
+              po={po}
+              selected={false}
+              onSelect={() => setSelectedId(po.id)}
+              deliveryKolis={deliveryKolis}
+              vendorInvoices={vendorInvoices}
+              maklonInvoices={maklonInvoices}
+            />
+          ))}
+        </div>
+      ) : (
+        <MaklonPoItemProgress po={selected} />
+      )}
+    </div>
+  );
+}
+
 export default function ProduksiMonitoringPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   const maklonPOs = useMrpStore((s) => s.maklonPOs);
-  const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const vendorInvoices = useMrpStore((s) => s.vendorInvoices);
-  const maklonInvoices = useMrpStore((s) => s.maklonInvoices);
 
   if (!mounted) return null;
 
-  const rows = maklonPOs.filter((p) => p.approved);
+  const approved = maklonPOs.filter((p) => p.approved);
+  const mrpMap = new Map<string, MrpGroup>();
+  for (const p of approved) {
+    if (!mrpMap.has(p.mrpId)) mrpMap.set(p.mrpId, { mrpId: p.mrpId, vendorPOs: [] });
+    mrpMap.get(p.mrpId)!.vendorPOs.push(p);
+  }
+  const rows = Array.from(mrpMap.values()).sort((a, b) => a.mrpId.localeCompare(b.mrpId));
 
-  const columns: ColumnDef<MaklonPO>[] = [
-    { key: "noPo", label: "No PO", default: true, render: (p) => <span className="font-mono font-medium">{p.id}</span> },
-    { key: "vendor", label: "Vendor", default: true, render: (p) => VENDOR_PRODUKSI[p.vendorProduksi]?.name ?? p.vendorProduksi },
-    { key: "qty", label: "Qty", default: true, align: "right", render: (p) => formatPcs(p.qty) + " pcs" },
-    { key: "nilai", label: "Nilai", default: true, align: "right", render: (p) => formatRupiah(p.amount) },
+  const columns: ColumnDef<MrpGroup>[] = [
+    {
+      key: "vendorCount",
+      label: "Vendor",
+      default: true,
+      render: (g) => (g.vendorPOs.length === 1 ? (VENDOR_PRODUKSI[g.vendorPOs[0].vendorProduksi]?.name ?? g.vendorPOs[0].vendorProduksi) : `${g.vendorPOs.length} vendor`),
+    },
+    { key: "qty", label: "Total Qty", default: true, align: "right", render: (g) => formatPcs(g.vendorPOs.reduce((a, p) => a + p.qty, 0)) + " pcs" },
+    { key: "nilai", label: "Total Nilai", default: true, align: "right", render: (g) => formatRupiah(g.vendorPOs.reduce((a, p) => a + p.amount, 0)) },
     {
       key: "status",
       label: "Status",
       default: true,
-      render: (p) => {
-        const badge = maklonPoBadgeWithApproval(p, vendorInvoices);
-        return <StatusPill tone={badge.tone}>{badge.label}</StatusPill>;
-      },
-    },
-    {
-      key: "progress",
-      label: "Progress kirim/tagih",
-      default: true,
-      render: (p) => {
-        // Kalau ditagih lewat jalur Invoice Maklon lama (lump sum), progress qty-per-pcs di bawah
-        // tidak relevan — sama seperti catatan di app/procurement/po-approval/page.tsx.
-        const lockedBy = maklonPoInvoiceLockedBy(p.mrpId, p.vendorProduksi, maklonInvoices, vendorInvoices);
-        if (lockedBy === "maklon") {
-          return <span className="font-sans text-[11px] font-medium text-text-muted">Ditagih via Invoice Maklon (lump sum)</span>;
-        }
-        const prog = maklonPoDeliveryProgress(p, deliveryKolis, vendorInvoices);
-        return (
-          <div className="flex min-w-[150px] flex-col gap-1.5">
-            <div className="flex items-baseline gap-1 font-mono text-[11px]">
-              <span className="text-text-muted">Kirim</span>
-              <span className="font-semibold text-[#31414F]">{formatPcs(prog.deliveredQty)}</span>
-              <span className="text-text-muted">/ {formatPcs(prog.targetQty)} pcs</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="h-1.5 w-full max-w-[110px] flex-1 overflow-hidden rounded-full bg-[#EEF0F3]">
-                <span className="block h-full rounded-full bg-success" style={{ width: `${prog.deliveredPct}%` }} />
-              </span>
-              <span className="font-mono text-[10.5px] text-text-muted">{prog.deliveredPct}%</span>
-            </div>
-            <div className="flex items-baseline gap-1 font-mono text-[11px]">
-              <span className="text-text-muted">Tagih</span>
-              <span className="font-semibold text-[#31414F]">{formatPcs(prog.invoicedQty)}</span>
-              <span className="text-text-muted">/ {formatPcs(prog.targetQty)} pcs</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="h-1.5 w-full max-w-[110px] flex-1 overflow-hidden rounded-full bg-[#EEF0F3]">
-                <span className="block h-full rounded-full bg-accent-blue" style={{ width: `${prog.invoicedPct}%` }} />
-              </span>
-              <span className="font-mono text-[10.5px] text-text-muted">{prog.invoicedPct}%</span>
-            </div>
-          </div>
-        );
+      render: (g) => {
+        const badges = g.vendorPOs.map((p) => maklonPoBadgeWithApproval(p, vendorInvoices).label);
+        const allSame = badges.every((b) => b === badges[0]);
+        return allSame ? <StatusPill tone={maklonPoBadgeWithApproval(g.vendorPOs[0], vendorInvoices).tone}>{badges[0]}</StatusPill> : <span className="font-sans text-[11px] text-text-muted">Campuran</span>;
       },
     },
   ];
@@ -186,30 +248,18 @@ export default function ProduksiMonitoringPage() {
       activeHref="/produksi/monitoring"
       breadcrumb={["Dashboard", "Monitoring Produksi"]}
       title="Monitoring Produksi"
-      subtitle={`${rows.length} PO vendor produksi — progres kirim & tagih lintas semua vendor`}
+      subtitle={`${rows.length} MRP dengan PO vendor produksi — progres kirim & tagih lintas semua vendor`}
     >
       <DataTable
-        title="PO vendor produksi"
-        subtitle="Klik baris untuk lihat progres produksi per item (warna/lengan) — target, cutting, finish good, reject, rework"
+        title="MRP dengan PO vendor produksi"
+        subtitle="Klik baris untuk pilih vendor, lalu lihat progres produksi per item (warna/lengan/size)"
         columns={columns}
         rows={rows}
-        keyOf={(p) => p.id}
+        keyOf={(g) => g.mrpId}
         firstColumnLabel="No. MRP"
-        firstColumnRender={(p) => <span className="font-mono">{p.mrpId}</span>}
-        renderExpanded={(p) => <MaklonPoItemProgress po={p} />}
-        filterDefs={[
-          { label: "No MRP", options: Array.from(new Set(rows.map((p) => p.mrpId))), test: (p, v) => p.mrpId === v },
-          {
-            label: "Vendor",
-            options: Array.from(new Set(rows.map((p) => VENDOR_PRODUKSI[p.vendorProduksi]?.name ?? p.vendorProduksi))),
-            test: (p, v) => (VENDOR_PRODUKSI[p.vendorProduksi]?.name ?? p.vendorProduksi) === v,
-          },
-          {
-            label: "Status",
-            options: Array.from(new Set(rows.map((p) => maklonPoBadgeWithApproval(p, vendorInvoices).label))),
-            test: (p, v) => maklonPoBadgeWithApproval(p, vendorInvoices).label === v,
-          },
-        ]}
+        firstColumnRender={(g) => <span className="font-mono">{g.mrpId}</span>}
+        renderExpanded={(g) => <MrpVendorDrilldown group={g} />}
+        filterDefs={[{ label: "No MRP", options: Array.from(new Set(rows.map((g) => g.mrpId))), test: (g, v) => g.mrpId === v }]}
         emptyText="Belum ada PO vendor produksi yang disetujui Finance."
       />
     </AppShell>
