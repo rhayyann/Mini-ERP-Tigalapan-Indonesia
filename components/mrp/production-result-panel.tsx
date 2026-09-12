@@ -102,6 +102,12 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
   // draft tersendiri (lihat saveSizeTotals di bawah).
   const [sizeTotalDraft, setSizeTotalDraft] = useState<Record<string, number>>({});
   const [expandedPoId, setExpandedPoId] = useState("");
+  // Item 2026-09-12 (user-requested): tabel "Roll" (daftar roll + tombol Tutup Roll) di bawah
+  // form "Isi qty per size" default TERSEMBUNYI -- dulu selalu tampil, bikin panel FG kepanjangan
+  // & (user-reported) sempat disalahartikan sebagai satu-satunya cara "menyelesaikan" produksi.
+  // Cuma 1 grup yang bisa expanded sekaligus (lihat expandedGroupKey), jadi 1 boolean komponen-level
+  // sudah cukup -- direset ke false tiap toggleGroup pindah grup (lihat toggleGroup di bawah).
+  const [showRollTable, setShowRollTable] = useState(false);
   // Bug fix (2026-09-06): confirmFgDone/undoFgConfirm dulu dipanggil fire-and-forget (tanpa
   // .catch) -- kalau server menolak (mis. baseline hasil cutting dikira kosong, lihat fix di
   // lib/mrp/actions.ts fetchProductionScopeForMrp), promise-nya cuma jadi unhandled rejection di
@@ -133,6 +139,7 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
     } else {
       setExpandedGroupKey(key);
       setSizeTotalDraft({});
+      setShowRollTable(false);
     }
   }
 
@@ -385,6 +392,14 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                             totalCapacity[size] = openBatches.reduce((a, b) => a + Math.max(0, (b.sizeQty?.[size] ?? 0) - (b.fgSizeQty?.[size] ?? 0)), 0);
                           }
                           const overflow = sizesOpen.filter((size) => (sizeTotalDraft[size] ?? 0) > totalCapacity[size]);
+                          // Item 2026-09-12 (user-reported, gambar 2): size yang sizesOpen-nya
+                          // "pairing" (1 roll dicutting untuk 2 size sekaligus, mis. M-XL) tapi
+                          // salah satu size-nya sudah full (totalCapacity 0 karena FG size itu di
+                          // semua roll terbuka sudah capai target) TIDAK PERLU ditampilkan lagi di
+                          // form input -- tidak ada gunanya diisi (remaining selalu 0). Cuma
+                          // memfilter TAMPILAN (sizesToShow) -- sizesOpen asli TETAP dipakai apa
+                          // adanya di saveSizeTotals() supaya distribusi tidak berubah perilaku.
+                          const sizesToShow = sizesOpen.filter((size) => totalCapacity[size] > 0);
                           // BUG FIX (ditemukan lewat verifikasi live, 2026-09-10): fungsi ini dulu
                           // (dari desain kartu-per-roll lama) fallback ke `b.sizeQty` (TARGET hasil
                           // cutting) kalau `fgSizeQty` masih kosong -- benar untuk desain lama (input
@@ -444,23 +459,61 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                                 Isi qty per size — qty BARU yang baru selesai (otomatis dipetakan &amp; disimpan ke roll, roll pertama dulu; roll yang
                                 penuh otomatis ditutup)
                               </div>
-                              <div className="flex flex-wrap items-end gap-3 px-3 py-2.5">
-                                {sizesOpen.map((size) => (
-                                  <div key={size} className="flex flex-col">
-                                    <span className="whitespace-nowrap font-sans text-[10px] font-medium text-text-muted">
-                                      {size} <span className="text-[9px]">({recorded[size] ?? 0}/{target[size] ?? 0} — sisa roll terbuka maks {totalCapacity[size]})</span>
-                                    </span>
-                                    <NumberInput
-                                      value={sizeTotalDraft[size] ?? 0}
-                                      decimals={0}
-                                      onChange={(v) => setSizeTotalDraft((prev) => ({ ...prev, [size]: v }))}
-                                      className="input mt-1 w-[92px] text-right"
-                                    />
-                                  </div>
-                                ))}
-                                <Button onClick={() => runAction(quickSaveKey, saveSizeTotals())} disabled={isPending(quickSaveKey)} variant="accent" size="sm">
+                              {sizesToShow.length === 0 ? (
+                                <div className="px-3 py-3 text-center font-sans text-[11.5px] text-text-muted">
+                                  Semua size sudah mencapai target finish good — tinggal Tutup Roll (lihat di bawah) untuk menyelesaikan roll yang tersisa.
+                                </div>
+                              ) : (
+                                <div className="flex flex-wrap items-end gap-3 px-3 py-2.5">
+                                  {sizesToShow.map((size) => (
+                                    // Item 2026-09-12 (user-reported): size dulu ditulis kecil/muted
+                                    // di atas input, sisa-maks dicampur jadi 1 baris kecil -- sekarang
+                                    // size ditaruh sebagai badge besar DI SAMPING input (ukuran teks
+                                    // setara angkanya, bukan lagi label mini), dan "sisa maks" jadi
+                                    // caption sendiri di bawah supaya jelas terbaca terpisah.
+                                    <div key={size} className="flex flex-col gap-1 rounded-md border border-[#E4E9EE] bg-[#FAFBFC] px-2.5 py-2">
+                                      <div className="flex items-center gap-2">
+                                        <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md bg-[#DCE8F7] font-sans text-[13px] font-bold text-action-primary">
+                                          {size}
+                                        </span>
+                                        <NumberInput
+                                          value={sizeTotalDraft[size] ?? 0}
+                                          decimals={0}
+                                          onChange={(v) => setSizeTotalDraft((prev) => ({ ...prev, [size]: v }))}
+                                          className="input h-9 w-[92px] text-right text-[13px] font-semibold"
+                                        />
+                                      </div>
+                                      <span className="whitespace-nowrap font-mono text-[10px] text-text-muted">
+                                        {recorded[size] ?? 0}/{target[size] ?? 0} pcs · sisa maks <span className="font-semibold text-[#31414F]">{totalCapacity[size]}</span>
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              <div className="flex items-center gap-2 border-t border-[#EEF1F4] px-3 py-2.5">
+                                <Button onClick={() => runAction(quickSaveKey, saveSizeTotals())} disabled={isPending(quickSaveKey) || sizesToShow.length === 0} variant="accent" size="sm">
                                   {isPending(quickSaveKey) ? "Menyimpan…" : "Simpan →"}
                                 </Button>
+                                {/* Item 2026-09-12 (user-reported): "Tutup Roll" sempat disalahartikan
+                                   sebagai cara menyelesaikan produksi -- padahal aksi itu murni
+                                   per-roll (lihat catatan panjang di bawah). Tombol "Selesai Produksi"
+                                   SEBENARNYA sudah ada (di baris ringkasan grup, tombol "Selesai
+                                   Produksi"/"Buka kunci" jauh di atas), cuma letaknya jauh dari form
+                                   ini jadi gampang tidak ketemu. Ditaruh lagi di sini (persis di
+                                   sebelah Simpan) supaya jelas ini AKSI TERPISAH, bukan efek samping
+                                   Tutup Roll -- action & gate-nya SAMA PERSIS (confirmFgDone,
+                                   mensyaratkan allRollsClosed), cuma dipanggil dari 2 tempat. */}
+                                {!isFgConfirmed && (
+                                  <Button
+                                    onClick={() => allRollsClosed && runAction(groupKey, confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
+                                    disabled={!allRollsClosed || isPending(groupKey)}
+                                    title={allRollsClosed ? "Kunci FG grup ini & hitung reject otomatis dari selisih cutting vs finish good" : "Tutup semua roll grup ini dulu (lihat tabel Roll di bawah)"}
+                                    variant="primary"
+                                    size="sm"
+                                  >
+                                    {isPending(groupKey) ? "Menyimpan…" : "Selesai Produksi →"}
+                                  </Button>
+                                )}
                               </div>
                               {overflow.length > 0 && (
                                 <div className="border-t border-[#F0DFC2] bg-warning-bg px-3 py-1.5 font-sans text-[10.5px] text-warning-fg">
@@ -482,8 +535,21 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                            murni gate sisi UI yang dihapus -- lihat komentar di atas) -- sisa
                            selisih cutting-vs-FG roll ini otomatis terhitung reject saat grup
                            di-"Selesai Produksi"-kan (recomputeAutoRejectForGroup, actions.ts). */}
+                        {/* Item 2026-09-12 (user-reported): tabel Roll default disembunyikan --
+                           dulu selalu tampil penuh di bawah form, bikin panel FG kepanjangan &
+                           kelihatan seperti "harus" ditutup satu-satu dari sini, padahal Tutup Roll
+                           per-roll cuma perlu diakses kalau memang ada roll yang FG-nya tidak akan
+                           mencapai 100% (sisanya jadi reject otomatis). Toggle klik untuk buka. */}
                         {groupBatches.length > 0 && (
-                          <div className="mt-3 overflow-hidden rounded-md border border-[#EEF1F4] bg-white">
+                          <button
+                            onClick={() => setShowRollTable((v) => !v)}
+                            className="mt-3 font-sans text-[11px] font-semibold text-action-primary underline"
+                          >
+                            {showRollTable ? "Sembunyikan daftar roll ↑" : `Lihat daftar roll (${groupBatches.length}) →`}
+                          </button>
+                        )}
+                        {showRollTable && groupBatches.length > 0 && (
+                          <div className="mt-2 overflow-hidden rounded-md border border-[#EEF1F4] bg-white">
                             <div className="grid grid-cols-4 gap-x-2 bg-[#F7F9FB] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
                               <span>Roll</span>
                               <span className="text-right">FG / hasil cutting</span>
