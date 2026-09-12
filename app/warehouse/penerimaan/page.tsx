@@ -130,7 +130,7 @@ export default function WarehousePenerimaanPage() {
     { key: "qty", label: "Total Qty", default: true, align: "right", render: (g) => formatPcs(g.totalQty) },
     {
       key: "status",
-      label: "Status HPP",
+      label: "Status",
       default: true,
       render: (g) =>
         g.gateReason ? (
@@ -150,8 +150,8 @@ export default function WarehousePenerimaanPage() {
       subtitle="Batch pengiriman (resi) dari Vendor Produksi yang siap/dalam antrean dibongkar jadi stok gudang"
     >
       <div className="grid grid-cols-3 gap-3.5">
-        <KpiCard label="Siap dibongkar" value={formatPcs(readyCount)} sub="resi lolos gate HPP" accent="success" />
-        <KpiCard label="Menunggu HPP" value={formatPcs(waitingCount)} sub="resi belum lolos gate" accent="orange" />
+        <KpiCard label="Siap dibongkar" value={formatPcs(readyCount)} sub="resi dengan invoice sudah dibayar" accent="success" />
+        <KpiCard label="Menunggu invoice" value={formatPcs(waitingCount)} sub="resi belum lolos syarat" accent="orange" />
         <KpiCard label="Nilai siap dibongkar" value={formatRupiah(totalNilaiReady)} accent="blue" />
       </div>
 

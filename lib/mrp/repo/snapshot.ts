@@ -766,10 +766,6 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     paidAt: v.paid_at ?? undefined,
     dueDate: v.due_date ?? undefined,
     ongkirTotal: v.ongkir_total == null ? undefined : Number(v.ongkir_total),
-    // Migration 0030 — graceful (undefined) kalau migration belum di-apply (kolom tidak ada di
-    // `v`, jadi bernilai undefined apa adanya, `?? undefined` di bawah cuma jaga-jaga eksplisit).
-    hppFinalizedAt: v.hpp_finalized_at ?? undefined,
-    hppFinalizedBy: v.hpp_finalized_by ?? undefined,
   }));
 
   // ---- Warehouse (migration 0031) -- pola sama deliveryKoliBatchRows di atas, tabel belum tentu

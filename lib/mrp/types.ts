@@ -491,13 +491,6 @@ export type VendorInvoice = {
   /** Total ongkos kirim untuk invoice ini, dari invoice ekspedisi — dipakai untuk menghitung
    *  ongkir per pc di laporan HPP. Diisi manual (belum ada sumber data ekspedisi terstruktur). */
   ongkirTotal?: number;
-  /** Spec Portal Warehouse (migration 0030) — penanda Finance sudah mengunci/mengonfirmasi angka
-   *  HPP invoice ini SECARA EKSPLISIT (klik "Finalkan HPP" di Laporan HPP), jadi gate Warehouse
-   *  boleh membongkar koli-koli yang biayanya ditelusuri ke invoice ini. Ini PENANDA, BUKAN LOCK —
-   *  mengisi field ini TIDAK mengubah perilaku modul lain manapun (cutting/rework/ongkir tetap
-   *  boleh berubah, Laporan HPP tetap dihitung live) — lihat finalizeHppForInvoiceAction. */
-  hppFinalizedAt?: string;
-  hppFinalizedBy?: string;
 };
 
 export type ProductionGroupMeta = {

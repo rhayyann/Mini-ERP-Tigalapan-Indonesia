@@ -3602,11 +3602,11 @@ function isReworkHppRow(r: HppRow): boolean {
  *  nilai (bukan `biayaProduksiTotal`/nominal tagihan vendor — nilai stok gudang harus mencerminkan
  *  HPP penuh: biaya produksi + COGS bahan + ongkir), (c) membawa `gateReason` per grup.
  *
- *  Gate (R9, final, Q1 = Opsi B): grup boleh "Bongkar" HANYA kalau (a) SETIAP item koli dalam grup
- *  ketemu baris HPP-nya (bisa ditelusuri lewat koliId+warna+lengan+size), (b) himpunan invoiceId
- *  dari baris-baris itu TIDAK kosong, (c) SEMUA invoice dalam himpunan itu sudah `hppFinalizedAt`.
- *  Baris yang gagal gate TETAP tampil (item TIDAK disembunyikan) dengan `gateReason` spesifik --
- *  gudang harus tetap tahu barang fisiknya sudah datang walau belum boleh dibongkar. */
+ *  Gate (final): grup boleh "Bongkar" HANYA kalau (a) SETIAP item koli dalam grup ketemu baris
+ *  HPP-nya (bisa ditelusuri lewat koliId+warna+lengan+size), (b) himpunan invoiceId dari baris-baris
+ *  itu TIDAK kosong, (c) SEMUA invoice dalam himpunan itu sudah berstatus `PAID`. Baris yang gagal
+ *  gate TETAP tampil (item TIDAK disembunyikan) dengan `gateReason` spesifik -- gudang harus tetap
+ *  tahu barang fisiknya sudah datang walau belum boleh dibongkar. */
 export function warehouseReceivableGroups(
   deliveryKolis: DeliveryKoli[],
   vendorInvoices: VendorInvoice[],
@@ -3695,11 +3695,11 @@ export function warehouseReceivableGroups(
     } else {
       const invoicesInGroup = invoiceIds.map((id) => invoiceById.get(id)).filter((i): i is VendorInvoice => !!i);
       const revisionInv = invoicesInGroup.find((i) => i.status === "REVISION");
-      const unfinalized = invoicesInGroup.filter((i) => i.status !== "REVISION" && !i.hppFinalizedAt);
+      const unpaid = invoicesInGroup.filter((i) => i.status !== "REVISION" && i.status !== "PAID");
       if (revisionInv) {
         gateReason = `Invoice ${revisionInv.id} masih dalam revisi`;
-      } else if (unfinalized.length > 0) {
-        gateReason = `Menunggu Finance memfinalkan HPP invoice ${unfinalized.map((i) => i.id).join(", ")}`;
+      } else if (unpaid.length > 0) {
+        gateReason = `Menunggu Finance membayar invoice ${unpaid.map((i) => i.id).join(", ")}`;
       } else if (anyUntraceable) {
         gateReason = "HPP item ini tidak bisa ditelusuri ke koli (data lama)";
       }

@@ -7,9 +7,9 @@ import { KpiCard } from "@/components/ui/kpi-card";
 import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatDate, formatDateTime, formatPcs, formatRupiah, hppRowsForInvoicePerRoll, mrpMetaFor, type HppRow } from "@/lib/mrp/derive";
+import { formatDate, formatPcs, formatRupiah, hppRowsForInvoicePerRoll, mrpMetaFor, type HppRow } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
-import type { DeliveryKoli, VendorInvoice } from "@/lib/mrp/types";
+import type { DeliveryKoli } from "@/lib/mrp/types";
 
 /** Item 2026-09-11 (user-reported: "Batch koli" cuma label bebas yang diketik vendor, TIDAK
  *  dijamin unik -- kalau 2 koli FISIK berbeda kebetulan/sengaja dinamai sama, mis. "1", 2 baris
@@ -19,15 +19,74 @@ import type { DeliveryKoli, VendorInvoice } from "@/lib/mrp/types";
  *  dibedakan tanpa pindah ke halaman Payment Maklon > Lampiran ekspedisi. */
 type HppTableRow = HppRow & { rowId: string; tanggalKirim?: string; noResi?: string };
 
+/** Struktur agregat per vendor untuk 1 MRP -- persis rumus yang tadinya melekat langsung pada
+ *  baris utama tabel (grouping key `mrpId|vendorProduksi`), sekarang jadi 1 entry di dalam
+ *  `MrpHppSummary.vendors` (lihat requirement D, spec restrukturisasi Laporan HPP). */
+type VendorHppSummary = {
+  vendorProduksi: string;
+  vendorLabel: string;
+  totalFg: number;
+  avgHpp: number;
+  totalBiayaProduksi: number;
+  totalCogsBahan: number;
+  totalOngkir: number;
+  itemRows: HppTableRow[];
+};
+
+/** Baris utama tabel sekarang 1 MRP = 1 baris (bukan lagi 1 MRP+vendor) -- `vendors` menampung
+ *  breakdown per vendor produksi untuk drill-down langkah-1, sementara `itemRows`/`totalFg`/dst di
+ *  level ini adalah agregat gabungan SEMUA vendor MRP tsb (dihitung ulang dari gabungan itemRows,
+ *  BUKAN rata-rata dari rata-rata vendor -- lihat requirement D butir 14 di spec). */
+type MrpHppSummary = {
+  mrpId: string;
+  mrpLabel: string;
+  vendors: VendorHppSummary[];
+  totalFg: number;
+  avgHpp: number;
+  totalBiayaProduksi: number;
+  totalCogsBahan: number;
+  totalOngkir: number;
+  itemRows: HppTableRow[];
+};
+
+/** Sorting requirement D butir 20 -- batch/resi vendor tsb bisa lebih dari satu (vendor kirim
+ *  beberapa resi/koli terpisah untuk 1 MRP), urutkan supaya baris yang sama noResi-nya
+ *  mengelompok: noResi (baris tanpa resi paling bawah), lalu tanggalKirim, noKoli, warna, lengan,
+ *  item. Tidak ada header grup/subtotal per resi (non-goal, lihat spec). */
+function sortHppRowsForDetail(rows: HppTableRow[]): HppTableRow[] {
+  return [...rows].sort((a, b) => {
+    const noResiA = a.noResi ?? "";
+    const noResiB = b.noResi ?? "";
+    if (!noResiA && noResiB) return 1;
+    if (noResiA && !noResiB) return -1;
+    if (noResiA !== noResiB) return noResiA < noResiB ? -1 : 1;
+    const tglA = a.tanggalKirim ?? "";
+    const tglB = b.tanggalKirim ?? "";
+    if (tglA !== tglB) return tglA < tglB ? -1 : 1;
+    const koliA = a.noKoli ?? "";
+    const koliB = b.noKoli ?? "";
+    if (koliA !== koliB) return koliA < koliB ? -1 : 1;
+    if (a.warna !== b.warna) return a.warna < b.warna ? -1 : 1;
+    if (a.lengan !== b.lengan) return a.lengan < b.lengan ? -1 : 1;
+    if (a.item !== b.item) return a.item < b.item ? -1 : 1;
+    return 0;
+  });
+}
+
 /** Item 2026-09-11 (feedback: "Tambahkan fitur download lampiran HPP (Per no MRP)") -- export
  *  Excel dari `itemRows` (HppRow[], SUDAH dihitung lewat hppRowsForInvoicePerRoll -- granularitas
- *  per roll/koli, lebih detail dari lampiran invoice lama di Procurement) untuk 1 baris
- *  MRP+vendor, TANPA menghitung ulang apa pun -- pola export SAMA PERSIS
- *  `exportInvoiceLampiranExcel`/`downloadInvoiceLampiran` di
+ *  per roll/koli, lebih detail dari lampiran invoice lama di Procurement) untuk 1 MRP (gabungan
+ *  SEMUA vendor MRP itu, requirement D butir 21), TANPA menghitung ulang apa pun -- pola export
+ *  SAMA PERSIS `exportInvoiceLampiranExcel`/`downloadInvoiceLampiran` di
  *  components/procurement/invoice-vendor-review-panel.tsx (SheetJS json_to_sheet + writeFile),
- *  cuma sumber datanya beda (baris HPP per MRP di halaman ini, bukan per invoice). */
+ *  cuma sumber datanya beda (baris HPP per MRP di halaman ini, bukan per invoice). Kolom pertama
+ *  `VENDOR` ditambahkan (sebelum `MRP`) supaya baris antar-vendor tetap bisa dibedakan di sheet
+ *  gabungan; urutan baris = vendor alfabetis lalu sorting per-resi (sortHppRowsForDetail). */
 function exportMrpHppExcel(m: MrpHppSummary): XLSX.WorkSheet {
-  const rows = m.itemRows.map((d) => ({
+  const vendorsSorted = [...m.vendors].sort((a, b) => (a.vendorLabel < b.vendorLabel ? -1 : a.vendorLabel > b.vendorLabel ? 1 : 0));
+  const orderedRows = vendorsSorted.flatMap((v) => sortHppRowsForDetail(v.itemRows));
+  const rows = orderedRows.map((d) => ({
+    VENDOR: VENDOR_PRODUKSI[d.vendorProduksi]?.name ?? d.vendorProduksi,
     MRP: d.mrpLabel,
     "WARNA / LENGAN": `${d.warna} · ${d.lengan}`,
     ITEM: d.item,
@@ -50,152 +109,19 @@ function downloadMrpHpp(m: MrpHppSummary) {
   const wb = XLSX.utils.book_new();
   const ws = exportMrpHppExcel(m);
   XLSX.utils.book_append_sheet(wb, ws, "HPP");
-  XLSX.writeFile(wb, `HPP-${m.mrpId}-${m.vendorProduksi}.xlsx`);
+  XLSX.writeFile(wb, `HPP-${m.mrpId}.xlsx`);
 }
 
-type MrpHppSummary = {
-  mrpId: string;
-  mrpLabel: string;
-  vendorProduksi: string;
-  vendorLabel: string;
-  totalFg: number;
-  avgHpp: number;
-  totalBiayaProduksi: number;
-  totalCogsBahan: number;
-  totalOngkir: number;
-  itemRows: HppTableRow[];
-};
-
-/** Tabel detail per item untuk 1 MRP+vendor — dipakai sebagai isi expand baris MRP (pola sama
+/** Tabel detail per item untuk 1 MRP+vendor — dipakai sebagai isi langkah-2 drill-down (pola sama
  *  seperti dropdown MRP di PPIC/SCM). "Item yang dihitung" mencakup FG maupun Rework — kolom
  *  Rework ditampilkan eksplisit di samping FG (pcs hasil rework yang MENDARAT di lengan/size yang
  *  sama seperti baris invoice aslinya sudah otomatis ikut kehitung sebagai bagian dari FG).
  *  Kolom "Batch Koli" (feedback 2026-09-09: "saya ingin ada ... batch pengiriman") menunjukkan
  *  koli pengiriman spesifik asal baris ini — kosong untuk baris pool lama (MRP tanpa roll
- *  tracking sama sekali) yang menggabungkan >1 koli sekaligus, lihat HppRow.noKoli. */
-/** Spec "Finalkan HPP" (0f) -- 1 baris per invoiceId di balik baris MRP+vendor ini. Sumber daftar
- *  invoice BUKAN cuma `m.itemRows` (HppRow[]) -- itemRows di-derive dari `rows`/`relevantInvoices`
- *  yang SUDAH memfilter `status !== "REVISION"` (lihat komentar di relevantInvoices di bawah), jadi
- *  invoice REVISION TIDAK PERNAH punya HppRow dan tidak akan muncul kalau daftar invoice-nya
- *  diambil dari situ. Padahal spec eksplisit minta tombol "Finalkan HPP" tetap TAMPIL (disabled)
- *  untuk invoice REVISION supaya Finance bisa lihat statusnya. Makanya di sini daftar invoice
- *  dibangun dari SEMUA `vendorInvoices` yang match pairing MRP+vendor baris ini lewat
- *  `inv.lines.some(l => l.mrpId === mrpId) && inv.vendorProduksi === vendorProduksi` (VendorInvoice
- *  tidak punya field mrpId tunggal di top-level, cuma per-line) -- termasuk yang REVISION. Untuk
- *  invoice REVISION yang tidak punya HppRow sama sekali, Total FG di-fallback ke
- *  `inv.lines.reduce((s,l)=>s+l.qty,0)` langsung dari invoice (bukan dari itemRows). */
-function InvoiceHppFinalizationTable({
-  mrpId,
-  vendorProduksi,
-  itemRows,
-  vendorInvoices,
-}: {
-  mrpId: string;
-  vendorProduksi: string;
-  itemRows: HppTableRow[];
-  vendorInvoices: VendorInvoice[];
-}) {
-  const finalizeHppForInvoice = useMrpStore((s) => s.finalizeHppForInvoice);
-  const unfinalizeHppForInvoice = useMrpStore((s) => s.unfinalizeHppForInvoice);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<{ id: string; message: string } | null>(null);
-
-  const matchingInvoices = vendorInvoices.filter(
-    (inv) => inv.vendorProduksi === vendorProduksi && inv.lines.some((l) => l.mrpId === mrpId)
-  );
-  const entries = matchingInvoices
-    .map((invoice) => {
-      const rowsForInvoice = itemRows.filter((r) => r.invoiceId === invoice.id);
-      const totalFg =
-        rowsForInvoice.length > 0
-          ? rowsForInvoice.reduce((s, r) => s + r.fg, 0)
-          : invoice.lines.reduce((s, l) => s + l.qty, 0);
-      return { id: invoice.id, invoice, totalFg };
-    })
-    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-
-  async function handleFinalize(id: string) {
-    setBusyId(id);
-    setError(null);
-    try {
-      await finalizeHppForInvoice(id);
-    } catch (err) {
-      setError({ id, message: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  async function handleUnfinalize(id: string) {
-    setBusyId(id);
-    setError(null);
-    try {
-      await unfinalizeHppForInvoice(id);
-    } catch (err) {
-      setError({ id, message: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  return (
-    <div className="mb-3 overflow-x-auto rounded-md border border-[#E4E9EE] bg-white">
-      <table className="w-full min-w-[720px] border-collapse">
-        <thead>
-          <tr className="border-b border-[#E4E9EE] bg-[#F2F5F8] font-sans text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-            <th className="px-3 py-2 text-left">No Invoice</th>
-            <th className="px-3 py-2 text-left">Status Invoice</th>
-            <th className="px-3 py-2 text-right">Total FG</th>
-            <th className="px-3 py-2 text-left">Status HPP</th>
-            <th className="px-3 py-2 text-left">Aksi</th>
-          </tr>
-        </thead>
-        <tbody>
-          {entries.map((e) => {
-            const isRevision = e.invoice?.status === "REVISION";
-            const isFinal = !!e.invoice?.hppFinalizedAt;
-            return (
-              <tr key={e.id} className="border-b border-[#EEF1F4] font-sans text-[11.5px] text-[#31414F] last:border-b-0">
-                <td className="px-3 py-1.5 font-mono">{e.id}</td>
-                <td className="px-3 py-1.5">{e.invoice?.status ?? "—"}</td>
-                <td className="px-3 py-1.5 text-right font-mono">{formatPcs(e.totalFg)}</td>
-                <td className="px-3 py-1.5">
-                  {isFinal ? (
-                    <span className="font-semibold text-success-fg">Final · {formatDateTime(e.invoice?.hppFinalizedAt)}</span>
-                  ) : (
-                    <span className="text-text-muted">Belum final</span>
-                  )}
-                </td>
-                <td className="px-3 py-1.5">
-                  <div className="flex items-center gap-2">
-                    {isFinal ? (
-                      <Button variant="ghost" size="xs" disabled={busyId === e.id} onClick={() => handleUnfinalize(e.id)}>
-                        {busyId === e.id ? "Memproses…" : "Batalkan Final"}
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="primary"
-                        size="xs"
-                        disabled={busyId === e.id || isRevision}
-                        title={isRevision ? "Invoice masih dalam revisi — HPP belum bisa difinalkan" : undefined}
-                        onClick={() => handleFinalize(e.id)}
-                      >
-                        {busyId === e.id ? "Memproses…" : "Finalkan HPP"}
-                      </Button>
-                    )}
-                    {error?.id === e.id && <span className="font-sans text-[10.5px] font-medium text-danger-fg">{error.message}</span>}
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
+ *  tracking sama sekali) yang menggabungkan >1 koli sekaligus, lihat HppRow.noKoli. Rows di-sort
+ *  (requirement D butir 20) sebelum dirender supaya batch/resi berbeda mengelompok rapi. */
 function MrpHppDetailTable({ rows }: { rows: HppTableRow[] }) {
+  const sortedRows = sortHppRowsForDetail(rows);
   return (
     <div className="overflow-x-auto rounded-md border border-[#E4E9EE] bg-white">
       <table className="w-full min-w-[1180px] border-collapse">
@@ -217,7 +143,7 @@ function MrpHppDetailTable({ rows }: { rows: HppTableRow[] }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
+          {sortedRows.map((r) => (
             <tr key={r.rowId} className="border-b border-[#EEF1F4] font-sans text-[11.5px] text-[#31414F] last:border-b-0">
               <td className="px-3 py-1.5">
                 {r.warna} · {r.lengan}
@@ -236,6 +162,72 @@ function MrpHppDetailTable({ rows }: { rows: HppTableRow[] }) {
               <td className="px-3 py-1.5 text-right font-mono font-semibold text-text-primary">{formatRupiah(r.hppPerItem)}</td>
             </tr>
           ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Drill-down 2 langkah (requirement D butir 19) — state lokal per baris MRP (di dalam
+ *  `renderExpanded`, `components/mrp/data-table.tsx` TIDAK mendukung nested expand & tidak boleh
+ *  diubah untuk task ini). Langkah 1: daftar vendor produksi MRP ini (urut alfabetis by
+ *  vendorLabel), klik salah satu -> langkah 2: `MrpHppDetailTable` untuk vendor itu + tombol
+ *  kembali. Default TIDAK auto-select walau cuma 1 vendor -- alur selalu 2 langkah. Collapse lalu
+ *  expand ulang mereset state ini ke langkah 1 karena komponen di-unmount/mount ulang oleh
+ *  DataTable. */
+function MrpVendorDrilldown({ mrp }: { mrp: MrpHppSummary }) {
+  const [selectedVendor, setSelectedVendor] = useState<string | null>(null);
+
+  const vendorsSorted = [...mrp.vendors].sort((a, b) => (a.vendorLabel < b.vendorLabel ? -1 : a.vendorLabel > b.vendorLabel ? 1 : 0));
+  const selected = selectedVendor ? vendorsSorted.find((v) => v.vendorProduksi === selectedVendor) : undefined;
+
+  if (selected) {
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => setSelectedVendor(null)}
+            className="font-sans text-[11px] font-semibold text-brand-fg hover:underline"
+          >
+            ← Ganti vendor
+          </button>
+          <span className="font-sans text-[11.5px] font-semibold text-text-primary">{selected.vendorLabel}</span>
+        </div>
+        <MrpHppDetailTable rows={selected.itemRows} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-md border border-[#E4E9EE] bg-white">
+      <table className="w-full min-w-[560px] border-collapse">
+        <thead>
+          <tr className="border-b border-[#E4E9EE] bg-[#F2F5F8] font-sans text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+            <th className="px-3 py-2 text-left">Vendor Produksi</th>
+            <th className="px-3 py-2 text-right">Total FG</th>
+            <th className="px-3 py-2 text-right">Rata-rata HPP/pc</th>
+          </tr>
+        </thead>
+        <tbody>
+          {vendorsSorted.map((v) => (
+            <tr
+              key={v.vendorProduksi}
+              onClick={() => setSelectedVendor(v.vendorProduksi)}
+              className="cursor-pointer border-b border-[#EEF1F4] font-sans text-[11.5px] text-[#31414F] last:border-b-0 hover:bg-[#F7F9FB]"
+            >
+              <td className="px-3 py-1.5 font-semibold text-text-primary">{v.vendorLabel}</td>
+              <td className="px-3 py-1.5 text-right font-mono">{formatPcs(v.totalFg)}</td>
+              <td className="px-3 py-1.5 text-right font-mono">{formatRupiah(v.avgHpp)}</td>
+            </tr>
+          ))}
+          {vendorsSorted.length === 0 && (
+            <tr>
+              <td colSpan={3} className="px-3 py-4 text-center font-sans text-[11.5px] text-text-muted">
+                Belum ada vendor untuk MRP ini.
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -281,17 +273,14 @@ export default function FinanceLaporanHppPage() {
   const totalHppWeighted = rows.reduce((s, r) => s + r.hppPerItem * r.fg, 0);
   const avgHpp = totalFg > 0 ? totalHppWeighted / totalFg : 0;
 
-  // Restrukturisasi: list MRP+vendor dulu (1 baris = 1 MRP+vendor, angka teragregasi), klik buat
-  // expand ke tabel detail seluruh item grup itu — sebelumnya langsung 1 tabel flat semua item
-  // semua MRP. Item feedback 2026-09-09 ("Di PO ini mengakomodir atau mengumpulkan data dari
-  // berbagai vendor produksi kan?"): BENAR -- 1 MRP/PO Produksi bisa dipecah ke lebih dari 1
-  // vendor (lihat aduanRows per warna/lengan, lib/mrp/derive.ts) -- dulu grouping cuma pakai
-  // mrpId, jadi kalau 1 MRP punya >1 vendor angkanya keblend jadi 1 baris tanpa ada cara
-  // membedakan mana punya vendor mana. Sekarang di-group per (mrpId + vendorProduksi).
-  const mrpMap = new Map<string, MrpHppSummary>();
+  // Restrukturisasi (requirement D): sebelumnya 1 baris = 1 pasangan MRP+vendor. Sekarang grouping
+  // per MRP+vendor DIPERTAHANKAN dulu (logika di bawah ini identik dengan sebelumnya, angka per
+  // vendor tidak berubah) untuk membangun `VendorHppSummary`, lalu di-roll-up ke `MrpHppSummary`
+  // (1 baris = 1 MRP, `vendors[]` untuk drill-down langkah-1).
+  const vendorMap = new Map<string, VendorHppSummary & { mrpId: string; mrpLabel: string }>();
   for (const r of rows) {
     const key = r.mrpId + "|" + r.vendorProduksi;
-    const cur = mrpMap.get(key) ?? {
+    const cur = vendorMap.get(key) ?? {
       mrpId: r.mrpId,
       mrpLabel: r.mrpLabel,
       vendorProduksi: r.vendorProduksi,
@@ -301,40 +290,39 @@ export default function FinanceLaporanHppPage() {
       totalBiayaProduksi: 0,
       totalCogsBahan: 0,
       totalOngkir: 0,
-      itemRows: [],
+      itemRows: [] as HppTableRow[],
     };
     cur.totalFg += r.fg;
     cur.totalBiayaProduksi += r.biayaProduksiTotal;
     cur.totalCogsBahan += r.cogsBahan;
     cur.totalOngkir += r.totalOngkirRow;
     cur.itemRows.push(r);
-    mrpMap.set(key, cur);
+    vendorMap.set(key, cur);
   }
-  const mrpRowsFromHpp: MrpHppSummary[] = Array.from(mrpMap.values()).map((m) => {
+  const vendorRowsFromHpp = Array.from(vendorMap.values()).map((m) => {
     const weighted = m.itemRows.reduce((s, r) => s + r.hppPerItem * r.fg, 0);
     return { ...m, avgHpp: m.totalFg > 0 ? weighted / m.totalFg : 0 };
   });
 
-  /** Bug 2 round 2 (Tester's repro masih terbuka setelah fix round 1): kalau pasangan MRP+vendor
-   *  HANYA punya invoice REVISION (tidak ada invoice lain sama sekali), pasangan itu tidak pernah
-   *  masuk `rows` (karena `relevantInvoices` di atas memfilter REVISION) -- jadi baris MRP-nya
-   *  sendiri tidak pernah muncul di tabel utama, tidak ada apa pun untuk di-klik/expand, dan
-   *  `InvoiceHppFinalizationTable` (yang sudah benar sejak round 1) tidak pernah ter-mount. Di sini
-   *  gabungkan pasangan dari `mrpRowsFromHpp` (perilaku existing, TIDAK diubah) dengan pasangan dari
-   *  SELURUH `vendorInvoices` (termasuk REVISION) -- 1 invoice bisa punya lines dari >1 mrpId, jadi
-   *  invoice itu relevan untuk SETIAP pasangan mrpId+vendorProduksi yang muncul di lines-nya. Untuk
-   *  pasangan yang belum ada di `mrpRowsFromHpp`, buat entry baru dengan agregat di-nol-kan (TIDAK
-   *  ikut dijumlah ke KPI cards di atas -- KPI dihitung dari `rows`, bukan `mrpRows`, jadi otomatis
-   *  tidak terpengaruh) supaya baris tetap bisa di-expand dan invoice REVISION-nya ketemu lewat
-   *  pencocokan mrpId+vendorProduksi yang sudah ada di InvoiceHppFinalizationTable. */
-  const mrpRowsMap = new Map<string, MrpHppSummary>(mrpRowsFromHpp.map((m) => [m.mrpId + "|" + m.vendorProduksi, m]));
+  /** Fallback REVISION-only (dipertahankan dari versi sebelumnya, requirement D butir 15): kalau
+   *  pasangan MRP+vendor HANYA punya invoice REVISION (tidak ada invoice lain sama sekali),
+   *  pasangan itu tidak pernah masuk `rows` (karena `relevantInvoices` di atas memfilter REVISION)
+   *  -- jadi vendor itu tidak pernah muncul di langkah-1 drill-down padahal Finance perlu tahu
+   *  MRP tsb "ada" (lagi ditunggu vendor revisi). Di sini gabungkan pasangan dari
+   *  `vendorRowsFromHpp` (TIDAK diubah) dengan pasangan dari SELURUH `vendorInvoices` (termasuk
+   *  REVISION) -- 1 invoice bisa punya lines dari >1 mrpId, jadi invoice itu relevan untuk SETIAP
+   *  pasangan mrpId+vendorProduksi yang muncul di lines-nya. Untuk pasangan yang belum ada,
+   *  buat entry baru dengan agregat di-nol-kan (TIDAK ikut dijumlah ke KPI cards di atas -- KPI
+   *  dihitung dari `rows`, bukan dari sini) supaya vendor itu tetap muncul di langkah-1 walau
+   *  belum ada angka. */
+  const vendorRowsMap = new Map<string, VendorHppSummary & { mrpId: string; mrpLabel: string }>(vendorRowsFromHpp.map((m) => [m.mrpId + "|" + m.vendorProduksi, m]));
   for (const inv of vendorInvoices) {
     const mrpIdsInInvoice = Array.from(new Set(inv.lines.map((l) => l.mrpId)));
     for (const mrpId of mrpIdsInInvoice) {
       const key = mrpId + "|" + inv.vendorProduksi;
-      if (mrpRowsMap.has(key)) continue;
+      if (vendorRowsMap.has(key)) continue;
       const mrp = mrpMetaFor(mrpId, mrpDetails, staticMrps);
-      mrpRowsMap.set(key, {
+      vendorRowsMap.set(key, {
         mrpId,
         mrpLabel: `${mrpId} ${mrp?.kategori ?? ""}`.trim(),
         vendorProduksi: inv.vendorProduksi,
@@ -348,33 +336,69 @@ export default function FinanceLaporanHppPage() {
       });
     }
   }
-  const mrpRows: MrpHppSummary[] = Array.from(mrpRowsMap.values());
+
+  // Roll-up ke 1 baris per MRP -- agregat gabungan dihitung ULANG dari `itemRows` gabungan semua
+  // vendor MRP itu (avgHpp weighted dari seluruh baris, BUKAN rata-rata dari rata-rata vendor,
+  // lihat rumus di spec).
+  const mrpMap = new Map<string, MrpHppSummary>();
+  for (const v of vendorRowsMap.values()) {
+    const cur = mrpMap.get(v.mrpId) ?? {
+      mrpId: v.mrpId,
+      mrpLabel: v.mrpLabel,
+      vendors: [] as VendorHppSummary[],
+      totalFg: 0,
+      avgHpp: 0,
+      totalBiayaProduksi: 0,
+      totalCogsBahan: 0,
+      totalOngkir: 0,
+      itemRows: [] as HppTableRow[],
+    };
+    cur.vendors.push({
+      vendorProduksi: v.vendorProduksi,
+      vendorLabel: v.vendorLabel,
+      totalFg: v.totalFg,
+      avgHpp: v.avgHpp,
+      totalBiayaProduksi: v.totalBiayaProduksi,
+      totalCogsBahan: v.totalCogsBahan,
+      totalOngkir: v.totalOngkir,
+      itemRows: v.itemRows,
+    });
+    cur.itemRows = cur.itemRows.concat(v.itemRows);
+    mrpMap.set(v.mrpId, cur);
+  }
+  const mrpRows: MrpHppSummary[] = Array.from(mrpMap.values()).map((m) => {
+    const weighted = m.itemRows.reduce((s, r) => s + r.hppPerItem * r.fg, 0);
+    const totalFg = m.itemRows.reduce((s, r) => s + r.fg, 0);
+    return {
+      ...m,
+      totalFg,
+      totalBiayaProduksi: m.itemRows.reduce((s, r) => s + r.biayaProduksiTotal, 0),
+      totalCogsBahan: m.itemRows.reduce((s, r) => s + r.cogsBahan, 0),
+      totalOngkir: m.itemRows.reduce((s, r) => s + r.totalOngkirRow, 0),
+      avgHpp: totalFg > 0 ? weighted / totalFg : 0,
+    };
+  });
+
+  /** Ringkasan kolom "Vendor Produksi" di baris utama (requirement D butir 17): 0 vendor -> "—",
+   *  1 vendor -> nama vendor itu, ≥2 vendor -> "{n} vendor · nama1, nama2, …" (alfabetis supaya
+   *  stabil antar-render). */
+  function vendorSummaryLabel(m: MrpHppSummary): string {
+    if (m.vendors.length === 0) return "—";
+    const names = [...m.vendors].map((v) => v.vendorLabel).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    if (names.length === 1) return names[0];
+    return `${names.length} vendor · ${names.join(", ")}`;
+  }
 
   const mrpColumns: ColumnDef<MrpHppSummary>[] = [
-    { key: "vendor", label: "Vendor Produksi", default: true, render: (m) => m.vendorLabel },
+    { key: "vendor", label: "Vendor Produksi", default: true, render: (m) => vendorSummaryLabel(m) },
     { key: "totalFg", label: "Total FG", default: true, align: "right", render: (m) => formatPcs(m.totalFg) },
     { key: "avgHpp", label: "Rata-rata HPP/pc", default: true, align: "right", render: (m) => formatRupiah(m.avgHpp) },
     { key: "biayaProduksi", label: "Total Biaya Produksi", default: true, align: "right", render: (m) => formatRupiah(m.totalBiayaProduksi) },
     { key: "cogsBahan", label: "Total COGS Bahan", default: true, align: "right", render: (m) => formatRupiah(m.totalCogsBahan) },
     { key: "ongkir", label: "Total Ongkir", default: true, align: "right", render: (m) => formatRupiah(m.totalOngkir) },
     {
-      key: "statusHpp",
-      label: "Status HPP",
-      default: true,
-      render: (m) => {
-        const invoiceIds = Array.from(new Set(m.itemRows.map((r) => r.invoiceId)));
-        const finalCount = invoiceIds.filter((id) => vendorInvoices.find((i) => i.id === id)?.hppFinalizedAt).length;
-        const allFinal = invoiceIds.length > 0 && finalCount === invoiceIds.length;
-        return (
-          <span className={allFinal ? "font-semibold text-success-fg" : "text-text-muted"}>
-            {finalCount}/{invoiceIds.length} invoice final
-          </span>
-        );
-      },
-    },
-    {
       key: "download",
-      label: "Lampiran",
+      label: "Laporan",
       default: true,
       render: (m) => (
         <span onClick={(e) => e.stopPropagation()}>
@@ -403,23 +427,13 @@ export default function FinanceLaporanHppPage() {
 
       <DataTable
         title="Laporan HPP per MRP"
-        subtitle="Klik baris untuk lihat rincian per item (warna/lengan/size)"
+        subtitle="Klik baris untuk pilih vendor produksi, lalu lihat rincian per item"
         columns={mrpColumns}
         rows={mrpRows}
-        keyOf={(m) => m.mrpId + "|" + m.vendorProduksi}
+        keyOf={(m) => m.mrpId}
         firstColumnLabel="No. MRP"
         firstColumnRender={(m) => <span className="font-mono">{m.mrpLabel || m.mrpId}</span>}
-        renderExpanded={(m) => (
-          <>
-            <InvoiceHppFinalizationTable
-              mrpId={m.mrpId}
-              vendorProduksi={m.vendorProduksi}
-              itemRows={m.itemRows}
-              vendorInvoices={vendorInvoices}
-            />
-            <MrpHppDetailTable rows={m.itemRows} />
-          </>
-        )}
+        renderExpanded={(m) => <MrpVendorDrilldown mrp={m} />}
         emptyText="Belum ada data HPP — buat invoice vendor dulu di halaman Invoice Vendor."
       />
     </AppShell>

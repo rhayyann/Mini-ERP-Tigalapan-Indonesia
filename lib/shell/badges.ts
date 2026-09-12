@@ -384,10 +384,10 @@ const SHIPPABLE_SOURCES: ShippableKind[] = ["FG", "REWORK"];
  *  menjumlahkan PCS yang masih belum dikemas untuk SATU MRP, dipakai marker dropdown "pilih MRP"
  *  di app/vendor-maklon/pengiriman/page.tsx. Unit = pcs (beda dari counterpart-nya yang unitnya
  *  "MRP"), supaya marker-nya informatif ("berapa banyak" bukan cuma "MRP ini punya sisa"). */
-/** Spec Portal Warehouse, requirement 16 -- resi group yang LOLOS gate HPP tapi belum dibongkar
- *  (konsisten dengan definisi "butuh aksi user" badge lain di file ini). Grup yang masih menunggu
- *  Finance/belum ada invoice (gateReason terisi) TIDAK dihitung -- Warehouse belum bisa berbuat
- *  apa-apa untuk grup itu (bukan "pending aksi Warehouse", tapi "pending aksi Finance"). */
+/** Spec Portal Warehouse, requirement 16 -- resi group yang LOLOS gate invoice PAID tapi belum
+ *  dibongkar (konsisten dengan definisi "butuh aksi user" badge lain di file ini). Grup yang masih
+ *  menunggu Finance/belum ada invoice (gateReason terisi) TIDAK dihitung -- Warehouse belum bisa
+ *  berbuat apa-apa untuk grup itu (bukan "pending aksi Warehouse", tapi "pending aksi Finance"). */
 export function countWarehousePendingReceipt(
   deliveryKolis: DeliveryKoli[],
   vendorInvoices: VendorInvoice[],
