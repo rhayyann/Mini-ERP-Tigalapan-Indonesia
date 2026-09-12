@@ -127,7 +127,7 @@ export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
   const lenganGroups = Array.from(groupMap.values()).map((g) => {
     if (!g.totalQty) g.totalQty = g.sizes.reduce((a, s) => a + s.qty, 0);
     if (!g.ribKg) g.ribKg = Math.round(((g.totalQty * 6.5) / 1000) * 1000) / 1000;
-    if (!g.rollEstimate) g.rollEstimate = Math.max(1, Math.round(g.totalQty / 117));
+    if (!g.rollEstimate) g.rollEstimate = g.totalQty > 0 ? Math.max(1, Math.round(g.totalQty / 117)) : 0;
     // Grup dengan qty > 0 (benar-benar ada pemesanan) TAPI tidak satu pun barisnya punya vendor
     // valid (semuanya "-"/kosong) -- ini genuinely data tidak lengkap, bukan placeholder yang sah,
     // jadi tetap ditolak dengan pesan jelas (bukan diam-diam disimpan vendor kosong).
