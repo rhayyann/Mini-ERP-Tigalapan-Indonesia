@@ -86,6 +86,15 @@ export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
     const lengan = toLengan(lenganRaw);
     const size = sizeParts.join(" ") || lenganRaw;
     const key = warna + "|" + lengan;
+    // Item 2026-09-12 (user-reported): kolom VENDOR diisi "-" untuk baris yang memang TIDAK ada
+    // pemesanan/produksi (qty 0) -- dulu baris PERTAMA yang ditemukan untuk 1 kombinasi
+    // warna+lengan langsung dipakai sebagai vendorDefault grup itu APA ADANYA, jadi kalau baris
+    // pertama itu kebetulan placeholder "-", import gagal total ("vendor tidak dikenali") walau
+    // baris lain di grup yang sama (qty > 0) punya vendor valid. Sekarang baris placeholder
+    // ("-"/kosong) dilewati untuk keperluan resolusi vendor -- size-nya (qty 0) tetap tercatat,
+    // cuma tidak dipakai untuk menentukan/memvalidasi vendorDefault grup.
+    const vendorRaw = String(row["VENDOR"] ?? "").trim();
+    const isVendorPlaceholder = vendorRaw === "" || vendorRaw === "-";
     if (!groupMap.has(key)) {
       groupMap.set(key, {
         id: "lg-" + groupMap.size,
@@ -95,11 +104,18 @@ export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
         totalQty: 0,
         ribKg: 0,
         rollEstimate: 0,
-        vendorDefault: normalizeVendorCode(String(row["VENDOR"] ?? "")),
+        // "" = belum ada baris ber-vendor valid ditemukan untuk grup ini sejauh ini -- diisi
+        // begitu baris pertama yang BUKAN placeholder ditemukan (lihat di bawah), atau tetap ""
+        // kalau grup ini memang tidak punya baris ber-vendor sama sekali (ditolak nanti kalau
+        // ternyata totalQty > 0, lihat setelah loop).
+        vendorDefault: "",
       });
     }
     const group = groupMap.get(key)!;
     group.sizes.push({ size, qty });
+    if (!isVendorPlaceholder && !group.vendorDefault) {
+      group.vendorDefault = normalizeVendorCode(vendorRaw);
+    }
     const totalOverride = Number(row["TOTAL"] ?? 0);
     const ribOverride = Number(row["RIB KILOGRAM"] ?? 0);
     const rollOverride = Number(row["RAW MATERIAL (ROLL)"] ?? 0);
@@ -112,6 +128,12 @@ export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
     if (!g.totalQty) g.totalQty = g.sizes.reduce((a, s) => a + s.qty, 0);
     if (!g.ribKg) g.ribKg = Math.round(((g.totalQty * 6.5) / 1000) * 1000) / 1000;
     if (!g.rollEstimate) g.rollEstimate = Math.max(1, Math.round(g.totalQty / 117));
+    // Grup dengan qty > 0 (benar-benar ada pemesanan) TAPI tidak satu pun barisnya punya vendor
+    // valid (semuanya "-"/kosong) -- ini genuinely data tidak lengkap, bukan placeholder yang sah,
+    // jadi tetap ditolak dengan pesan jelas (bukan diam-diam disimpan vendor kosong).
+    if (g.totalQty > 0 && !g.vendorDefault) {
+      throw new Error(`Kolom VENDOR untuk ${g.warna} · ${g.lengan} (qty ${g.totalQty}) kosong/"-" di semua barisnya — isi salah satu baris dengan kode/nama vendor yang valid.`);
+    }
     return g;
   });
 
@@ -150,7 +172,9 @@ export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
           qtyRoll,
           sizes,
           qty: sizes.reduce((a, s) => a + s.qty, 0),
-          vendor: group?.vendorDefault ?? "-",
+          // `|| "-"` (bukan `??`) -- vendorDefault bisa jadi string kosong "" (grup qty 0 tanpa
+          // vendor valid sama sekali, lihat catatan di atas), bukan cuma null/undefined.
+          vendor: group?.vendorDefault || "-",
         });
       });
     }
