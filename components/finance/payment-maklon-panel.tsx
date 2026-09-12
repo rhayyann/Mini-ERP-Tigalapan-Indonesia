@@ -55,6 +55,35 @@ function InvoiceLinesDetail({
   const vendorName = VENDOR_PRODUKSI[inv.vendorProduksi]?.name ?? inv.vendorProduksi;
   return (
     <div className="flex flex-col gap-3">
+      {/* Item 2026-09-12 (user-reported: Finance cuma lihat ANGKA denda/reward tanpa tahu
+       *  alasannya) -- sebelumnya panel ini cuma menampilkan totalnya (lihat kolom "Total
+       *  tagihan" di readyColumns/paidColumns), rincian label/catatan per adjustment cuma
+       *  kelihatan di panel review Procurement. Sekarang ditampilkan juga di sini supaya Finance
+       *  tahu persis kenapa nilai invoice-nya berbeda dari net tagihan asli. */}
+      {(inv.adjustments?.length ?? 0) > 0 && (
+        <div className="rounded-md border border-[#E4E9EE] bg-white p-3">
+          <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">Denda / reward sesuai kontrak</div>
+          <div className="mt-2">
+            {inv.adjustments.map((a) => (
+              <div key={a.id} className="mt-1 flex items-center justify-between font-sans text-[11.5px] text-[#31414F]">
+                <span>
+                  <span className={a.kind === "DENDA" ? "text-danger-fg" : a.kind === "REWARD" ? "text-success-fg" : "text-text-muted"}>
+                    {a.kind === "DENDA" ? "Denda" : a.kind === "REWARD" ? "Reward" : "Tidak ada sanksi"}
+                  </span>
+                  {" — "}
+                  {a.label}
+                  {a.note && <span className="text-text-muted"> ({a.note})</span>}
+                </span>
+                <span className="font-mono">{a.kind === "TIDAK_ADA" ? "—" : (a.kind === "DENDA" ? "−" : "+") + formatRupiah(a.amount)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex items-center justify-between border-t border-[#F1F4F7] pt-2 font-sans text-[11.5px] font-semibold text-[#31414F]">
+            <span>Total tagihan akhir</span>
+            <span className="font-mono">{formatRupiah(vendorInvoiceFinalAmount(inv))}</span>
+          </div>
+        </div>
+      )}
       <table className="w-full border-collapse overflow-hidden rounded-md border border-[#E4E9EE] bg-white">
         <thead>
           <tr className="border-b border-[#E4E9EE] bg-[#F2F5F8] font-sans text-[10px] font-semibold uppercase tracking-wider text-text-muted">

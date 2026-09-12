@@ -160,13 +160,27 @@ export function InvoiceVendorReviewPanel() {
     setAdjNote("");
   }
 
-  function submitAdjustment(invoiceId: string) {
+  const [submittingAdj, setSubmittingAdj] = useState(false);
+
+  // BUG FIX 2026-09-12 (user-reported: pilih Denda/Reward tapi nilai invoice tidak berubah) --
+  // sebelumnya ini memanggil addVendorInvoiceAdjustment TANPA await lalu langsung reset form,
+  // jadi kalaupun penyimpanannya gagal di server (lihat fix di addVendorInvoiceAdjustmentAction),
+  // errornya tidak pernah terlihat -- form sudah kadung ke-reset seolah berhasil. Sekarang
+  // ditunggu, form baru direset kalau benar-benar sukses, dan kegagalan ditampilkan jelas.
+  async function submitAdjustment(invoiceId: string) {
     if (!adjLabel.trim()) return;
     // TIDAK_ADA murni catatan audit ("tepat waktu, tanpa sanksi") — amount-nya dipaksa 0 dan
     // tidak disyaratkan diisi user, beda dari DENDA/REWARD yang butuh nominal > 0.
     if (adjKind !== "TIDAK_ADA" && (!adjAmount || adjAmount <= 0)) return;
-    addVendorInvoiceAdjustment(invoiceId, { kind: adjKind, label: adjLabel.trim(), amount: adjKind === "TIDAK_ADA" ? 0 : adjAmount, note: adjNote.trim() || undefined });
-    resetAdjForm();
+    setSubmittingAdj(true);
+    try {
+      await addVendorInvoiceAdjustment(invoiceId, { kind: adjKind, label: adjLabel.trim(), amount: adjKind === "TIDAK_ADA" ? 0 : adjAmount, note: adjNote.trim() || undefined });
+      resetAdjForm();
+    } catch (err) {
+      window.alert("Gagal menyimpan denda/reward -- coba lagi. " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setSubmittingAdj(false);
+    }
   }
 
   return (
@@ -353,9 +367,10 @@ export function InvoiceVendorReviewPanel() {
                         <div className="flex items-end">
                           <button
                             onClick={() => submitAdjustment(inv.id)}
-                            className="rounded-md border border-dashed border-[#CBD5DF] px-2.5 py-[7px] font-sans text-[11px] font-semibold text-text-muted"
+                            disabled={submittingAdj}
+                            className="rounded-md border border-dashed border-[#CBD5DF] px-2.5 py-[7px] font-sans text-[11px] font-semibold text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            + Tambah item
+                            {submittingAdj ? "Menyimpan…" : "+ Tambah item"}
                           </button>
                         </div>
                       </div>

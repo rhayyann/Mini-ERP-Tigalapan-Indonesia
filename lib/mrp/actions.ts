@@ -3466,10 +3466,19 @@ export async function receiveWarehouseResiGroupAction(resiGroupId: string, note?
 export async function addVendorInvoiceAdjustmentAction(invoiceId: string, input: { kind: VendorInvoiceAdjustmentKind; label: string; amount: number; note?: string }): Promise<void> {
   await requireInternalRole(await requireSession(), "procurement");
   const db = supabaseServer();
-  const { data: invoice } = await db.from("vendor_invoices").select("id,vendor_produksi").eq("id", invoiceId).single();
-  if (!invoice) return;
+  // BUG FIX 2026-09-12 (user-reported: pilih Denda/Reward tapi nilai invoice tidak berubah) --
+  // dua panggilan Supabase di bawah ini SEBELUMNYA tidak pernah dicek errornya (pola bug yang
+  // sama seperti CRUD Master Data, lihat catatan di requireMasterDataRole di atas) -- kalau
+  // insert ke vendor_invoice_adjustments gagal (mis. network flaky), fungsi ini tetap resolve
+  // tanpa throw, jadi Procurement mengira sudah menambahkan denda/reward padahal tidak pernah
+  // benar-benar tersimpan, dan vendorInvoiceFinalAmount (dihitung live dari inv.adjustments)
+  // tidak pernah berubah karena baris adjustment-nya memang tidak ada di DB.
+  const { data: invoice, error: lookupErr } = await db.from("vendor_invoices").select("id,vendor_produksi").eq("id", invoiceId).single();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (!invoice) throw new Error(`Invoice ${invoiceId} tidak ditemukan.`);
   const id = await nextReadableId("ADJ");
-  await db.from("vendor_invoice_adjustments").insert({ id, vendor_invoice_id: invoiceId, kind: input.kind, label: input.label, amount: input.amount, note: input.note ?? null, added_at: today() });
+  const { error } = await db.from("vendor_invoice_adjustments").insert({ id, vendor_invoice_id: invoiceId, kind: input.kind, label: input.label, amount: input.amount, note: input.note ?? null, added_at: today() });
+  if (error) throw new Error(error.message);
   const text =
     input.kind === "TIDAK_ADA"
       ? `Catatan ditambahkan Procurement pada invoice ${invoice.id}: ${input.label} (tanpa sanksi)`
