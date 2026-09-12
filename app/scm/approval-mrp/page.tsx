@@ -91,7 +91,7 @@ export default function ScmApprovalMrpPage() {
         firstColumnRender={(d) => <span className="font-mono">{d.mrp.id}</span>}
         renderExpanded={(d) => (
           <div className="flex flex-col gap-3">
-            <MrpWarnaBreakdownTable breakdown={mrpWarnaBreakdown(d)} />
+            <MrpWarnaBreakdownTable breakdown={mrpWarnaBreakdown(d, { includeZeroQty: false })} />
             <div className="flex flex-wrap items-center gap-2">
               <input
                 value={noteDraft[d.mrp.id] ?? ""}

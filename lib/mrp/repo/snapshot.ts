@@ -391,6 +391,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
       sizes: (sizesByGroup[g.id] ?? []).map((s) => ({ size: s.size, qty: s.qty })),
       totalQty: g.total_qty,
       ribKg: Number(g.rib_kg),
+      kerahKg: Number(g.kerah_kg),
+      mansetKg: Number(g.manset_kg),
       rollEstimate: Number(g.roll_estimate),
       vendorDefault: g.vendor_default ?? "",
     }));
@@ -413,6 +415,8 @@ export async function getFlowSnapshot(): Promise<FlowState> {
       lengan: r.lengan,
       qtyRoll: Number(r.qty_roll),
       ribKg: Number(r.rib_kg),
+      kerahKg: Number(r.kerah_kg),
+      mansetKg: Number(r.manset_kg),
       supplier: r.supplier,
       entitas: r.entitas ?? undefined,
     }));

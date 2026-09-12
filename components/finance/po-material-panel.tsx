@@ -23,11 +23,30 @@ import type { MrpDetail } from "@/lib/mrp/store";
  *  warna itu kalau ada kalau tidak ada berarti kosong"): rib (kg) dijumlah dari materialRows MRP
  *  ini yang cocok warna+lengan -- sumber SAMA seperti "Rib kg" di halaman PO Approval Procurement
  *  (materialGroupsByWarna, app/procurement/po-approval/page.tsx), cuma di-scope ke 1 warna/lengan
- *  di sini (bukan digabung semua lengan). */
-function ribKgForColor(poId: string, c: ColorBreakdown, mrpDetails: MrpDetail[]): number {
+ *  di sini (bukan digabung semua lengan). Digeneralisasi (BAGIAN 2, Req 20) supaya field mana yang
+ *  dijumlah bisa dipilih pemanggil -- dipakai juga untuk Kerah/Manset kg. */
+function materialKgForColor(field: "ribKg" | "kerahKg" | "mansetKg", poId: string, c: ColorBreakdown, mrpDetails: MrpDetail[]): number {
   const detail = mrpDetailFor(poId, mrpDetails);
   if (!detail) return 0;
-  return detail.materialRows.filter((m) => m.warna === c.warna && m.lengan === c.lengan).reduce((s, m) => s + m.ribKg, 0);
+  return detail.materialRows.filter((m) => m.warna === c.warna && m.lengan === c.lengan).reduce((s, m) => s + m[field], 0);
+}
+
+function ribKgForColor(poId: string, c: ColorBreakdown, mrpDetails: MrpDetail[]): number {
+  return materialKgForColor("ribKg", poId, c, mrpDetails);
+}
+
+function kerahKgForColor(poId: string, c: ColorBreakdown, mrpDetails: MrpDetail[]): number {
+  return materialKgForColor("kerahKg", poId, c, mrpDetails);
+}
+
+function mansetKgForColor(poId: string, c: ColorBreakdown, mrpDetails: MrpDetail[]): number {
+  return materialKgForColor("mansetKg", poId, c, mrpDetails);
+}
+
+/** Item BAGIAN 2 (Req 20) — Kerah/Manset kg cuma ditampilkan kalau ADA warna di PO ini yang
+ *  benar-benar punya nilai (kategori "WANGKI MYNO"). */
+function poHasKerahManset(po: MaterialPO, mrpDetails: MrpDetail[]): boolean {
+  return po.colorBreakdown.some((c) => kerahKgForColor(po.mrpId, c, mrpDetails) > 0 || mansetKgForColor(po.mrpId, c, mrpDetails) > 0);
 }
 
 /** Harga/kg PER WARNA -- pakai hargaKainRateInfo yang sama dengan badge "Standar"/"PKS"/"Estimasi"
@@ -283,6 +302,8 @@ export function PoMaterialPanel() {
                     const poMaklonTotal = po.colorBreakdown.reduce((a, c) => a + maklonFeeForColorLine(po, c, maklonPOs, mrpDetails), 0);
                     const hasEntity = poHasAllEntitas(po);
                     const bulkValue = poBulkEntitasValue(po);
+                    const showKerahManset = poHasKerahManset(po, mrpDetails);
+                    const gridColsClass = showKerahManset ? "grid-cols-9" : "grid-cols-7";
                     return (
                       // Tiap PO jadi kartu putih tersendiri (border + shadow) di atas latar abu
                       // vendor-group — supaya jelas terlihat sebagai unit terpisah, tidak
@@ -314,10 +335,12 @@ export function PoMaterialPanel() {
                           </select>
                         </div>
                         <div className="mx-4 mb-3 overflow-hidden rounded-md border border-[#F1F4F7]">
-                          <div className="grid grid-cols-7 gap-2 bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                          <div className={`grid ${gridColsClass} gap-2 bg-[#FAFBFC] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted`}>
                             <span>Warna / lengan</span>
                             <span className="text-right">Roll</span>
                             <span className="text-right">Rib (kg)</span>
+                            {showKerahManset && <span className="text-right">Kerah (kg)</span>}
+                            {showKerahManset && <span className="text-right">Manset (kg)</span>}
                             <span className="text-right">Harga/Kg</span>
                             <span className="text-right">Nilai material</span>
                             <span className="text-right">Biaya maklon</span>
@@ -326,12 +349,18 @@ export function PoMaterialPanel() {
                           {po.colorBreakdown.map((c, i) => {
                             const hargaPerKg = hargaPerKgForColor(po.supplier, c, hargaKain, hargaKainPks);
                             return (
-                            <div key={i} className="grid grid-cols-7 items-center gap-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                            <div key={i} className={`grid ${gridColsClass} items-center gap-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]`}>
                               <span>
                                 {c.warna} · {c.lengan}
                               </span>
                               <span className="text-right font-mono">{c.rollCount}</span>
                               <span className="text-right font-mono">{ribKgForColor(po.mrpId, c, mrpDetails).toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>
+                              {showKerahManset && (
+                                <span className="text-right font-mono">{kerahKgForColor(po.mrpId, c, mrpDetails).toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>
+                              )}
+                              {showKerahManset && (
+                                <span className="text-right font-mono">{mansetKgForColor(po.mrpId, c, mrpDetails).toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>
+                              )}
                               <span className="text-right font-mono">{hargaPerKg != null ? formatRupiah(hargaPerKg) : "—"}</span>
                               <span className="text-right font-mono">{formatRupiah((po.amount / po.rollCount) * c.rollCount)}</span>
                               <span className="text-right font-mono">{formatRupiah(maklonFeeForColorLine(po, c, maklonPOs, mrpDetails))}</span>
@@ -353,10 +382,12 @@ export function PoMaterialPanel() {
                             </div>
                             );
                           })}
-                          <div className="grid grid-cols-7 gap-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
+                          <div className={`grid ${gridColsClass} gap-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg`}>
                             <span>Subtotal PO {po.id}</span>
                             <span className="text-right font-mono">{po.rollCount} roll</span>
                             <span />
+                            {showKerahManset && <span />}
+                            {showKerahManset && <span />}
                             <span />
                             <span className="text-right font-mono">{formatRupiah(po.amount)}</span>
                             <span className="text-right font-mono">{formatRupiah(poMaklonTotal)}</span>
@@ -403,12 +434,17 @@ export function PoMaterialPanel() {
         // Item revisi 2026-09-06: klik baris untuk lihat rincian per warna/lengan (roll dari
         // totalan, estimasi nilai & biaya maklon) -- sama pola dengan PPIC/SCM & kartu detail yang
         // sudah ada di bagian "pending" di atas, sekarang dibuat sama untuk PO yang sudah approved.
-        renderExpanded={(p) => (
+        renderExpanded={(p) => {
+          const showKerahManset = poHasKerahManset(p, mrpDetails);
+          const gridColsClass = showKerahManset ? "grid-cols-9" : "grid-cols-7";
+          return (
           <div className="overflow-hidden rounded-md border border-[#E4E8EE] bg-white">
-            <div className="grid grid-cols-7 gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
+            <div className={`grid ${gridColsClass} gap-x-2 bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted`}>
               <span>Warna / lengan</span>
               <span className="text-right">Roll</span>
               <span className="text-right">Rib (kg)</span>
+              {showKerahManset && <span className="text-right">Kerah (kg)</span>}
+              {showKerahManset && <span className="text-right">Manset (kg)</span>}
               <span className="text-right">Harga/Kg</span>
               <span className="text-right">Nilai material (estimasi)</span>
               <span className="text-right">Biaya maklon (estimasi)</span>
@@ -417,12 +453,18 @@ export function PoMaterialPanel() {
             {p.colorBreakdown.map((c, i) => {
               const hargaPerKg = hargaPerKgForColor(p.supplier, c, hargaKain, hargaKainPks);
               return (
-              <div key={i} className="grid grid-cols-7 items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+              <div key={i} className={`grid ${gridColsClass} items-center gap-x-2 border-t border-[#F1F4F7] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]`}>
                 <span className="font-medium">
                   {c.warna} · {c.lengan}
                 </span>
                 <span className="text-right font-mono">{c.rollCount}</span>
                 <span className="text-right font-mono">{ribKgForColor(p.mrpId, c, mrpDetails).toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>
+                {showKerahManset && (
+                  <span className="text-right font-mono">{kerahKgForColor(p.mrpId, c, mrpDetails).toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>
+                )}
+                {showKerahManset && (
+                  <span className="text-right font-mono">{mansetKgForColor(p.mrpId, c, mrpDetails).toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>
+                )}
                 <span className="text-right font-mono">{hargaPerKg != null ? formatRupiah(hargaPerKg) : "—"}</span>
                 <span className="text-right font-mono">{formatRupiah(p.rollCount > 0 ? (p.amount / p.rollCount) * c.rollCount : 0)}</span>
                 <span className="text-right font-mono">{formatRupiah(maklonFeeForColorLine(p, c, maklonPOs, mrpDetails))}</span>
@@ -430,17 +472,20 @@ export function PoMaterialPanel() {
               </div>
               );
             })}
-            <div className="grid grid-cols-7 gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg">
+            <div className={`grid ${gridColsClass} gap-x-2 border-t-2 border-accent-blue bg-info-bg px-3 py-1.5 font-sans text-[11.5px] font-semibold text-info-fg`}>
               <span>Subtotal PO {p.id}</span>
               <span className="text-right font-mono">{p.rollCount} roll</span>
               <span />
+              {showKerahManset && <span />}
+              {showKerahManset && <span />}
               <span />
               <span className="text-right font-mono">{formatRupiah(p.amount)}</span>
               <span className="text-right font-mono">{formatRupiah(p.colorBreakdown.reduce((a, c) => a + maklonFeeForColorLine(p, c, maklonPOs, mrpDetails), 0))}</span>
               <span />
             </div>
           </div>
-        )}
+          );
+        }}
       />
     </>
   );

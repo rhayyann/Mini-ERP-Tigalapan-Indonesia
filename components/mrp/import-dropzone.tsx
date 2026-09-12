@@ -30,6 +30,10 @@ export function ImportDropzone({ onConfirm }: { onConfirm: (parsed: ParsedMrpImp
     }
   }
 
+  // Item BAGIAN 2 (Req 20) — kolom Kerah/Manset cuma ditampilkan kalau ADA baris hasil parse yang
+  // benar-benar punya nilai (kategori "WANGKI MYNO"), supaya file kategori lain tidak penuh kolom 0.
+  const showKerahManset = parsed ? parsed.lenganGroups.some((g) => g.kerahKg > 0 || g.mansetKg > 0) : false;
+
   function confirmImport() {
     if (!parsed) return;
     onConfirm(parsed, mrpNo.trim() || undefined);
@@ -92,20 +96,31 @@ export function ImportDropzone({ onConfirm }: { onConfirm: (parsed: ParsedMrpImp
             </div>
 
             <div className="overflow-hidden rounded-md border border-border-subtle">
-              <div className="grid grid-cols-6 gap-x-3 bg-[#F7F9FB] px-3.5 py-2 font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
+              <div
+                className="grid gap-x-3 bg-[#F7F9FB] px-3.5 py-2 font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
+                style={{ gridTemplateColumns: showKerahManset ? "repeat(8, minmax(0, 1fr))" : "repeat(6, minmax(0, 1fr))" }}
+              >
                 <span>Warna</span>
                 <span>Lengan</span>
                 <span className="text-right">Qty</span>
                 <span className="text-right">Rib (kg)</span>
+                {showKerahManset && <span className="text-right">Kerah (kg)</span>}
+                {showKerahManset && <span className="text-right">Manset (kg)</span>}
                 <span className="text-right">Roll</span>
                 <span>Vendor produksi</span>
               </div>
               {parsed.lenganGroups.map((g) => (
-                <div key={g.id} className="grid grid-cols-6 items-center gap-x-3 border-t border-[#F1F4F7] px-3.5 py-2 font-sans text-xs text-[#31414F]">
+                <div
+                  key={g.id}
+                  className="grid items-center gap-x-3 border-t border-[#F1F4F7] px-3.5 py-2 font-sans text-xs text-[#31414F]"
+                  style={{ gridTemplateColumns: showKerahManset ? "repeat(8, minmax(0, 1fr))" : "repeat(6, minmax(0, 1fr))" }}
+                >
                   <span>{g.warna}</span>
                   <span>{g.lengan}</span>
                   <span className="text-right font-mono">{formatPcs(g.totalQty)}</span>
                   <span className="text-right font-mono">{g.ribKg.toLocaleString("id-ID", { maximumFractionDigits: 3 })}</span>
+                  {showKerahManset && <span className="text-right font-mono">{g.kerahKg.toLocaleString("id-ID", { maximumFractionDigits: 3 })}</span>}
+                  {showKerahManset && <span className="text-right font-mono">{g.mansetKg.toLocaleString("id-ID", { maximumFractionDigits: 3 })}</span>}
                   <span className="text-right font-mono">{g.rollEstimate}</span>
                   <span className="font-mono">{VENDOR_PRODUKSI[g.vendorDefault]?.name ?? g.vendorDefault}</span>
                 </div>

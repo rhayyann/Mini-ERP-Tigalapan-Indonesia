@@ -1,12 +1,16 @@
 import { formatPcs } from "@/lib/mrp/derive";
 import type { MrpWarnaBreakdown } from "@/lib/mrp/derive";
 
-/** Tabel rincian qty/roll/rib per warna (panjang · pendek · total) — dipakai di baris expand
- *  halaman MRP PPIC & Monitoring SCM supaya tampilannya konsisten di kedua tempat. */
+/** Tabel rincian qty/roll/rib(/kerah/manset) per warna (panjang · pendek · total) — dipakai di
+ *  baris expand halaman MRP PPIC & Monitoring SCM supaya tampilannya konsisten di kedua tempat. */
 export function MrpWarnaBreakdownTable({ breakdown }: { breakdown: MrpWarnaBreakdown[] }) {
   if (breakdown.length === 0) {
     return <div className="font-sans text-[11.5px] text-text-muted">Belum ada rincian warna/lengan untuk MRP ini (data lama atau tanpa detail import).</div>;
   }
+  // Item BAGIAN 2 (Req 20) — grup kolom Kerah/Manset cuma ditampilkan kalau ADA baris breakdown
+  // yang benar-benar punya nilai (MRP kategori "WANGKI MYNO"), supaya MRP kategori lain tidak
+  // penuh kolom 0.
+  const showKerahManset = breakdown.some((w) => w.kerahTotal > 0 || w.mansetTotal > 0);
   return (
     <div className="overflow-hidden overflow-x-auto rounded-md border border-[#E4E8EE] bg-white">
       <table className="w-full min-w-[720px] border-collapse">
@@ -24,6 +28,16 @@ export function MrpWarnaBreakdownTable({ breakdown }: { breakdown: MrpWarnaBreak
             <th colSpan={3} className="border-l border-[#E4E8EE] px-3 py-1.5 text-center">
               Rib (kg)
             </th>
+            {showKerahManset && (
+              <>
+                <th colSpan={3} className="border-l border-[#E4E8EE] px-3 py-1.5 text-center">
+                  Kerah (kg)
+                </th>
+                <th colSpan={3} className="border-l border-[#E4E8EE] px-3 py-1.5 text-center">
+                  Manset (kg)
+                </th>
+              </>
+            )}
           </tr>
           <tr className="border-b border-[#E4E8EE] bg-[#F2F4F7] font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
             <th className="border-l border-[#E4E8EE] px-3 py-1.5 text-right">Panjang</th>
@@ -35,21 +49,56 @@ export function MrpWarnaBreakdownTable({ breakdown }: { breakdown: MrpWarnaBreak
             <th className="border-l border-[#E4E8EE] px-3 py-1.5 text-right">Panjang</th>
             <th className="px-3 py-1.5 text-right">Pendek</th>
             <th className="px-3 py-1.5 text-right">Total</th>
+            {showKerahManset && (
+              <>
+                <th className="border-l border-[#E4E8EE] px-3 py-1.5 text-right">Panjang</th>
+                <th className="px-3 py-1.5 text-right">Pendek</th>
+                <th className="px-3 py-1.5 text-right">Total</th>
+                <th className="border-l border-[#E4E8EE] px-3 py-1.5 text-right">Panjang</th>
+                <th className="px-3 py-1.5 text-right">Pendek</th>
+                <th className="px-3 py-1.5 text-right">Total</th>
+              </>
+            )}
           </tr>
         </thead>
         <tbody>
           {breakdown.map((w) => (
-            <tr key={w.warna} className="border-b border-[#F1F4F7] font-sans text-[11.5px] text-[#31414F] last:border-b-0">
-              <td className="px-3 py-2 font-medium">{w.warna}</td>
+            <tr key={w.warna} className={"border-b border-[#F1F4F7] font-sans text-[11.5px] last:border-b-0 " + (w.isEmpty ? "bg-[#FAFBFC] text-text-muted" : "text-[#31414F]")}>
+              <td className="px-3 py-2 font-medium">
+                {w.warna}
+                {w.isEmpty && <div className="font-sans text-[10px] font-normal text-text-muted">Tidak ada pemesanan</div>}
+              </td>
               <td className="border-l border-[#F1F4F7] px-3 py-2 text-right font-mono">{formatPcs(w.qtyPanjang)}</td>
               <td className="px-3 py-2 text-right font-mono">{formatPcs(w.qtyPendek)}</td>
               <td className="px-3 py-2 text-right font-mono font-semibold">{formatPcs(w.qtyTotal)}</td>
               <td className="border-l border-[#F1F4F7] px-3 py-2 text-right font-mono">{w.rollPanjang.toLocaleString("id-ID")}</td>
               <td className="px-3 py-2 text-right font-mono">{w.rollPendek.toLocaleString("id-ID")}</td>
               <td className="px-3 py-2 text-right font-mono font-semibold">{w.rollTotal.toLocaleString("id-ID")}</td>
-              <td className="border-l border-[#F1F4F7] px-3 py-2 text-right font-mono">{w.ribPanjang.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</td>
+              <td className="border-l border-[#F1F4F7] px-3 py-2 text-right font-mono">
+                {w.ribPanjang.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+              </td>
               <td className="px-3 py-2 text-right font-mono">{w.ribPendek.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</td>
-              <td className="px-3 py-2 text-right font-mono font-semibold">{w.ribTotal.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</td>
+              <td className="px-3 py-2 text-right font-mono font-semibold">
+                {w.ribTotal.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+              </td>
+              {showKerahManset && (
+                <>
+                  <td className="border-l border-[#F1F4F7] px-3 py-2 text-right font-mono">
+                    {w.kerahPanjang.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">{w.kerahPendek.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</td>
+                  <td className="px-3 py-2 text-right font-mono font-semibold">
+                    {w.kerahTotal.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="border-l border-[#F1F4F7] px-3 py-2 text-right font-mono">
+                    {w.mansetPanjang.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">{w.mansetPendek.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</td>
+                  <td className="px-3 py-2 text-right font-mono font-semibold">
+                    {w.mansetTotal.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                  </td>
+                </>
+              )}
             </tr>
           ))}
           {breakdown.length > 1 && (
@@ -66,6 +115,28 @@ export function MrpWarnaBreakdownTable({ breakdown }: { breakdown: MrpWarnaBreak
               </td>
               <td className="px-3 py-2 text-right font-mono">{breakdown.reduce((s, w) => s + w.ribPendek, 0).toLocaleString("id-ID", { maximumFractionDigits: 2 })}</td>
               <td className="px-3 py-2 text-right font-mono">{breakdown.reduce((s, w) => s + w.ribTotal, 0).toLocaleString("id-ID", { maximumFractionDigits: 2 })}</td>
+              {showKerahManset && (
+                <>
+                  <td className="border-l border-accent-blue/20 px-3 py-2 text-right font-mono">
+                    {breakdown.reduce((s, w) => s + w.kerahPanjang, 0).toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {breakdown.reduce((s, w) => s + w.kerahPendek, 0).toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {breakdown.reduce((s, w) => s + w.kerahTotal, 0).toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="border-l border-accent-blue/20 px-3 py-2 text-right font-mono">
+                    {breakdown.reduce((s, w) => s + w.mansetPanjang, 0).toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {breakdown.reduce((s, w) => s + w.mansetPendek, 0).toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {breakdown.reduce((s, w) => s + w.mansetTotal, 0).toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                  </td>
+                </>
+              )}
             </tr>
           )}
         </tbody>

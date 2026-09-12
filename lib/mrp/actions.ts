@@ -171,7 +171,18 @@ export async function importMrpAction(parsed: ParsedMrpImport, customId?: string
   // DAN material_rows.lengan_group_id sama-sama references lengan_groups(id)).
   if (lenganGroups.length > 0) {
     await db.from("lengan_groups").insert(
-      lenganGroups.map((g) => ({ id: g.id, mrp_id: id, warna: g.warna, lengan: g.lengan, total_qty: g.totalQty, rib_kg: g.ribKg, roll_estimate: g.rollEstimate, vendor_default: g.vendorDefault }))
+      lenganGroups.map((g) => ({
+        id: g.id,
+        mrp_id: id,
+        warna: g.warna,
+        lengan: g.lengan,
+        total_qty: g.totalQty,
+        rib_kg: g.ribKg,
+        kerah_kg: g.kerahKg,
+        manset_kg: g.mansetKg,
+        roll_estimate: g.rollEstimate,
+        vendor_default: g.vendorDefault,
+      }))
     );
   }
 
@@ -194,7 +205,19 @@ export async function importMrpAction(parsed: ParsedMrpImport, customId?: string
     (async () => {
       if (materialRows.length === 0) return;
       await db.from("material_rows").insert(
-        materialRows.map((m) => ({ id: m.id, lengan_group_id: m.lenganGroupId, mrp_id: id, warna: m.warna, lengan: m.lengan, qty_roll: m.qtyRoll, rib_kg: m.ribKg, supplier: m.supplier, entitas: m.entitas }))
+        materialRows.map((m) => ({
+          id: m.id,
+          lengan_group_id: m.lenganGroupId,
+          mrp_id: id,
+          warna: m.warna,
+          lengan: m.lengan,
+          qty_roll: m.qtyRoll,
+          rib_kg: m.ribKg,
+          kerah_kg: m.kerahKg,
+          manset_kg: m.mansetKg,
+          supplier: m.supplier,
+          entitas: m.entitas,
+        }))
       );
     })(),
     insertNotification(notif(`MRP ${id} diajukan PPIC — menunggu approval SCM sebelum diproses Procurement`, ["scm"])),
@@ -275,6 +298,8 @@ export async function sendPoToFinanceAction(mrpId: string): Promise<{ materialPO
     lengan: r.lengan,
     qtyRoll: Number(r.qty_roll),
     ribKg: Number(r.rib_kg),
+    kerahKg: Number(r.kerah_kg),
+    mansetKg: Number(r.manset_kg),
     supplier: r.supplier,
     entitas: r.entitas ?? undefined,
   }));
@@ -3551,10 +3576,22 @@ async function requireMasterDataRole() {
   }
 }
 
+// BUG FIX 2026-09-12 (user-reported: edit Master Data "balik lagi" ke nilai lama setelah refresh):
+// SEMUA fungsi CRUD Master Data di bawah ini sebelumnya tidak pernah mengecek `{ error }` dari
+// balasan Supabase (`.update()`/`.insert()`/`.delete()` client Supabase TIDAK throw sendiri kalau
+// gagal -- selalu resolve dengan `{ data, error }`, error-nya harus dicek manual). Efeknya: kalau
+// panggilan ke Supabase gagal (mis. network flaky -- lihat catatan ECONNRESET di getFlowSnapshot),
+// fungsi ini tetap "sukses" (promise resolve tanpa throw), jadi store.ts (yang HANYA rollback +
+// window.alert kalau action ini throw) tidak pernah tahu update-nya sebenarnya gagal -- baris
+// optimistic di UI kelihatan sudah berubah, tapi begitu halaman di-refresh dan snapshot asli
+// dari Supabase di-fetch ulang, nilai lama muncul lagi (kelihatan seperti "edit hilang sendiri").
+// Sekarang setiap panggilan Supabase di sini dicek errornya dan di-throw dengan pesan jelas, sama
+// seperti pola actions.ts lain (mis. finalizeHppForInvoiceAction lama, replaceHargaKainAction dst).
 export async function addHargaMaklonRowAction(): Promise<void> {
   await requireMasterDataRole();
   const id = await nextReadableId("HMKL");
-  await supabaseServer().from("harga_maklon").insert({ id, kode_vendor: "", nama_vendor: "", tipe_lengan: "PDK", jenis_harga: "Standar", harga: 0 });
+  const { error } = await supabaseServer().from("harga_maklon").insert({ id, kode_vendor: "", nama_vendor: "", tipe_lengan: "PDK", jenis_harga: "Standar", harga: 0 });
+  if (error) throw new Error(error.message);
 }
 export async function updateHargaMaklonRowAction(id: string, patch: Partial<HargaMaklonRow>): Promise<void> {
   await requireMasterDataRole();
@@ -3566,27 +3603,32 @@ export async function updateHargaMaklonRowAction(id: string, patch: Partial<Harg
   if (patch.kapasitasMin !== undefined) p.kapasitas_min = patch.kapasitasMin;
   if (patch.kapasitasMax !== undefined) p.kapasitas_max = patch.kapasitasMax;
   if (patch.harga !== undefined) p.harga = patch.harga;
-  await supabaseServer().from("harga_maklon").update(p).eq("id", id);
+  const { error } = await supabaseServer().from("harga_maklon").update(p).eq("id", id);
+  if (error) throw new Error(error.message);
 }
 export async function deleteHargaMaklonRowAction(id: string): Promise<void> {
   await requireMasterDataRole();
-  await supabaseServer().from("harga_maklon").delete().eq("id", id);
+  const { error } = await supabaseServer().from("harga_maklon").delete().eq("id", id);
+  if (error) throw new Error(error.message);
 }
 export async function replaceHargaMaklonAction(rows: HargaMaklonRow[]): Promise<void> {
   await requireMasterDataRole();
   const db = supabaseServer();
-  await db.from("harga_maklon").delete().neq("id", "");
+  const del = await db.from("harga_maklon").delete().neq("id", "");
+  if (del.error) throw new Error(del.error.message);
   if (rows.length === 0) return;
   const ids = await Promise.all(rows.map(() => nextReadableId("HMKL")));
-  await db.from("harga_maklon").insert(
+  const { error } = await db.from("harga_maklon").insert(
     rows.map((r, i) => ({ id: ids[i], kode_vendor: r.kodeVendor, nama_vendor: r.namaVendor, tipe_lengan: r.tipeLengan, jenis_harga: r.jenisHarga, kapasitas_min: r.kapasitasMin ?? null, kapasitas_max: r.kapasitasMax ?? null, harga: r.harga }))
   );
+  if (error) throw new Error(error.message);
 }
 
 export async function addHargaKainRowAction(): Promise<void> {
   await requireMasterDataRole();
   const id = await nextReadableId("HKAIN");
-  await supabaseServer().from("harga_kain").insert({ id, kode_supplier: "", nama_supplier: "", kategori: "", warna: "", harga_per_kg: 0 });
+  const { error } = await supabaseServer().from("harga_kain").insert({ id, kode_supplier: "", nama_supplier: "", kategori: "", warna: "", harga_per_kg: 0 });
+  if (error) throw new Error(error.message);
 }
 export async function updateHargaKainRowAction(id: string, patch: Partial<HargaKainRow>): Promise<void> {
   await requireMasterDataRole();
@@ -3596,25 +3638,30 @@ export async function updateHargaKainRowAction(id: string, patch: Partial<HargaK
   if (patch.kategori !== undefined) p.kategori = patch.kategori;
   if (patch.warna !== undefined) p.warna = patch.warna;
   if (patch.hargaPerKg !== undefined) p.harga_per_kg = patch.hargaPerKg;
-  await supabaseServer().from("harga_kain").update(p).eq("id", id);
+  const { error } = await supabaseServer().from("harga_kain").update(p).eq("id", id);
+  if (error) throw new Error(error.message);
 }
 export async function deleteHargaKainRowAction(id: string): Promise<void> {
   await requireMasterDataRole();
-  await supabaseServer().from("harga_kain").delete().eq("id", id);
+  const { error } = await supabaseServer().from("harga_kain").delete().eq("id", id);
+  if (error) throw new Error(error.message);
 }
 export async function replaceHargaKainAction(rows: HargaKainRow[]): Promise<void> {
   await requireMasterDataRole();
   const db = supabaseServer();
-  await db.from("harga_kain").delete().neq("id", "");
+  const del = await db.from("harga_kain").delete().neq("id", "");
+  if (del.error) throw new Error(del.error.message);
   if (rows.length === 0) return;
   const ids = await Promise.all(rows.map(() => nextReadableId("HKAIN")));
-  await db.from("harga_kain").insert(rows.map((r, i) => ({ id: ids[i], kode_supplier: r.kodeSupplier, nama_supplier: r.namaSupplier, kategori: r.kategori, warna: r.warna, harga_per_kg: r.hargaPerKg })));
+  const { error } = await db.from("harga_kain").insert(rows.map((r, i) => ({ id: ids[i], kode_supplier: r.kodeSupplier, nama_supplier: r.namaSupplier, kategori: r.kategori, warna: r.warna, harga_per_kg: r.hargaPerKg })));
+  if (error) throw new Error(error.message);
 }
 
 export async function addHargaKainPksRowAction(): Promise<void> {
   await requireMasterDataRole();
   const id = await nextReadableId("HKPKS");
-  await supabaseServer().from("harga_kain_pks").insert({ id, kode_supplier: "", kategori: "", warna: "", satuan: "TON", harga_per_kg: 0 });
+  const { error } = await supabaseServer().from("harga_kain_pks").insert({ id, kode_supplier: "", kategori: "", warna: "", satuan: "TON", harga_per_kg: 0 });
+  if (error) throw new Error(error.message);
 }
 export async function updateHargaKainPksRowAction(id: string, patch: Partial<HargaKainPksRow>): Promise<void> {
   await requireMasterDataRole();
@@ -3626,63 +3673,77 @@ export async function updateHargaKainPksRowAction(id: string, patch: Partial<Har
   if (patch.tonaseMin !== undefined) p.tonase_min = patch.tonaseMin;
   if (patch.tonaseMax !== undefined) p.tonase_max = patch.tonaseMax;
   if (patch.hargaPerKg !== undefined) p.harga_per_kg = patch.hargaPerKg;
-  await supabaseServer().from("harga_kain_pks").update(p).eq("id", id);
+  const { error } = await supabaseServer().from("harga_kain_pks").update(p).eq("id", id);
+  if (error) throw new Error(error.message);
 }
 export async function deleteHargaKainPksRowAction(id: string): Promise<void> {
   await requireMasterDataRole();
-  await supabaseServer().from("harga_kain_pks").delete().eq("id", id);
+  const { error } = await supabaseServer().from("harga_kain_pks").delete().eq("id", id);
+  if (error) throw new Error(error.message);
 }
 export async function replaceHargaKainPksAction(rows: HargaKainPksRow[]): Promise<void> {
   await requireMasterDataRole();
   const db = supabaseServer();
-  await db.from("harga_kain_pks").delete().neq("id", "");
+  const del = await db.from("harga_kain_pks").delete().neq("id", "");
+  if (del.error) throw new Error(del.error.message);
   if (rows.length === 0) return;
   const ids = await Promise.all(rows.map(() => nextReadableId("HKPKS")));
-  await db
+  const { error } = await db
     .from("harga_kain_pks")
     .insert(rows.map((r, i) => ({ id: ids[i], kode_supplier: r.kodeSupplier, kategori: r.kategori, warna: r.warna, satuan: r.satuan, tonase_min: r.tonaseMin ?? null, tonase_max: r.tonaseMax ?? null, harga_per_kg: r.hargaPerKg })));
+  if (error) throw new Error(error.message);
 }
 
 export async function addEntitasAction(nama: string): Promise<void> {
   await requireMasterDataRole();
   const id = await nextReadableId("ENT");
-  await supabaseServer().from("entitas").insert({ id, nama });
+  const { error } = await supabaseServer().from("entitas").insert({ id, nama });
+  if (error) throw new Error(error.message);
 }
 export async function updateEntitasAction(id: string, nama: string): Promise<void> {
   await requireMasterDataRole();
-  await supabaseServer().from("entitas").update({ nama }).eq("id", id);
+  const { error } = await supabaseServer().from("entitas").update({ nama }).eq("id", id);
+  if (error) throw new Error(error.message);
 }
 export async function deleteEntitasAction(id: string): Promise<void> {
   await requireMasterDataRole();
-  await supabaseServer().from("entitas").delete().eq("id", id);
+  const { error } = await supabaseServer().from("entitas").delete().eq("id", id);
+  if (error) throw new Error(error.message);
 }
 export async function replaceEntitasAction(rows: EntitasRow[]): Promise<void> {
   await requireMasterDataRole();
   const db = supabaseServer();
-  await db.from("entitas").delete().neq("id", "");
+  const del = await db.from("entitas").delete().neq("id", "");
+  if (del.error) throw new Error(del.error.message);
   if (rows.length === 0) return;
   const ids = await Promise.all(rows.map(() => nextReadableId("ENT")));
-  await db.from("entitas").insert(rows.map((r, i) => ({ id: ids[i], nama: r.nama })));
+  const { error } = await db.from("entitas").insert(rows.map((r, i) => ({ id: ids[i], nama: r.nama })));
+  if (error) throw new Error(error.message);
 }
 
 export async function addSupplierAction(nama: string): Promise<void> {
   await requireMasterDataRole();
   const id = await nextReadableId("SUP");
-  await supabaseServer().from("suppliers").insert({ id, nama });
+  const { error } = await supabaseServer().from("suppliers").insert({ id, nama });
+  if (error) throw new Error(error.message);
 }
 export async function updateSupplierAction(id: string, nama: string): Promise<void> {
   await requireMasterDataRole();
-  await supabaseServer().from("suppliers").update({ nama }).eq("id", id);
+  const { error } = await supabaseServer().from("suppliers").update({ nama }).eq("id", id);
+  if (error) throw new Error(error.message);
 }
 export async function deleteSupplierAction(id: string): Promise<void> {
   await requireMasterDataRole();
-  await supabaseServer().from("suppliers").delete().eq("id", id);
+  const { error } = await supabaseServer().from("suppliers").delete().eq("id", id);
+  if (error) throw new Error(error.message);
 }
 export async function replaceSupplierAction(rows: SupplierRow[]): Promise<void> {
   await requireMasterDataRole();
   const db = supabaseServer();
-  await db.from("suppliers").delete().neq("id", "");
+  const del = await db.from("suppliers").delete().neq("id", "");
+  if (del.error) throw new Error(del.error.message);
   if (rows.length === 0) return;
   const ids = await Promise.all(rows.map(() => nextReadableId("SUP")));
-  await db.from("suppliers").insert(rows.map((r, i) => ({ id: ids[i], nama: r.nama })));
+  const { error } = await db.from("suppliers").insert(rows.map((r, i) => ({ id: ids[i], nama: r.nama })));
+  if (error) throw new Error(error.message);
 }

@@ -103,6 +103,8 @@ export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
         sizes: [],
         totalQty: 0,
         ribKg: 0,
+        kerahKg: 0,
+        mansetKg: 0,
         rollEstimate: 0,
         // "" = belum ada baris ber-vendor valid ditemukan untuk grup ini sejauh ini -- diisi
         // begitu baris pertama yang BUKAN placeholder ditemukan (lihat di bawah), atau tetap ""
@@ -122,27 +124,39 @@ export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
     if (totalOverride) group.totalQty = totalOverride;
     if (ribOverride) group.ribKg = ribOverride;
     if (rollOverride) group.rollEstimate = rollOverride;
+    // Kerah/Manset (spec BAGIAN 2) -- HANYA dibaca untuk baris ber-KATEGORI persis "WANGKI MYNO"
+    // (exact match setelah trim+uppercase, dikonfirmasi user) -- baris kategori lain SENGAJA tidak
+    // menyentuh kerahKg/mansetKg grup ini sama sekali (tetap default 0). Sama pola override
+    // "nilai non-zero terakhir menang" seperti ribOverride di atas, TANPA fallback formula.
+    const rowKategori = String(row["KATEGORI"] ?? "").trim().toUpperCase();
+    if (rowKategori === "WANGKI MYNO") {
+      const kerahOverride = Number(row["KERAH"] ?? 0);
+      const mansetOverride = Number(row["MANSET"] ?? 0);
+      if (kerahOverride) group.kerahKg = kerahOverride;
+      if (mansetOverride) group.mansetKg = mansetOverride;
+    }
   }
 
-  const lenganGroups = Array.from(groupMap.values())
-    .map((g) => {
-      if (!g.totalQty) g.totalQty = g.sizes.reduce((a, s) => a + s.qty, 0);
-      if (!g.ribKg) g.ribKg = Math.round(((g.totalQty * 6.5) / 1000) * 1000) / 1000;
-      if (!g.rollEstimate) g.rollEstimate = g.totalQty > 0 ? Math.max(1, Math.round(g.totalQty / 117)) : 0;
-      // Grup dengan qty > 0 (benar-benar ada pemesanan) TAPI tidak satu pun barisnya punya vendor
-      // valid (semuanya "-"/kosong) -- ini genuinely data tidak lengkap, bukan placeholder yang sah,
-      // jadi tetap ditolak dengan pesan jelas (bukan diam-diam disimpan vendor kosong).
-      if (g.totalQty > 0 && !g.vendorDefault) {
-        throw new Error(`Kolom VENDOR untuk ${g.warna} · ${g.lengan} (qty ${g.totalQty}) kosong/"-" di semua barisnya — isi salah satu baris dengan kode/nama vendor yang valid.`);
-      }
-      return g;
-    })
-    // Item 2026-09-12 (user-reported): grup qty 0 tanpa vendor produksi tujuan (placeholder murni
-    // dari template Excel -- warna/ukuran yang memang tidak dipesan di batch ini) SENGAJA tidak
-    // dimasukkan ke MRP sama sekali, bukan cuma disembunyikan belakangan di layar Procurement
-    // (lihat materialGroupsByWarna/allMaterialAssigned di lib/mrp/derive.ts & app/procurement) --
-    // supaya tidak ada baris "kosong" yang ikut tersimpan sebagai lengan_groups/material_rows.
-    .filter((g) => g.totalQty > 0);
+  const lenganGroups = Array.from(groupMap.values()).map((g) => {
+    if (!g.totalQty) g.totalQty = g.sizes.reduce((a, s) => a + s.qty, 0);
+    if (!g.ribKg) g.ribKg = Math.round(((g.totalQty * 6.5) / 1000) * 1000) / 1000;
+    if (!g.rollEstimate) g.rollEstimate = g.totalQty > 0 ? Math.max(1, Math.round(g.totalQty / 117)) : 0;
+    // Grup dengan qty > 0 (benar-benar ada pemesanan) TAPI tidak satu pun barisnya punya vendor
+    // valid (semuanya "-"/kosong) -- ini genuinely data tidak lengkap, bukan placeholder yang sah,
+    // jadi tetap ditolak dengan pesan jelas (bukan diam-diam disimpan vendor kosong).
+    if (g.totalQty > 0 && !g.vendorDefault) {
+      throw new Error(`Kolom VENDOR untuk ${g.warna} · ${g.lengan} (qty ${g.totalQty}) kosong/"-" di semua barisnya — isi salah satu baris dengan kode/nama vendor yang valid.`);
+    }
+    return g;
+  });
+  // Item 2026-09-12 (user-reported, DIREVERT 2026-09-12): grup qty 0 (placeholder murni dari
+  // template Excel -- warna/ukuran yang memang tidak dipesan di batch ini) dulu SENGAJA dibuang di
+  // sini supaya tidak ada baris "kosong" yang ikut tersimpan sebagai lengan_groups/material_rows.
+  // Sekarang grup qty 0 TETAP disimpan sebagai HISTORI MRP (tampil di PPIC & SCM "Riwayat
+  // keputusan" dengan label "Tidak ada pemesanan", disembunyikan di SCM "Menunggu approval") --
+  // tetap TIDAK PERNAH bocor ke Procurement karena rollEstimate/qtyRoll grup ini selalu 0, dan
+  // semua filter downstream (materialGroupsByWarna, allMaterialAssigned,
+  // countMaterialRowsWithoutSupplierForMrp) sudah berbasis `qtyRoll > 0`.
 
   const aduanRows: AduanPolaRow[] = [];
   if (aduanSheetName) {
@@ -162,10 +176,13 @@ export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
         const qty2 = Number(row["Qty2"] ?? 0);
         if (!warna || !kode) return;
         const group = lenganGroups.find((g) => g.warna === warna && g.lengan === lengan);
-        // Grup qty 0 sudah dibuang dari lenganGroups di atas -- kalau baris Aduan Pola ini
-        // ternyata mereferensikan warna+lengan yang groupnya sudah tidak ada (harusnya tidak
-        // terjadi secara bisnis, tidak ada cutting nyata untuk kombinasi yang tidak dipesan), jangan
-        // simpan dengan lenganGroupId kosong -- itu melanggar FK aduan_pola_rows.lengan_group_id.
+        // Sejak 2026-09-12: grup qty 0 TIDAK LAGI dibuang dari lenganGroups (lihat catatan di atas
+        // loop utama) -- guard ini sekarang PRAKTIS tidak akan pernah trigger untuk kasus itu lagi.
+        // Tetap DIPERTAHANKAN sebagai proteksi FK: kalau sheet "Aduan Pola" mereferensikan
+        // kombinasi warna+lengan yang memang sama sekali tidak ada di sheet MRP (harusnya tidak
+        // terjadi secara bisnis -- tidak ada cutting nyata untuk kombinasi yang tidak disebut di
+        // MRP sama sekali), jangan simpan dengan lenganGroupId kosong -- itu melanggar FK
+        // aduan_pola_rows.lengan_group_id.
         if (!group) return;
         const parts = kode.split("-").map((s) => s.trim());
         let sizes: SizeQty[];
@@ -199,6 +216,8 @@ export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
     lengan: g.lengan,
     qtyRoll: g.rollEstimate,
     ribKg: g.ribKg,
+    kerahKg: g.kerahKg,
+    mansetKg: g.mansetKg,
     supplier: null,
   }));
 

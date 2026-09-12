@@ -384,52 +384,67 @@ export default function PoApprovalPage() {
 
           <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
             <div className="border-b border-border-subtle px-4 py-3 font-sans text-[13px] font-semibold text-text-primary">Material</div>
-            <div
-              className="grid gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
-              style={{ gridTemplateColumns: "1fr 50px 60px 1fr" }}
-            >
-              <span>Warna</span>
-              <span className="text-right">Roll</span>
-              <span className="text-right">Rib kg</span>
-              <span>Vendor material</span>
-            </div>
-            {materialGroupsByWarna(detail.materialRows).map((g) => {
-              // Dipersempit ke supplier yang benar-benar punya harga untuk warna ini di Harga
-              // Kain (+ daftar manual tab Supplier) — supaya tidak bisa pilih kombinasi
-              // supplier+warna yang harganya tidak ada sama sekali (yang berujung PO jatuh ke
-              // fallback "Estimasi" pakai angka flat jauh di bawah harga pasar).
-              const optionsForWarna = materialSupplierNamesForWarna(hargaKain, supplierList, g.warna);
+            {(() => {
+              const materialGroups = materialGroupsByWarna(detail.materialRows);
+              // Item BAGIAN 2 (Req 20) — kolom Kerah/Manset kg cuma ditampilkan kalau ADA material
+              // row MRP ini yang benar-benar punya nilai (kategori "WANGKI MYNO").
+              const showKerahManset = materialGroups.some((g) => g.totalKerahKg > 0 || g.totalMansetKg > 0);
+              const cols = showKerahManset ? "1fr 50px 60px 60px 60px 1fr" : "1fr 50px 60px 1fr";
               return (
-                <div key={g.warna} className="grid gap-x-3 items-center border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0" style={{ gridTemplateColumns: "1fr 50px 60px 1fr" }}>
-                  <span>{g.warna}</span>
-                  <span className="text-right font-mono">{g.totalRoll}</span>
-                  <span className="text-right font-mono">{g.totalRibKg.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>
-                  <select
-                    value={g.supplier ?? ""}
-                    onChange={(e) => {
-                      // Satu pilihan supplier berlaku untuk SEMUA lengan warna ini (pendek +
-                      // panjang digabung jadi satu keputusan bahan) — bukan per lengan lagi.
-                      // Dikirim sebagai SATU panggilan (bukan .forEach per rowId) supaya cuma 1
-                      // update + 1 refresh, bukan N yang saling susul-menyusul.
-                      assignMaterialSupplier(detail.mrp.id, g.rowIds, e.target.value);
-                    }}
-                    className="rounded-md border border-[#DDE4EB] px-2 py-[5px] font-sans text-[11.5px] font-medium text-text-primary"
+                <>
+                  <div
+                    className="grid gap-x-3 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
+                    style={{ gridTemplateColumns: cols }}
                   >
-                    <option value="">— pilih vendor —</option>
-                    {optionsForWarna.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
-                  {optionsForWarna.length === 0 && (
-                    <div className="col-span-4 -mt-1.5 pb-0.5 font-sans text-[10.5px] font-medium text-warning-fg">
-                      ⚠ Belum ada supplier dengan harga untuk warna {g.warna} di Master Data Harga Kain.
-                    </div>
-                  )}
-                </div>
+                    <span>Warna</span>
+                    <span className="text-right">Roll</span>
+                    <span className="text-right">Rib kg</span>
+                    {showKerahManset && <span className="text-right">Kerah kg</span>}
+                    {showKerahManset && <span className="text-right">Manset kg</span>}
+                    <span>Vendor material</span>
+                  </div>
+                  {materialGroups.map((g) => {
+                    // Dipersempit ke supplier yang benar-benar punya harga untuk warna ini di Harga
+                    // Kain (+ daftar manual tab Supplier) — supaya tidak bisa pilih kombinasi
+                    // supplier+warna yang harganya tidak ada sama sekali (yang berujung PO jatuh ke
+                    // fallback "Estimasi" pakai angka flat jauh di bawah harga pasar).
+                    const optionsForWarna = materialSupplierNamesForWarna(hargaKain, supplierList, g.warna);
+                    return (
+                      <div key={g.warna} className="grid gap-x-3 items-center border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0" style={{ gridTemplateColumns: cols }}>
+                        <span>{g.warna}</span>
+                        <span className="text-right font-mono">{g.totalRoll}</span>
+                        <span className="text-right font-mono">{g.totalRibKg.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>
+                        {showKerahManset && <span className="text-right font-mono">{g.totalKerahKg.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>}
+                        {showKerahManset && <span className="text-right font-mono">{g.totalMansetKg.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>}
+                        <select
+                          value={g.supplier ?? ""}
+                          onChange={(e) => {
+                            // Satu pilihan supplier berlaku untuk SEMUA lengan warna ini (pendek +
+                            // panjang digabung jadi satu keputusan bahan) — bukan per lengan lagi.
+                            // Dikirim sebagai SATU panggilan (bukan .forEach per rowId) supaya cuma 1
+                            // update + 1 refresh, bukan N yang saling susul-menyusul.
+                            assignMaterialSupplier(detail.mrp.id, g.rowIds, e.target.value);
+                          }}
+                          className="rounded-md border border-[#DDE4EB] px-2 py-[5px] font-sans text-[11.5px] font-medium text-text-primary"
+                        >
+                          <option value="">— pilih vendor —</option>
+                          {optionsForWarna.map((s) => (
+                            <option key={s} value={s}>
+                              {s}
+                            </option>
+                          ))}
+                        </select>
+                        {optionsForWarna.length === 0 && (
+                          <div className={(showKerahManset ? "col-span-6" : "col-span-4") + " -mt-1.5 pb-0.5 font-sans text-[10.5px] font-medium text-warning-fg"}>
+                            ⚠ Belum ada supplier dengan harga untuk warna {g.warna} di Master Data Harga Kain.
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </>
               );
-            })}
+            })()}
           </div>
         </div>
       )}

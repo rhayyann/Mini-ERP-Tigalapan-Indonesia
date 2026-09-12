@@ -9,6 +9,11 @@ export type LenganGroup = {
   sizes: SizeQty[];
   totalQty: number;
   ribKg: number;
+  /** Kg Kerah/Manset dari kolom Excel `KERAH`/`MANSET` -- HANYA terisi (non-0) untuk baris
+   *  ber-KATEGORI "WANGKI MYNO" (lihat parseImport.ts); kategori lain selalu 0. Sama pola dengan
+   *  `ribKg`, tapi TANPA fallback formula -- kolom kosong/tidak ada di file Excel = tetap 0. */
+  kerahKg: number;
+  mansetKg: number;
   rollEstimate: number;
   vendorDefault: string;
 };
@@ -33,6 +38,9 @@ export type MaterialRow = {
   lengan: Lengan;
   qtyRoll: number;
   ribKg: number;
+  /** Sama seperti LenganGroup.kerahKg/mansetKg -- lihat catatan di sana. */
+  kerahKg: number;
+  mansetKg: number;
   supplier: string | null;
   entitas?: string;
 };

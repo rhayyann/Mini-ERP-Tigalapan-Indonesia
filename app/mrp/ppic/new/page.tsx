@@ -53,12 +53,14 @@ export default function InputMrpPage() {
           sizes: rows.map((r) => ({ size: r.size, qty: r.qty })),
           totalQty,
           ribKg: kg,
+          kerahKg: 0,
+          mansetKg: 0,
           rollEstimate: rollCount,
           vendorDefault: "BAYU",
         },
       ],
       aduanRows: [],
-      materialRows: [{ id: "manual-mat", lenganGroupId: groupId, warna, lengan, qtyRoll: rollCount, ribKg: kg, supplier: null }],
+      materialRows: [{ id: "manual-mat", lenganGroupId: groupId, warna, lengan, qtyRoll: rollCount, ribKg: kg, kerahKg: 0, mansetKg: 0, supplier: null }],
     });
     router.push("/mrp/ppic");
   }

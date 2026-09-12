@@ -41,6 +41,11 @@ export type MaterialGroupByWarna = {
   warna: string;
   totalRoll: number;
   totalRibKg: number;
+  /** Item BAGIAN 2 (Req 20) — agregat kerah/manset per warna, sama pola dengan totalRibKg. 0
+   *  untuk MRP kategori selain "WANGKI MYNO". PENAMBAHAN FIELD SAJA -- filter `qtyRoll > 0` di
+   *  bawah TIDAK diubah. */
+  totalKerahKg: number;
+  totalMansetKg: number;
   supplier: string | null;
   rowIds: string[];
 };
@@ -58,9 +63,11 @@ export function materialGroupsByWarna(materialRows: MaterialRow[]): MaterialGrou
   // memblokir "Kirim PO ke Finance" lewat gate assign-vendor, karena memang tidak ada apa-apa yang
   // perlu dipesan untuk warna itu.
   for (const m of materialRows.filter((r) => r.qtyRoll > 0)) {
-    const cur = map.get(m.warna) ?? { warna: m.warna, totalRoll: 0, totalRibKg: 0, supplier: null, rowIds: [] };
+    const cur = map.get(m.warna) ?? { warna: m.warna, totalRoll: 0, totalRibKg: 0, totalKerahKg: 0, totalMansetKg: 0, supplier: null, rowIds: [] };
     cur.totalRoll += m.qtyRoll;
     cur.totalRibKg += m.ribKg;
+    cur.totalKerahKg += m.kerahKg;
+    cur.totalMansetKg += m.mansetKg;
     if (!cur.supplier && m.supplier) cur.supplier = m.supplier;
     cur.rowIds.push(m.id);
     map.set(m.warna, cur);
@@ -418,14 +425,33 @@ export type MrpWarnaBreakdown = {
   ribPanjang: number;
   ribPendek: number;
   ribTotal: number;
+  /** Item BAGIAN 2 (Kerah/Manset, khusus kategori "WANGKI MYNO") — 0 untuk MRP kategori lain,
+   *  sama pola dengan ribPanjang/ribPendek/ribTotal di atas. */
+  kerahPanjang: number;
+  kerahPendek: number;
+  kerahTotal: number;
+  mansetPanjang: number;
+  mansetPendek: number;
+  mansetTotal: number;
+  /** Item BAGIAN 1 (histori qty=0) — true kalau SEMUA lengan warna ini qty 0 (tidak ada
+   *  pemesanan/produksi sama sekali) -- dipakai UI untuk penanda visual "Tidak ada pemesanan" &
+   *  oleh `includeZeroQty: false` untuk membuang baris ini dari tampilan "Menunggu approval". */
+  isEmpty: boolean;
 };
 
-/** Rincian per warna (qty/roll/rib, dipecah PANJANG vs PENDEK + total) untuk detail baris MRP di
- *  halaman PPIC — bersumber langsung dari lenganGroups (hasil sheet "MRP Template" saat import),
- *  bukan dari aduanRows/materialPOs, supaya tetap menampilkan rincian asli MRP walau sebagian
- *  sudah di-switch vendor/dibatalkan Procurement setelahnya. */
-export function mrpWarnaBreakdown(detail: MrpDetail | undefined): MrpWarnaBreakdown[] {
+/** Rincian per warna (qty/roll/rib/kerah/manset, dipecah PANJANG vs PENDEK + total) untuk detail
+ *  baris MRP di halaman PPIC — bersumber langsung dari lenganGroups (hasil sheet "MRP Template"
+ *  saat import), bukan dari aduanRows/materialPOs, supaya tetap menampilkan rincian asli MRP walau
+ *  sebagian sudah di-switch vendor/dibatalkan Procurement setelahnya.
+ *
+ *  `opts.includeZeroQty` (default true = perilaku lama) — kalau `false`, buang entri HASIL AKHIR
+ *  per warna yang `qtyTotal === 0` (dibuang di level warna, bukan per lenganGroup, supaya warna
+ *  yang punya 1 lengan qty 0 dan 1 lengan qty > 0 tetap tampil utuh). Dipakai SCM "Menunggu
+ *  approval" (`includeZeroQty: false`) supaya baris warna yang memang tidak ada pemesanan tidak
+ *  ikut menunggu keputusan — "Riwayat keputusan" & PPIC tetap default (tampil semua). */
+export function mrpWarnaBreakdown(detail: MrpDetail | undefined, opts?: { includeZeroQty?: boolean }): MrpWarnaBreakdown[] {
   if (!detail) return [];
+  const includeZeroQty = opts?.includeZeroQty ?? true;
   const map = new Map<string, MrpWarnaBreakdown>();
   for (const g of detail.lenganGroups) {
     const cur = map.get(g.warna) ?? {
@@ -439,22 +465,36 @@ export function mrpWarnaBreakdown(detail: MrpDetail | undefined): MrpWarnaBreakd
       ribPanjang: 0,
       ribPendek: 0,
       ribTotal: 0,
+      kerahPanjang: 0,
+      kerahPendek: 0,
+      kerahTotal: 0,
+      mansetPanjang: 0,
+      mansetPendek: 0,
+      mansetTotal: 0,
+      isEmpty: false,
     };
     if (g.lengan === "PANJANG") {
       cur.qtyPanjang += g.totalQty;
       cur.rollPanjang += g.rollEstimate;
       cur.ribPanjang += g.ribKg;
+      cur.kerahPanjang += g.kerahKg;
+      cur.mansetPanjang += g.mansetKg;
     } else {
       cur.qtyPendek += g.totalQty;
       cur.rollPendek += g.rollEstimate;
       cur.ribPendek += g.ribKg;
+      cur.kerahPendek += g.kerahKg;
+      cur.mansetPendek += g.mansetKg;
     }
     cur.qtyTotal += g.totalQty;
     cur.rollTotal += g.rollEstimate;
     cur.ribTotal += g.ribKg;
+    cur.kerahTotal += g.kerahKg;
+    cur.mansetTotal += g.mansetKg;
     map.set(g.warna, cur);
   }
-  return Array.from(map.values());
+  const all = Array.from(map.values()).map((w) => ({ ...w, isEmpty: w.qtyTotal === 0 }));
+  return includeZeroQty ? all : all.filter((w) => w.qtyTotal !== 0);
 }
 
 export type MaklonPoWarnaBreakdown = { warna: string; lengan: Lengan; qty: number; qtyRoll: number };
@@ -500,22 +540,40 @@ export function mrpDetailFor(mrpId: string, mrpDetails: MrpDetail[]): MrpDetail 
   return mrpDetails.find((d) => d.mrp.id === mrpId);
 }
 
+/** Item BAGIAN 2 (Kerah/Manset) — generalisasi dari alur RIB (blueprint yang sudah ada). Ketiga
+ *  kind dialokasikan dari ROLL YANG SAMA (ribAllocatedRoll dipakai sebagai basis "roll terpakai"
+ *  untuk ketiganya, tidak ada counter terpisah per kind) -- diterima apa adanya, konsisten karena
+ *  ketiganya memang berasal dari roll yang sama. */
+export type AduanMaterialKind = "rib" | "kerah" | "manset";
+
+function materialKgFieldForKind(kind: AduanMaterialKind): "ribKg" | "kerahKg" | "mansetKg" {
+  if (kind === "rib") return "ribKg";
+  if (kind === "kerah") return "kerahKg";
+  return "mansetKg";
+}
+
+export function materialKgPerRollForGroup(group: LenganGroup, kind: AduanMaterialKind): number {
+  return group.rollEstimate > 0 ? group[materialKgFieldForKind(kind)] / group.rollEstimate : 0;
+}
+
 export function ribKgPerRollForGroup(group: LenganGroup): number {
-  return group.rollEstimate > 0 ? group.ribKg / group.rollEstimate : 0;
+  return materialKgPerRollForGroup(group, "rib");
 }
 
 export type RibAllocation = { aduanRowId: string; rollUsed: number; ribKg: number };
+export type MaterialAllocation = { aduanRowId: string; rollUsed: number; kg: number };
 
-export function aduanRibAllocationPreview(
+export function aduanMaterialAllocationPreview(
+  kind: AduanMaterialKind,
   mrpId: string,
   warna: string,
   rollQty: number,
   mrpDetails: MrpDetail[]
-): { totalRibKg: number; allocations: RibAllocation[] } {
+): { totalKg: number; allocations: MaterialAllocation[] } {
   const detail = mrpDetailFor(mrpId, mrpDetails);
-  if (!detail || rollQty <= 0) return { totalRibKg: 0, allocations: [] };
+  if (!detail || rollQty <= 0) return { totalKg: 0, allocations: [] };
   let remainingQty = rollQty;
-  const allocations: RibAllocation[] = [];
+  const allocations: MaterialAllocation[] = [];
   for (const a of detail.aduanRows) {
     if (remainingQty <= 0) break;
     if (a.warna !== warna) continue;
@@ -523,12 +581,25 @@ export function aduanRibAllocationPreview(
     if (avail <= 0) continue;
     const use = Math.min(avail, remainingQty);
     const group = detail.lenganGroups.find((g) => g.id === a.lenganGroupId);
-    const perRoll = group ? ribKgPerRollForGroup(group) : 0;
-    allocations.push({ aduanRowId: a.id, rollUsed: use, ribKg: perRoll * use });
+    const perRoll = group ? materialKgPerRollForGroup(group, kind) : 0;
+    allocations.push({ aduanRowId: a.id, rollUsed: use, kg: perRoll * use });
     remainingQty -= use;
   }
-  const totalRibKg = allocations.reduce((s, a) => s + a.ribKg, 0);
-  return { totalRibKg, allocations };
+  const totalKg = allocations.reduce((s, a) => s + a.kg, 0);
+  return { totalKg, allocations };
+}
+
+/** Wrapper tipis di atas `aduanMaterialAllocationPreview("rib", ...)` — signature & bentuk return
+ *  DIPERTAHANKAN persis sama (nama field `totalRibKg`/`ribKg`) supaya nol perubahan perilaku RIB &
+ *  nol perubahan di consumer yang sudah ada (paying-voucher-wizard.tsx, exportPoPdf.ts). */
+export function aduanRibAllocationPreview(
+  mrpId: string,
+  warna: string,
+  rollQty: number,
+  mrpDetails: MrpDetail[]
+): { totalRibKg: number; allocations: RibAllocation[] } {
+  const { totalKg, allocations } = aduanMaterialAllocationPreview("rib", mrpId, warna, rollQty, mrpDetails);
+  return { totalRibKg: totalKg, allocations: allocations.map((a) => ({ aduanRowId: a.aduanRowId, rollUsed: a.rollUsed, ribKg: a.kg })) };
 }
 
 function earliest(dates: (string | undefined)[]): string | undefined {

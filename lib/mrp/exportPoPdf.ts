@@ -1,6 +1,6 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import { formatRupiah, formatDate, formatDecimal, formatPcs, localDateString, hargaKainRate, hargaMaklonRate, mrpDetailFor, ribKgPerRollForGroup } from "./derive";
+import { formatRupiah, formatDate, formatDecimal, formatPcs, localDateString, hargaKainRate, hargaMaklonRate, materialKgPerRollForGroup, mrpDetailFor, type AduanMaterialKind } from "./derive";
 import { ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "./seed";
 import type { MrpDetail } from "./store";
 import type { HargaKainPksRow, HargaKainRow, HargaMaklonRow } from "./masterData";
@@ -215,21 +215,32 @@ export function exportMaterialPoPdf(po: MaterialPO, mrpDetails: MrpDetail[], har
 
   // Item 8c: "2. Permintaan RIB" -- Σ ribKgPerRollForGroup(group) * rollCount per baris warna/
   // lengan, group dicari dari mrpDetail.lenganGroups (warna+lengan match). Section (dan
-  // penomoran "2.") di-skip total kalau total rib 0 (mis. kategori tanpa rib sama sekali).
-  const ribRows = po.colorBreakdown.map((c) => {
-    const group = mrpDetail?.lenganGroups.find((g) => g.warna === c.warna && g.lengan === c.lengan);
-    const ribKgPerRoll = group ? ribKgPerRollForGroup(group) : 0;
-    return { warna: c.warna, lengan: c.lengan, rollCount: c.rollCount, ribKgPerRoll, ribKgForLine: ribKgPerRoll * c.rollCount };
-  });
-  const totalRib = ribRows.reduce((s, r) => s + r.ribKgForLine, 0);
+  // penomoran) di-skip total kalau total rib 0 (mis. kategori tanpa rib sama sekali).
+  //
+  // Item BAGIAN 2 (Req 21): Kerah/Manset mengikuti struktur tabel IDENTIK, digeneralisasi lewat
+  // drawMaterialSection di bawah -- penomoran section DINAMIS (sectionCounter cuma naik untuk
+  // section yang benar-benar dirender), supaya PO lama tanpa kerah/manset menghasilkan PDF PERSIS
+  // sama seperti sebelumnya (tetap section "2. Permintaan RIB", tidak ada lompatan nomor).
+  let sectionCounter = 1;
 
-  if (totalRib > 0) {
-    y = drawSectionHeading(doc, y, "2. Permintaan RIB");
+  function materialRowsForKind(kind: AduanMaterialKind) {
+    const rows = po.colorBreakdown.map((c) => {
+      const group = mrpDetail?.lenganGroups.find((g) => g.warna === c.warna && g.lengan === c.lengan);
+      const kgPerRoll = group ? materialKgPerRollForGroup(group, kind) : 0;
+      return { warna: c.warna, lengan: c.lengan, rollCount: c.rollCount, kgPerRoll, kgForLine: kgPerRoll * c.rollCount };
+    });
+    const totalKg = rows.reduce((s, r) => s + r.kgForLine, 0);
+    return { rows, totalKg };
+  }
+
+  function drawMaterialSection(label: string, rows: ReturnType<typeof materialRowsForKind>["rows"], totalKg: number) {
+    sectionCounter += 1;
+    y = drawSectionHeading(doc, y, `${sectionCounter}. Permintaan ${label}`);
     autoTable(doc, {
       startY: y,
       margin: { left: MARGIN, right: MARGIN },
-      head: [["No", "Warna", "Lengan", "Roll", "Rib/roll (kg)", "Total Rib (kg)"]],
-      body: ribRows.map((r, i) => [String(i + 1), r.warna, r.lengan, formatDecimal(r.rollCount, 1), formatDecimal(r.ribKgPerRoll, 2), formatDecimal(r.ribKgForLine, 2)]),
+      head: [["No", "Warna", "Lengan", "Roll", `${label}/roll (kg)`, `Total ${label} (kg)`]],
+      body: rows.map((r, i) => [String(i + 1), r.warna, r.lengan, formatDecimal(r.rollCount, 1), formatDecimal(r.kgPerRoll, 2), formatDecimal(r.kgForLine, 2)]),
       styles: { fontSize: 8.5, textColor: INK, lineColor: GRAY_BORDER },
       headStyles: { fillColor: TEAL, textColor: [255, 255, 255], fontStyle: "bold" },
       columnStyles: {
@@ -243,9 +254,18 @@ export function exportMaterialPoPdf(po: MaterialPO, mrpDetails: MrpDetail[], har
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
     doc.setTextColor(...INK);
-    doc.text(`TOTAL RIB: ${formatDecimal(totalRib, 2)} kg`, PAGE_W - MARGIN, y, { align: "right" });
+    doc.text(`TOTAL ${label.toUpperCase()}: ${formatDecimal(totalKg, 2)} kg`, PAGE_W - MARGIN, y, { align: "right" });
     y += 22;
   }
+
+  const rib = materialRowsForKind("rib");
+  if (rib.totalKg > 0) drawMaterialSection("RIB", rib.rows, rib.totalKg);
+
+  const kerah = materialRowsForKind("kerah");
+  if (kerah.totalKg > 0) drawMaterialSection("KERAH", kerah.rows, kerah.totalKg);
+
+  const manset = materialRowsForKind("manset");
+  if (manset.totalKg > 0) drawMaterialSection("MANSET", manset.rows, manset.totalKg);
 
   drawSignatureBoxesSafe(doc, y, "DIAJUKAN OLEH (PROCUREMENT)", "Tim Procurement", "DISETUJUI OLEH (FINANCE)", po.approved ? "Disetujui" : "Menunggu tanda tangan");
 

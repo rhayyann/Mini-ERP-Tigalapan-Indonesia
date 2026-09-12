@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { NumberInput } from "@/components/mrp/number-input";
 import { Button } from "@/components/ui/button";
-import { aduanRibAllocationPreview, formatDecimal, formatRupiah } from "@/lib/mrp/derive";
+import { aduanMaterialAllocationPreview, formatDecimal, formatRupiah, type AduanMaterialKind } from "@/lib/mrp/derive";
 import type { MrpDetail } from "@/lib/mrp/store";
 import type { AddBuyItem, ColorEntry, Lengan, MaterialPO } from "@/lib/mrp/types";
 
@@ -158,25 +158,45 @@ export function PayingVoucherWizard({
 
   // Dulu add-buy "Rib" cuma muncul kalau user klik "+ Tambah add buy" sendiri (opsional, gampang
   // kelupaan) — sekarang otomatis ditambahkan begitu 1 warna selesai disimpan di PV ini, kalau
-  // warna itu punya alokasi Rib dari Aduan Pola & belum pernah di-add-buy-kan sebelumnya. Item
-  // add buy LAIN (Kerah/Manset/Bur) TETAP manual/opsional, cuma Rib yang berubah jadi otomatis.
-  function autoAddRibForWarna(warna: string, entriesForCalc: ColorEntry[], currentAddBuys: AddBuyItem[]): AddBuyItem[] {
-    const alreadyAdded = currentAddBuys.some((b) => b.item === "Rib" && b.warna === warna && b.remark === AUTO_RIB_REMARK);
+  // warna itu punya alokasi Rib dari Aduan Pola & belum pernah di-add-buy-kan sebelumnya. Item BAGIAN
+  // 2 (Req 19): Kerah/Manset digeneralisasi mengikuti pola yang SAMA (otomatis juga, cuma khusus
+  // warna dari MRP kategori "WANGKI MYNO" yang benar-benar punya kerahKg/mansetKg > 0 -- warna lain
+  // langsung `totalKg <= 0` jadi di-skip, tidak pernah dapat baris Kerah/Manset otomatis). "Bur"
+  // TETAP manual/opsional, tidak ada auto-add untuk item itu.
+  const AUTO_ADD_ITEMS: { item: "Rib" | "Kerah" | "Manset"; kind: AduanMaterialKind; idPrefix: string }[] = [
+    { item: "Rib", kind: "rib", idPrefix: "ab-rib-" },
+    { item: "Kerah", kind: "kerah", idPrefix: "ab-kerah-" },
+    { item: "Manset", kind: "manset", idPrefix: "ab-manset-" },
+  ];
+
+  function autoAddMaterialForWarna(
+    itemDef: (typeof AUTO_ADD_ITEMS)[number],
+    warna: string,
+    entriesForCalc: ColorEntry[],
+    currentAddBuys: AddBuyItem[]
+  ): AddBuyItem[] {
+    const alreadyAdded = currentAddBuys.some((b) => b.item === itemDef.item && b.warna === warna && b.remark === AUTO_RIB_REMARK);
     if (alreadyAdded) return currentAddBuys;
     const rollQtyForWarna = entriesForCalc.filter((x) => x.warna === warna).reduce((s, x) => s + x.rolls.length, 0);
-    const preview = aduanRibAllocationPreview(po.mrpId, warna, rollQtyForWarna, mrpDetails);
-    if (preview.totalRibKg <= 0) return currentAddBuys;
+    const preview = aduanMaterialAllocationPreview(itemDef.kind, po.mrpId, warna, rollQtyForWarna, mrpDetails);
+    if (preview.totalKg <= 0) return currentAddBuys;
     return [
       ...currentAddBuys,
       {
-        id: "ab-rib-" + warna + "-" + Date.now(),
-        item: "Rib",
+        id: itemDef.idPrefix + warna + "-" + Date.now(),
+        item: itemDef.item,
         warna,
-        beratKg: Math.round(preview.totalRibKg * 1000) / 1000,
+        beratKg: Math.round(preview.totalKg * 1000) / 1000,
         totalHarga: 0,
         remark: AUTO_RIB_REMARK,
       },
     ];
+  }
+
+  function autoAddAllMaterialsForWarna(warna: string, entriesForCalc: ColorEntry[], currentAddBuys: AddBuyItem[]): AddBuyItem[] {
+    // Ketiga item HARUS terakumulasi dalam SATU array (dirantai di atas hasil sebelumnya), bukan
+    // 3 setAddBuys terpisah yang masing-masing membaca state lama & saling menimpa.
+    return AUTO_ADD_ITEMS.reduce((acc, itemDef) => autoAddMaterialForWarna(itemDef, warna, entriesForCalc, acc), currentAddBuys);
   }
 
   function saveColorEntry() {
@@ -191,7 +211,7 @@ export function PayingVoucherWizard({
     }));
     const updatedEntries = [...entries, ...newEntries];
     setEntries(updatedEntries);
-    setAddBuys((prev) => autoAddRibForWarna(activeGroup.warna, updatedEntries, prev));
+    setAddBuys((prev) => autoAddAllMaterialsForWarna(activeGroup.warna, updatedEntries, prev));
 
     // Item revisi 2026-09-06: dulu auto-lanjut ke "warna berikutnya" di sini -- sekarang balik ke
     // layar "Pilih warna" supaya user bebas pilih warna mana pun selanjutnya, bukan dipaksa urutan
@@ -202,13 +222,13 @@ export function PayingVoucherWizard({
   }
 
   function addAddBuy() {
-    // Fallback jaga-jaga: Rib sekarang otomatis ditambahkan begitu warna disimpan (lihat
-    // autoAddRibForWarna dipanggil dari saveColorEntry), jadi normalnya tombol ini langsung
-    // nambah baris kosong. Tapi kalau somehow ada warna yang rib-nya belum ke-add (mis. data
+    // Fallback jaga-jaga: Rib/Kerah/Manset sekarang otomatis ditambahkan begitu warna disimpan
+    // (lihat autoAddAllMaterialsForWarna dipanggil dari saveColorEntry), jadi normalnya tombol ini
+    // langsung nambah baris kosong. Tapi kalau somehow ada warna yang belum ke-add (mis. data
     // lama), cek dulu di sini sebelum nambah baris kosong biasa.
     for (const e of entries) {
       const before = addBuys;
-      const after = autoAddRibForWarna(e.warna, entries, before);
+      const after = autoAddAllMaterialsForWarna(e.warna, entries, before);
       if (after !== before) {
         setAddBuys(after);
         return;
