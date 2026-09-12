@@ -133,6 +133,17 @@ export function AppShell({
   const replaceEntitas = useMrpStore((s) => s.replaceEntitas);
   useEffect(() => {
     if (role !== "procurement" && role !== "finance") return;
+    // BUG FIX 2026-09-12 (user-reported: edit Master Data "balik lagi" ke nilai lama setelah hard
+    // refresh): state awal store SEBELUM StoreHydrator selesai fetch snapshot dari Supabase
+    // memang `[]` untuk hargaKain/hargaMaklon/dst (lihat lib/mrp/store.ts initialState) -- effect
+    // ini dulu cuma cek `.length === 0` TANPA menunggu hydrasi selesai, jadi di jendela waktu
+    // sebelum snapshot selesai (setiap mount/hard-refresh halaman Procurement/Finance), kondisi
+    // "kosong" itu SELALU true sesaat, memicu replaceHargaKain/dst dari Google Sheets -- yaitu
+    // DELETE SEMUA baris + insert ulang dari Sheets (masih berisi nilai lama) -- yang diam-diam
+    // MENIMPA edit manual yang baru saja disimpan ke Supabase tapi belum sempat disinkronkan balik
+    // ke Google Sheets. Sekarang tunggu `hydrated` dulu sebelum menilai array itu "genuinely
+    // kosong" (baru boleh auto-import kalau snapshot ASLI dari Supabase memang kosong).
+    if (!hydrated) return;
     if (hargaMaklon.length === 0) {
       fetchGoogleSheetCsv(GOOGLE_SHEET_URLS.hargaMaklon)
         .then((csv) => replaceHargaMaklon(mapHargaMaklonRows(parseCsvRows(csv))))
@@ -154,7 +165,7 @@ export function AppShell({
         .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [role, hargaMaklon.length, hargaKain.length, hargaKainPks.length, entitasList.length]);
+  }, [role, hydrated, hargaMaklon.length, hargaKain.length, hargaKainPks.length, entitasList.length]);
 
   let badgeOverrides: Record<string, number> | undefined;
   if (role === "finance") {
