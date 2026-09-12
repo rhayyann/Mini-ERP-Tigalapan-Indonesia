@@ -53,7 +53,11 @@ export type MaterialGroupByWarna = {
  *  ulang, assignMaterialSupplier diterapkan ke semua rowIds sekaligus supaya konsisten lagi. */
 export function materialGroupsByWarna(materialRows: MaterialRow[]): MaterialGroupByWarna[] {
   const map = new Map<string, MaterialGroupByWarna>();
-  for (const m of materialRows) {
+  // Baris qtyRoll 0 = kombinasi warna+lengan placeholder dari template Excel (tidak benar-benar
+  // dipesan/diproduksi di MRP ini) -- jangan sampai muncul di tabel Material Procurement atau ikut
+  // memblokir "Kirim PO ke Finance" lewat gate assign-vendor, karena memang tidak ada apa-apa yang
+  // perlu dipesan untuk warna itu.
+  for (const m of materialRows.filter((r) => r.qtyRoll > 0)) {
     const cur = map.get(m.warna) ?? { warna: m.warna, totalRoll: 0, totalRibKg: 0, supplier: null, rowIds: [] };
     cur.totalRoll += m.qtyRoll;
     cur.totalRibKg += m.ribKg;

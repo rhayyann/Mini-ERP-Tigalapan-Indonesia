@@ -77,9 +77,11 @@ export function countMrpWithoutPO(mrpDetails: MrpPoSentShape[]): number {
 /** Item 3.2 — bukan scoping dari countMrpWithoutPO di atas (beda dimensi: itu MENGHITUNG MRP,
  *  ini menghitung baris material TANPA vendor DI DALAM satu MRP) tapi predikat yang sama persis
  *  dengan gate nyata "Kirim PO ke Finance" di halaman itu (`allMaterialAssigned`,
- *  app/procurement/po-approval/page.tsx) — inilah yang benar-benar memblokir MRP itu di sini. */
+ *  app/procurement/po-approval/page.tsx) — inilah yang benar-benar memblokir MRP itu di sini.
+ *  Baris qtyRoll 0 (warna+lengan placeholder, tidak ada yang dipesan) dikecualikan, sama seperti
+ *  di allMaterialAssigned -- supaya badge ini tidak nyala gara-gara warna yang memang kosong. */
 export function countMaterialRowsWithoutSupplierForMrp(detail: Pick<MrpDetail, "materialRows">): number {
-  return detail.materialRows.filter((m) => !m.supplier).length;
+  return detail.materialRows.filter((m) => m.qtyRoll > 0 && !m.supplier).length;
 }
 
 /** MRP dari PPIC yang masih menunggu approval SCM sebelum boleh diproses Procurement — badge

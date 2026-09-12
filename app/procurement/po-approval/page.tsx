@@ -87,7 +87,9 @@ export default function PoApprovalPage() {
 
   const detail = mrpDetails.find((d) => d.mrp.id === selectedId && !d.poSent);
   const vendorRows = detail ? vendorProduksiRows(detail, hargaMaklon, vendorProduksiList) : [];
-  const allMaterialAssigned = detail ? detail.materialRows.every((m) => m.supplier) : false;
+  // Baris qtyRoll 0 = kombinasi warna+lengan placeholder (tidak ada yang dipesan) -- jangan ikut
+  // memblokir "Kirim PO ke Finance" gara-gara belum ada vendor untuk warna yang memang kosong.
+  const allMaterialAssigned = detail ? detail.materialRows.filter((m) => m.qtyRoll > 0).every((m) => m.supplier) : false;
 
   const materialColumns: ColumnDef<MaterialPO>[] = [
     { key: "noPo", label: "No PO", default: true, render: (p) => <span className="font-mono font-medium">{p.id}</span> },
