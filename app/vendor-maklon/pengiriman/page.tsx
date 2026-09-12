@@ -197,6 +197,10 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   // submit mendistribusikannya ke roll manapun yang cocok (roll pertama dulu, isi sisa
   // kapasitasnya) jadi DeliveryKoliItem[] ber-`sourceBatchId` -- lihat buildRollItems().
   const [rollQtyDraft, setRollQtyDraft] = useState<Record<string, number>>({});
+  // Item 2026-09-12 (user-reported): daftar roll mentah ("Roll | Warna/lengan | Sisa per size")
+  // cuma referensi teknis, bikin form penuh sebelum sempat diisi -- default disembunyikan, mirip
+  // pola "Lihat daftar roll" di tab Finish Good (production-result-panel.tsx).
+  const [showRollList, setShowRollList] = useState(false);
   // Klik baris "Koli belum dikirim"/"Riwayat pengiriman" untuk expand/collapse rincian isi koli
   // per item — id koli unik lintas kedua tabel jadi aman pakai 1 Set gabungan.
   const [expandedKoli, setExpandedKoli] = useState<Set<string>>(new Set());
@@ -288,6 +292,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
     setMrpId(id);
     setQtyDraft({});
     setRollQtyDraft({});
+    setShowRollList(false);
   }
 
   function editKoli(k: (typeof deliveryKolis)[number]) {
@@ -433,7 +438,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
     }
   }
   async function submitEkspedisi() {
-    if (!ekspedisiDialogKoliIds || !ekspedisiDraft || !ekspedisiNoteDraft.trim() || !noResiDraft.trim() || !ekspedisiPhotoDataUrl || ekspedisiSubmitting) return;
+    if (!ekspedisiDialogKoliIds || !ekspedisiDraft || !noResiDraft.trim() || !ekspedisiPhotoDataUrl || ekspedisiSubmitting) return;
     setEkspedisiSubmitting(true);
     setEkspedisiError(null);
     try {
@@ -569,6 +574,12 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
             <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">
               Isi qty per size (Finish Good) — qty mengurangi sisa roll yang cocok, roll boleh dikirim sebagian
             </div>
+            {/* Item 2026-09-12 (user-reported): qty per size TIDAK BOLEH diketik sebelum No koli
+                diisi -- dulu bisa diisi begitu MRP dipilih meski No koli masih kosong, gampang
+                kepencet lupa ngisi No koli-nya baru sadar pas "Simpan koli" gagal. */}
+            {!noKoli.trim() && (
+              <div className="mt-1.5 rounded-md border border-[#F0DFC2] bg-warning-bg px-2.5 py-1.5 font-sans text-[10.5px] text-warning-fg">Isi &quot;No koli&quot; dulu sebelum bisa input qty di bawah.</div>
+            )}
             {rollSizeRows.length === 0 && (
               <div className="mt-2 font-sans text-xs text-text-muted">Belum ada roll yang &quot;Tutup Roll&quot;-nya selesai (dengan sisa) untuk MRP ini (tab Finish Good).</div>
             )}
@@ -591,15 +602,23 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                       <NumberInput
                         value={rollQtyDraft[r.key] ?? 0}
                         decimals={0}
+                        disabled={!noKoli.trim()}
                         onChange={(v) => setRollQty(r.key, Math.max(0, Math.min(v, r.available)))}
-                        className="input w-[90px] text-right"
+                        className="input w-[90px] text-right disabled:cursor-not-allowed disabled:bg-[#F7F9FB] disabled:text-text-muted"
                       />
                     </span>
                   </div>
                 ))}
               </div>
             )}
+            {/* Item 2026-09-12 (user-reported): daftar roll mentah dihide default (toggle), lihat
+                catatan di deklarasi showRollList di atas. */}
             {rollRows.length > 0 && (
+              <button onClick={() => setShowRollList((v) => !v)} className="mt-2 font-sans text-[11px] font-semibold text-action-primary underline">
+                {showRollList ? "Sembunyikan daftar roll ↑" : `Lihat daftar roll (${rollRows.length}) →`}
+              </button>
+            )}
+            {showRollList && rollRows.length > 0 && (
               <div className="mt-2 overflow-hidden rounded-md border border-[#F1F4F7] bg-[#FAFBFC]">
                 <div className="grid grid-cols-4 gap-x-2 border-b border-[#F1F4F7] px-3 py-1 font-sans text-[9.5px] font-medium uppercase tracking-wider text-text-muted">
                   <span>Roll</span>
@@ -657,7 +676,13 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                       </span>
                       <span className="text-right font-mono text-text-muted">{r.available} pcs</span>
                       <span className="flex justify-end">
-                        <NumberInput value={qty} decimals={0} onChange={(v) => setRowQty(r.key, Math.max(0, Math.min(v, r.available)))} className="input w-[90px] text-right" />
+                        <NumberInput
+                          value={qty}
+                          decimals={0}
+                          disabled={!noKoli.trim()}
+                          onChange={(v) => setRowQty(r.key, Math.max(0, Math.min(v, r.available)))}
+                          className="input w-[90px] text-right disabled:cursor-not-allowed disabled:bg-[#F7F9FB] disabled:text-text-muted"
+                        />
                       </span>
                     </div>
                   );
@@ -816,7 +841,10 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                       );
                     })}
                     <div className="px-3 py-2.5">
-                      <Button onClick={() => doDeliveryGroup(groupKey, kolis)} disabled={!allWeighed || isPending(groupKey)} variant="success" size="xs">
+                      {/* Item 2026-09-12 (user-reported): variant disamakan ke "primary" (solid
+                         biru) supaya terlihat sama tegas seperti tombol "Simpan koli" -- dulu
+                         "success" (outline putih) gampang terlewat/dikira kurang penting. */}
+                      <Button onClick={() => doDeliveryGroup(groupKey, kolis)} disabled={!allWeighed || isPending(groupKey)} variant="primary" size="xs">
                         {isPending(groupKey) ? "Mengirim…" : `Delivery → (${kolis.length} koli)`}
                       </Button>
                     </div>
@@ -863,7 +891,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                       {alreadyInvoiced ? (
                         <span className="rounded-full bg-success-bg px-2.5 py-1 font-sans text-[10.5px] font-semibold text-success-fg">Sudah diinvoice</span>
                       ) : (
-                        <Button onClick={() => openInvoiceDialog(koliIds)} variant="accent" size="xs">
+                        <Button onClick={() => openInvoiceDialog(koliIds)} variant="primary" size="xs">
                           Submit Invoice →
                         </Button>
                       )}
@@ -930,7 +958,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
               </select>
               <div className="mt-3 font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">No Resi (wajib)</div>
               <input value={noResiDraft} onChange={(e) => setNoResiDraft(e.target.value)} placeholder="Contoh: JX1234567890" className="input mt-1 w-full" />
-              <div className="mt-3 font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Catatan ekspedisi (wajib)</div>
+              <div className="mt-3 font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Catatan ekspedisi (opsional)</div>
               <textarea
                 value={ekspedisiNoteDraft}
                 onChange={(e) => setEkspedisiNoteDraft(e.target.value)}
@@ -939,16 +967,18 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                 className="input mt-1 w-full"
               />
               <div className="mt-3 font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Foto lampiran (wajib)</div>
-              <input
-                ref={ekspedisiPhotoInputRef}
-                type="file"
-                accept="image/*"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) onEkspedisiPhotoSelected(file);
-                }}
-                className="mt-1 font-sans text-[11px]"
-              />
+              <div className="mt-1 rounded-md border border-dashed border-[#CBD5DF] bg-[#F7F9FB] px-3 py-2.5">
+                <input
+                  ref={ekspedisiPhotoInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) onEkspedisiPhotoSelected(file);
+                  }}
+                  className="font-sans text-[11px]"
+                />
+              </div>
               {ekspedisiPhotoBusy && <div className="mt-1.5 font-sans text-[10.5px] text-text-muted">Memproses foto…</div>}
               {ekspedisiPhotoError && <div className="mt-1.5 font-sans text-[10.5px] text-danger-fg">{ekspedisiPhotoError}</div>}
               {ekspedisiPhotoDataUrl && !ekspedisiPhotoBusy && (
@@ -963,7 +993,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
               </button>
               <Button
                 onClick={submitEkspedisi}
-                disabled={!ekspedisiDraft || !ekspedisiNoteDraft.trim() || !noResiDraft.trim() || !ekspedisiPhotoDataUrl || ekspedisiSubmitting}
+                disabled={!ekspedisiDraft || !noResiDraft.trim() || !ekspedisiPhotoDataUrl || ekspedisiSubmitting}
                 variant="accent"
                 size="sm"
               >
@@ -979,13 +1009,18 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
          dari default vendor tapi bisa diedit. */}
       {invoiceDialogKoliIds && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0B131B]/45 p-4">
-          <div className="w-full max-w-[560px] rounded-lg bg-white shadow-[0_8px_24px_rgba(11,19,27,.2)]">
+          {/* Item 2026-09-12 (user-reported, "ada element yang saling menutupi satu sama lain"):
+             dulu grid-cols-5 (kolom sama rata) di dialog selebar 560px cuma kebagian ~93px/kolom,
+             padahal input rate (NumberInput currency) fixed 110px -- otomatis meluber ke kolom Qty
+             di sebelahnya. Sekarang dialog dilebarkan + kolom pakai lebar EKSPLISIT (bukan sama
+             rata) supaya kolom Qty & Rate/pc selalu cukup, tidak pernah tumpang tindih. */}
+          <div className="w-full max-w-[640px] rounded-lg bg-white shadow-[0_8px_24px_rgba(11,19,27,.2)]">
             <div className="border-b border-border-subtle px-5 py-3.5">
               <span className="font-sans text-[13px] font-semibold text-text-primary">Submit Invoice — {invoiceDialogKoliIds.length} koli</span>
             </div>
             <div className="px-5 py-4">
               <div className="overflow-hidden rounded-md border border-[#E4E9EE]">
-                <div className="grid grid-cols-5 gap-x-2 bg-[#F2F5F8] px-3 py-1.5 font-sans text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                <div className="grid grid-cols-[1.1fr_1fr_0.9fr_70px_130px] gap-x-2 bg-[#F2F5F8] px-3 py-1.5 font-sans text-[10px] font-semibold uppercase tracking-wider text-text-muted">
                   <span>MRP</span>
                   <span>Warna</span>
                   <span>Lengan</span>
@@ -995,7 +1030,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                 {invoiceDialogLines.map((l) => {
                   const key = invoiceLineKeyLocal(l.mrpId, l.warna, l.lengan, l.usia);
                   return (
-                    <div key={key} className="grid grid-cols-5 items-center gap-x-2 border-t border-[#EEF1F4] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
+                    <div key={key} className="grid grid-cols-[1.1fr_1fr_0.9fr_70px_130px] items-center gap-x-2 border-t border-[#EEF1F4] px-3 py-1.5 font-sans text-[11.5px] text-[#31414F]">
                       <span className="font-mono">{l.mrpId}</span>
                       <span>
                         {l.warna}
@@ -1008,15 +1043,15 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                           value={invoiceRatesDraft[key] ?? 0}
                           currency
                           onChange={(v) => setInvoiceRatesDraft((prev) => ({ ...prev, [key]: Math.max(0, v) }))}
-                          className="input w-[110px] text-right"
+                          className="input w-[120px] text-right"
                         />
                       </span>
                     </div>
                   );
                 })}
-                <div className="grid grid-cols-5 gap-x-2 border-t border-[#EEF1F4] bg-[#F7F9FB] px-3 py-1.5 font-sans text-[11.5px] font-semibold text-[#31414F]">
-                  <span className="col-span-4">Total invoice</span>
-                  <span className="text-right font-mono">{formatRupiah(invoiceDialogTotal)}</span>
+                <div className="grid grid-cols-[1.1fr_1fr_0.9fr_70px_130px] gap-x-2 border-t border-[#EEF1F4] bg-[#F7F9FB] px-3 py-1.5 font-sans text-[11.5px] font-semibold text-[#31414F]">
+                  <span className="col-span-3">Total invoice</span>
+                  <span className="col-span-2 text-right font-mono">{formatRupiah(invoiceDialogTotal)}</span>
                 </div>
               </div>
               {invoiceError && <div className="mt-2 font-sans text-[10.5px] text-danger-fg">{invoiceError}</div>}
@@ -1025,7 +1060,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
               <button onClick={closeInvoiceDialog} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-[7px] font-sans text-xs font-semibold text-action-primary">
                 Batal
               </button>
-              <Button onClick={submitInvoiceConfirm} disabled={invoiceSubmitting} variant="accent" size="sm">
+              <Button onClick={submitInvoiceConfirm} disabled={invoiceSubmitting} variant="primary" size="sm">
                 {invoiceSubmitting ? "Mengirim…" : "Submit Invoice"}
               </Button>
             </div>

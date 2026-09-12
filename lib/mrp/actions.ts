@@ -3211,7 +3211,11 @@ export async function createDeliveryKoliAction(input: { mrpId: string; vendorPro
  *  tiap baris `delivery_koli_ekspedisi_photos` (pola sama material_claim_photos -- 1 baris per
  *  koli, bukan per grup) supaya `getDeliveryKoliEkspedisiPhotoAction` (dipanggil per koliId di
  *  seluruh app) tetap jalan apa adanya. Validasi foto server-side sama persis pola
- *  material_claim_photos. */
+ *  material_claim_photos.
+ *
+ *  Revisi 2026-09-12 (user-reported): `note` (catatan ekspedisi) DIBUAT OPSIONAL -- dulu wajib
+ *  diisi sama seperti no resi/foto, terlalu memberatkan untuk kasus yang memang tidak ada catatan
+ *  tambahan. `noResi` & foto TETAP wajib (tidak disentuh). */
 export async function setKoliEkspedisiResiGroupAction(
   koliIds: string[],
   ekspedisi: string,
@@ -3222,7 +3226,6 @@ export async function setKoliEkspedisiResiGroupAction(
   const vendorId = await requireVendorSession();
   if (koliIds.length === 0) return;
   if (!ekspedisi.trim()) throw new Error("Pilih ekspedisi dulu.");
-  if (!note.trim()) throw new Error("Catatan ekspedisi wajib diisi.");
   if (!noResi.trim()) throw new Error("No resi wajib diisi.");
   if (!photo.dataUrl.startsWith("data:image/")) throw new Error("Foto lampiran tidak valid -- harus berupa gambar.");
   const base64Part = photo.dataUrl.slice(photo.dataUrl.indexOf(",") + 1);

@@ -72,6 +72,7 @@ export function NumberInput({
    *  SEMUA call site lain (mayoritas field) tetap persis seperti sebelumnya. Grouping pemisah ribuan
    *  ("." ala id-ID) tetap dirender saat blur seperti biasa (lewat formatNum), jadi tidak hilang. */
   commaOnly = false,
+  disabled = false,
 }: {
   value: number;
   onChange: (v: number) => void;
@@ -81,6 +82,7 @@ export function NumberInput({
   placeholder?: string;
   startEmptyIfZero?: boolean;
   commaOnly?: boolean;
+  disabled?: boolean;
 }) {
   const initialEmpty = startEmptyIfZero && value === 0;
   const [text, setText] = useState(initialEmpty ? "" : currency ? "Rp " + formatNum(value, 0) : formatNum(value, decimals));
@@ -108,6 +110,7 @@ export function NumberInput({
         inputMode="numeric"
         placeholder={placeholder}
         className={className}
+        disabled={disabled}
       />
     );
   }
@@ -138,6 +141,7 @@ export function NumberInput({
       inputMode="decimal"
       placeholder={placeholder}
       className={className}
+      disabled={disabled}
     />
   );
 }
