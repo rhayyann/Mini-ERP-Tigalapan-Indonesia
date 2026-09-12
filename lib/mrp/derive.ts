@@ -2742,6 +2742,75 @@ export function productionYieldByWarna(mrpId: string, vendorProduksi: string, mr
   });
 }
 
+/** Item 2026-09-12 (user-requested): breakdown progres PER SIZE (bukan cuma total per warna/lengan
+ *  seperti productionYieldByWarna) untuk 1 vendor di 1 MRP -- dan, beda dari productionYieldByWarna,
+ *  daftar warna/lengan/size-nya bersumber dari RENCANA (Aduan Pola milik vendor ini), BUKAN dari
+ *  batch cutting yang sudah ada. Alasannya: productionYieldByWarna (lewat cutWarnaLenganGroups)
+ *  cuma menampilkan grup yang SUDAH punya minimal 1 batch ber-cuttingAt -- sebelum vendor mulai
+ *  cutting sama sekali, tabelnya kosong total, padahal user ingin lihat target dari awal (progress
+ *  0/0 -> naik seiring cutting/FG diinput), bukan menunggu sampai ada aktivitas dulu baru muncul.
+ *
+ *  Cutting/FG/Reject/Rework tetap dihitung dari fungsi actual yang sama (cuttingSizesForGroup/
+ *  cumulativeSizeQtyForGroup/reworkBySizeForGroup) -- fungsi-fungsi itu sendiri sudah aman dipanggil
+ *  untuk grup yang belum punya batch/result sama sekali (return {} kosong, bukan error), jadi tidak
+ *  perlu logika baru untuk sisi actual-nya. */
+export type VendorItemSizeProgress = {
+  warna: string;
+  lengan: Lengan;
+  size: string;
+  target: number;
+  cutting: number;
+  finishGood: number;
+  reject: number;
+  rework: number;
+};
+
+export function vendorItemSizeProgress(mrpId: string, vendorProduksi: string, mrpDetails: MrpDetail[], batches: ProductionBatch[], results: ProductionResult[]): VendorItemSizeProgress[] {
+  const detail = mrpDetailFor(mrpId, mrpDetails);
+  if (!detail) return [];
+
+  // Target per warna+lengan+size dari rencana Aduan Pola vendor ini -- 1 warna+lengan bisa
+  // punya beberapa baris Aduan Pola (kode aduan berbeda), size yang sama di baris berbeda
+  // dijumlahkan (sama seperti aduanRow.sizes ditotal di targetSizesForGroup).
+  const targetMap = new Map<string, { warna: string; lengan: Lengan; size: string; target: number }>();
+  for (const a of detail.aduanRows) {
+    if (a.vendor !== vendorProduksi) continue;
+    for (const s of a.sizes) {
+      const key = a.warna + "|" + a.lengan + "|" + s.size;
+      const cur = targetMap.get(key);
+      if (cur) cur.target += s.qty;
+      else targetMap.set(key, { warna: a.warna, lengan: a.lengan, size: s.size, target: s.qty });
+    }
+  }
+
+  const groupKeys = Array.from(new Set(Array.from(targetMap.values()).map((v) => v.warna + "|" + v.lengan)));
+  const rows: VendorItemSizeProgress[] = [];
+  for (const gk of groupKeys) {
+    const sepIdx = gk.indexOf("|");
+    const warna = gk.slice(0, sepIdx);
+    const lengan = gk.slice(sepIdx + 1) as Lengan;
+    const cuttingBySize = cuttingSizesForGroup(mrpId, warna, lengan, mrpDetails, batches);
+    const groupKey = mrpId + "|" + warna + "|" + lengan;
+    const fgBySize = cumulativeSizeQtyForGroup(groupKey, "FG", results);
+    const rejectBySize = cumulativeSizeQtyForGroup(groupKey, "REJECT", results);
+    const reworkSizeMap = reworkBySizeForGroup(groupKey, results);
+    for (const t of targetMap.values()) {
+      if (t.warna !== warna || t.lengan !== lengan) continue;
+      rows.push({
+        warna,
+        lengan,
+        size: t.size,
+        target: t.target,
+        cutting: cuttingBySize[t.size] ?? 0,
+        finishGood: fgBySize[t.size] ?? 0,
+        reject: rejectBySize[t.size] ?? 0,
+        rework: reworkSizeMap[t.size] ?? 0,
+      });
+    }
+  }
+  return rows.sort((a, b) => a.warna.localeCompare(b.warna) || a.lengan.localeCompare(b.lengan) || a.size.localeCompare(b.size));
+}
+
 /** Per size: Finish Good yang berasal dari REWORK (reject dipotong ulang jadi baju size/lengan
  *  lain) untuk 1 grup -- subset dari cumulativeSizeQtyForGroup(groupKey,"FG",...), dibedakan dari
  *  Finish Good "murni" (hasil cutting langsung) lewat isReworkResult (note diawali "Rework

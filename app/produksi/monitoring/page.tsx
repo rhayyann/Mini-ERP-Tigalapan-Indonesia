@@ -1,37 +1,49 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { AppShell } from "@/components/shell/app-shell";
 import { StatusPill } from "@/components/ui/status-pill";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { useMrpStore } from "@/lib/mrp/store";
-import { formatPcs, formatRupiah, maklonPoBadgeWithApproval, maklonPoDeliveryProgress, maklonPoInvoiceLockedBy, productionYieldByWarna } from "@/lib/mrp/derive";
+import { formatPcs, formatRupiah, maklonPoBadgeWithApproval, maklonPoDeliveryProgress, maklonPoInvoiceLockedBy, vendorItemSizeProgress } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { MaklonPO } from "@/lib/mrp/types";
 
-/** Item 2026-09-12 (user-requested): breakdown progres produksi PER ITEM (warna/lengan) untuk 1
- *  PO vendor produksi -- pakai productionYieldByWarna yang sama dengan yang sudah dipakai di
- *  invoice-vendor-review-panel.tsx, supaya angka Target/FG/Reject/Rework di sini SELALU konsisten
- *  dengan yang sudah dihitung Procurement saat review invoice (satu sumber kebenaran). */
+/** Item 2026-09-12 (user-requested, revisi dari versi per-warna/lengan pertama): breakdown progres
+ *  produksi PER SIZE untuk 1 PO vendor produksi -- pakai vendorItemSizeProgress (lib/mrp/derive.ts),
+ *  yang sumber daftar item/size-nya dari RENCANA Aduan Pola vendor ini, bukan dari batch cutting --
+ *  supaya semua size tetap kelihatan (target vs 0) walau vendor belum mulai cutting sama sekali,
+ *  bisa ditrack naik seiring cutting/FG/reject/rework diinput. Dikelompokkan per warna/lengan
+ *  dengan baris subtotal, mirip pola "Rincian per size" di components/finance/payment-maklon-panel.tsx. */
 function MaklonPoItemProgress({ po }: { po: MaklonPO }) {
   const mrpDetails = useMrpStore((s) => s.mrpDetails);
   const productionBatches = useMrpStore((s) => s.productionBatches);
   const productionResults = useMrpStore((s) => s.productionResults);
 
-  const rows = productionYieldByWarna(po.mrpId, po.vendorProduksi, mrpDetails, productionBatches, productionResults);
+  const rows = vendorItemSizeProgress(po.mrpId, po.vendorProduksi, mrpDetails, productionBatches, productionResults);
+
+  const groups = new Map<string, { warna: string; lengan: string; rows: typeof rows }>();
+  for (const r of rows) {
+    const key = r.warna + "|" + r.lengan;
+    if (!groups.has(key)) groups.set(key, { warna: r.warna, lengan: r.lengan, rows: [] });
+    groups.get(key)!.rows.push(r);
+  }
 
   return (
     <div className="overflow-hidden rounded-md border border-[#E4E9EE] bg-white">
       <div className="bg-[#F2F4F7] px-3 py-1.5 font-sans text-[10px] font-medium uppercase tracking-wider text-text-muted">
-        Progres per item (warna / lengan)
+        Progres per item &amp; size (dari rencana Aduan Pola)
       </div>
       {rows.length === 0 ? (
-        <div className="border-t border-[#F1F4F7] px-3 py-2 font-sans text-[11.5px] text-text-muted">Belum ada data cutting/produksi untuk PO ini.</div>
+        <div className="border-t border-[#F1F4F7] px-3 py-2 font-sans text-[11.5px] text-text-muted">
+          Belum ada rencana Aduan Pola untuk vendor ini di MRP tsb.
+        </div>
       ) : (
         <table className="w-full border-collapse">
           <thead>
             <tr className="border-t border-[#F1F4F7] bg-[#FAFBFC] font-sans text-[9.5px] font-medium uppercase tracking-wider text-text-muted">
-              <th className="px-3 py-1.5 text-left">Item (Warna / Lengan)</th>
+              <th className="px-3 py-1.5 text-left">Warna / Lengan</th>
+              <th className="px-3 py-1.5 text-left">Size</th>
               <th className="px-3 py-1.5 text-right">Target</th>
               <th className="px-3 py-1.5 text-right">Cutting</th>
               <th className="px-3 py-1.5 text-right">Finish Good</th>
@@ -41,19 +53,39 @@ function MaklonPoItemProgress({ po }: { po: MaklonPO }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.warna + "|" + r.lengan} className="border-t border-[#F1F4F7] font-sans text-[11.5px] text-[#31414F]">
-                <td className="px-3 py-1.5">
-                  {r.warna} · {r.lengan}
-                </td>
-                <td className="px-3 py-1.5 text-right font-mono">{formatPcs(r.target)}</td>
-                <td className="px-3 py-1.5 text-right font-mono">{formatPcs(r.cutting)}</td>
-                <td className="px-3 py-1.5 text-right font-mono font-medium">{formatPcs(r.finishGood)}</td>
-                <td className="px-3 py-1.5 text-right font-mono text-danger-fg">{r.reject > 0 ? formatPcs(r.reject) : "—"}</td>
-                <td className="px-3 py-1.5 text-right font-mono text-warning-fg">{r.rework > 0 ? formatPcs(r.rework) : "—"}</td>
-                <td className="px-3 py-1.5 text-right font-mono font-semibold">{r.cutting > 0 ? `${r.yieldPct.toFixed(1)}%` : "—"}</td>
-              </tr>
-            ))}
+            {Array.from(groups.values()).map((g) => {
+              const subtotal = g.rows.reduce(
+                (a, r) => ({ target: a.target + r.target, cutting: a.cutting + r.cutting, finishGood: a.finishGood + r.finishGood, reject: a.reject + r.reject, rework: a.rework + r.rework }),
+                { target: 0, cutting: 0, finishGood: 0, reject: 0, rework: 0 }
+              );
+              return (
+                <Fragment key={g.warna + "|" + g.lengan}>
+                  {g.rows.map((r, idx) => (
+                    <tr key={g.warna + "|" + g.lengan + "|" + r.size} className="border-t border-[#F1F4F7] font-sans text-[11.5px] text-[#31414F]">
+                      <td className="px-3 py-1.5">{idx === 0 ? `${g.warna} · ${g.lengan}` : ""}</td>
+                      <td className="px-3 py-1.5 font-mono">{r.size}</td>
+                      <td className="px-3 py-1.5 text-right font-mono">{formatPcs(r.target)}</td>
+                      <td className="px-3 py-1.5 text-right font-mono">{formatPcs(r.cutting)}</td>
+                      <td className="px-3 py-1.5 text-right font-mono font-medium">{formatPcs(r.finishGood)}</td>
+                      <td className="px-3 py-1.5 text-right font-mono text-danger-fg">{r.reject > 0 ? formatPcs(r.reject) : "—"}</td>
+                      <td className="px-3 py-1.5 text-right font-mono text-warning-fg">{r.rework > 0 ? formatPcs(r.rework) : "—"}</td>
+                      <td className="px-3 py-1.5 text-right font-mono font-semibold">{r.cutting > 0 ? `${((r.finishGood / r.cutting) * 100).toFixed(1)}%` : "—"}</td>
+                    </tr>
+                  ))}
+                  <tr key={g.warna + "|" + g.lengan + "|subtotal"} className="border-t border-[#F1F4F7] bg-[#FAFBFC] font-sans text-[11.5px] font-semibold text-[#31414F]">
+                    <td className="px-3 py-1.5" colSpan={2}>
+                      Subtotal {g.warna} · {g.lengan}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono">{formatPcs(subtotal.target)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{formatPcs(subtotal.cutting)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{formatPcs(subtotal.finishGood)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{subtotal.reject > 0 ? formatPcs(subtotal.reject) : "—"}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{subtotal.rework > 0 ? formatPcs(subtotal.rework) : "—"}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{subtotal.cutting > 0 ? `${((subtotal.finishGood / subtotal.cutting) * 100).toFixed(1)}%` : "—"}</td>
+                  </tr>
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       )}
