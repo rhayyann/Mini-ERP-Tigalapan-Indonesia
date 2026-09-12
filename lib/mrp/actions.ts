@@ -2604,6 +2604,34 @@ export async function closeProductionBatchAction(batchId: string, fgSizeQty: Rec
   await maybeAdvanceMaklonToDelivery(batch.mrp_id, batch.vendor_produksi);
 }
 
+/** Item revisi 2026-09-12 (owner: "kenapa tidak bisa klik selesai produksi jika qtynya tidak
+ *  maksimal... jadikan tombol selesai produksi trigger untuk selesaikan finish good, selisih size
+ *  yang tidak terpenuhi jadi reject") -- dipanggil dari confirmFgDoneAction SEBELUM
+ *  recomputeAutoRejectForGroup, GANTI dari (bukan tambahan di samping) guard lama yang menolak
+ *  "Selesai Produksi" kalau ada roll grup ini yang belum "Tutup Roll" manual. Sekarang "Selesai
+ *  Produksi" SENDIRI yang menutup roll-roll itu -- pakai FG yang SUDAH tersimpan apa adanya di
+ *  production_batch_fg_sizes (dari "Simpan" quick-save/progress sebelumnya, TIDAK ditambah/dikurangi
+ *  di sini), baru set closed_at. Pola replace+insert production_batch_fg_sizes yang ada di
+ *  closeProductionBatchAction TIDAK dipakai ulang di sini karena kita justru mau MEMPERTAHANKAN
+ *  baris yang sudah ada apa adanya (bukan replace dengan payload baru dari client) -- cukup
+ *  logFgProgressDelta dipanggil dengan qty yang sudah ada supaya baseline/riwayat tetap konsisten
+ *  (delta biasanya 0 karena "Simpan" sudah mencatatnya duluan). */
+async function autoCloseOpenBatchesForGroup(db: SupabaseClient, groupBatches: ProductionBatch[]): Promise<void> {
+  const openIds = groupBatches.filter((b) => !b.closedAt).map((b) => b.id);
+  if (openIds.length === 0) return;
+  const { data: rows } = await db
+    .from("production_batches")
+    .select("id,mrp_id,vendor_produksi,warna,lengan,code_roll,fg_logged_snapshot,production_batch_fg_sizes(size,qty)")
+    .in("id", openIds);
+  for (const b of rows ?? []) {
+    const fgSizeQty: Record<string, number> = {};
+    for (const s of b.production_batch_fg_sizes ?? []) fgSizeQty[s.size] = s.qty;
+    const { error } = await db.from("production_batches").update({ closed_at: today() }).eq("id", b.id);
+    if (error) throw new Error(error.message);
+    await logFgProgressDelta(db, b, fgSizeQty);
+  }
+}
+
 /** Item revisi 2026-09-08 (owner: "apa tidak bisa untuk saat input misal hari ini berapa terus
  *  simpan nanti akan tersave... akan lanjut lagi untuk memenuhi target") -- simpan progres FG 1
  *  roll TANPA menutup roll (beda dari closeProductionBatchAction yang final, set `closed_at` &
@@ -2969,19 +2997,22 @@ export async function confirmFgDoneAction(groupKey: string, mrpId: string, vendo
   if (hasCutBatches && Object.keys(baseline).length === 0) {
     throw new Error('Isi "Input Hasil Cutting" untuk semua roll grup ini dulu — reject dihitung dari hasil cutting aktual, bukan dari target PO/MRP.');
   }
-  // Item revisi 2026-09-08 (owner: FG yang sudah "Selesai Produksi"/"Final" tidak pernah muncul
-  // di Pengiriman -- BUG NYATA): tombol "Selesai Produksi" di UI sudah di-disable kalau ada roll
-  // grup ini yang belum "Tutup Roll" (lihat allRollsClosed di production-result-panel.tsx), tapi
-  // server ini TIDAK PERNAH menegakkan ulang -- ada celah data bisa jadi fg_confirmed_at (bahkan
-  // done_at) terisi padahal roll-nya sendiri belum closedAt, dan roll yang belum closedAt memang
-  // TIDAK PERNAH shippable (closedUnshippedRollsForMrp murni basis ProductionBatch.closedAt,
-  // tidak peduli status grup) -- FG jadi "terkunci selesai" tapi mustahil dikirim. Ditegakkan
-  // ulang di sini (defense-in-depth, pola sama seperti guard hasCutBatches di atas).
-  if (groupBatches.some((b) => !b.closedAt)) {
-    throw new Error('Tutup semua roll grup ini dulu ("Tutup Roll" di tab Finish Good) sebelum bisa "Selesai Produksi" -- roll yang belum ditutup tidak akan pernah shippable di Pengiriman.');
-  }
+  // Item revisi 2026-09-12 (owner: "kenapa tidak bisa klik selesai produksi jika qtynya tidak
+  // maksimal... jadikan tombol selesai produksi trigger untuk selesaikan finish good"): dulu di
+  // sini kita MENOLAK confirm kalau ada roll grup ini yang belum "Tutup Roll" manual (lihat commit
+  // lama, item revisi 2026-09-08) -- alasannya waktu itu: roll yang belum closedAt tidak pernah
+  // shippable (closedUnshippedRollsForMrp murni basis ProductionBatch.closedAt), jadi FG bisa
+  // "terkunci selesai" tapi mustahil dikirim. Alasan itu MASIH VALID, tapi solusinya sekarang
+  // dibalik: BUKAN menolak user, tapi "Selesai Produksi" SENDIRI yang menutup roll-roll itu
+  // (autoCloseOpenBatchesForGroup, pakai FG yang sudah diisi apa adanya) sebelum lanjut -- jadi
+  // invariant "grup fg_confirmed_at terisi -> semua roll closedAt" tetap terjaga, TANPA
+  // mewajibkan user klik "Tutup Roll" manual dulu satu-satu.
+  await autoCloseOpenBatchesForGroup(db, groupBatches);
 
-  await recomputeAutoRejectForGroup(db, groupKey, mrpId, vendorProduksi, warna, lengan, scope);
+  // Refetch scope (bukan reuse yang di atas) -- groupBatches/closedAt & production_results di atas
+  // sudah berubah setelah autoCloseOpenBatchesForGroup (roll baru ditutup + kemungkinan baris FG
+  // baru ter-log lewat logFgProgressDelta), recomputeAutoRejectForGroup harus baca kondisi TERKINI.
+  await recomputeAutoRejectForGroup(db, groupKey, mrpId, vendorProduksi, warna, lengan);
 
   const { data: existing } = await db.from("production_group_meta").select("group_key").eq("group_key", groupKey).maybeSingle();
   if (existing) await db.from("production_group_meta").update({ fg_confirmed_at: today() }).eq("group_key", groupKey);

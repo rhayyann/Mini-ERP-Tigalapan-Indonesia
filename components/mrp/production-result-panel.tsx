@@ -246,12 +246,11 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                 // rework), diminta supaya kelihatan jelas asalnya masing-masing.
                 const fgSplit = kind === "FG" ? fgMurniAndReworkForGroup(groupKey, productionResults) : null;
                 // Revisi 2026-09-07 (HPP per roll) -- roll (ProductionBatch) tercutting grup ini,
-                // dipakai buat daftar "Tutup Roll" DAN gate tombol "Selesai Produksi" (cuma boleh
-                // begitu SEMUA roll grup ini sudah ditutup). Grup tanpa roll cutting sama sekali
-                // (murni tujuan rework lintas lengan, lihat warnaLenganGroupsWithFg) tetap boleh
-                // confirm tanpa gate -- sama seperti guard di confirmFgDoneAction.
+                // dipakai buat daftar "Tutup Roll" (opsional, boleh dikunci manual per roll kapan
+                // saja). Sejak revisi 2026-09-12, tombol "Selesai Produksi" TIDAK lagi menunggu
+                // semua roll ditutup manual -- server (confirmFgDoneAction) otomatis menutup roll
+                // yang masih terbuka begitu tombol itu diklik.
                 const groupBatches = kind === "FG" ? productionBatches.filter((b) => b.mrpId === selectedMrpId && b.warna === g.warna && b.lengan === g.lengan && b.cuttingAt) : [];
-                const allRollsClosed = groupBatches.length === 0 || groupBatches.every((b) => b.closedAt);
                 return (
                   <div key={groupKey}>
                     <div
@@ -312,12 +311,12 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                             )
                           ) : (
                             <button
-                              onClick={() => allRollsClosed && runAction(groupKey, confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
-                              disabled={!allRollsClosed || isPending(groupKey)}
-                              title={allRollsClosed ? undefined : "Tutup semua roll grup ini dulu (\"Lihat by size\" → Tutup Roll)"}
+                              onClick={() => runAction(groupKey, confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
+                              disabled={isPending(groupKey)}
+                              title="Kunci FG grup ini -- roll yang masih terbuka otomatis ditutup pakai FG yang sudah diisi, lalu selisihnya jadi reject"
                               className={
                                 "flex-none rounded-md px-2.5 py-[5px] font-sans text-[11px] font-semibold text-white disabled:cursor-not-allowed " +
-                                (allRollsClosed ? "bg-action-primary" + (isPending(groupKey) ? " opacity-50" : "") : "bg-[#B8C2CC]")
+                                ("bg-action-primary" + (isPending(groupKey) ? " opacity-50" : ""))
                               }
                             >
                               {isPending(groupKey) ? "Menyimpan…" : "Selesai Produksi"}
@@ -501,13 +500,22 @@ export function ProductionResultPanel({ vendorId, kind, title }: { vendorId: str
                                    Produksi"/"Buka kunci" jauh di atas), cuma letaknya jauh dari form
                                    ini jadi gampang tidak ketemu. Ditaruh lagi di sini (persis di
                                    sebelah Simpan) supaya jelas ini AKSI TERPISAH, bukan efek samping
-                                   Tutup Roll -- action & gate-nya SAMA PERSIS (confirmFgDone,
-                                   mensyaratkan allRollsClosed), cuma dipanggil dari 2 tempat. */}
+                                   Tutup Roll -- action-nya SAMA PERSIS (confirmFgDone), cuma dipanggil
+                                   dari 2 tempat.
+                                   Revisi lanjutan (owner: "kenapa tidak bisa klik selesai produksi
+                                   kalau qtynya tidak maksimal... jadikan tombol ini trigger untuk
+                                   selesaikan finish good, selisih size yang tidak terpenuhi jadi
+                                   reject"): dulu tombol ini disable selama ada roll yang belum
+                                   "Tutup Roll" (allRollsClosed). Sekarang TIDAK -- confirmFgDone di
+                                   server otomatis menutup roll yang masih terbuka (pakai FG yang
+                                   sudah diisi apa adanya, TIDAK menambah/mengubah angka) sebelum
+                                   menghitung reject, jadi tombol ini sendiri sudah jadi satu-satunya
+                                   trigger yang perlu diklik. */}
                                 {!isFgConfirmed && (
                                   <Button
-                                    onClick={() => allRollsClosed && runAction(groupKey, confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
-                                    disabled={!allRollsClosed || isPending(groupKey)}
-                                    title={allRollsClosed ? "Kunci FG grup ini & hitung reject otomatis dari selisih cutting vs finish good" : "Tutup semua roll grup ini dulu (lihat tabel Roll di bawah)"}
+                                    onClick={() => runAction(groupKey, confirmFgDone(groupKey, selectedMrpId, vendorId, g.warna, g.lengan))}
+                                    disabled={isPending(groupKey)}
+                                    title="Selesaikan Finish Good grup ini -- roll yang masih terbuka otomatis ditutup, selisih target vs FG jadi reject"
                                     variant="primary"
                                     size="sm"
                                   >
