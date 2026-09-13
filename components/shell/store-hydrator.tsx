@@ -8,7 +8,20 @@ import { useMrpStore } from "@/lib/mrp/store";
 const MIN_REFETCH_INTERVAL_MS = 5_000;
 // Poll berkala supaya perubahan dari user/tab LAIN tetap kelihatan tanpa aksi apa pun dari user
 // ini -- lebih jarang dari dulu (dulu: setiap klik pindah halaman) supaya navigasi terasa instan.
-const POLL_INTERVAL_MS = 30_000;
+//
+// Revisi 2026-09-13 (owner-reported: kuota Egress Supabase Free plan mepet, 3.9/5 GB, tanpa mau
+// upgrade paket/nunggu reset bulanan): dinaikkan dari 30 detik ke 2 menit -- snapshot penuh
+// (~30-an tabel, makin besar sejak Master Data Ekspedisi & Harga Jual ditambahkan) di-refetch tiap
+// tab kelihatan aktif SELAMA tab dibiarkan terbuka, jadi ini kontributor egress terbesar kalau
+// banyak user membiarkan tab ERP terbuka lama. Interval lebih jarang HANYA memperlambat munculnya
+// perubahan dari USER/TAB LAIN saat tab BENAR-BENAR DIDIAMKAN (tidak disentuh sama sekali) --
+// TIDAK memengaruhi: (a) aksi milik user sendiri (selalu langsung lewat backgroundRefresh di
+// lib/mrp/store.ts, tidak lewat sini sama sekali), (b) refresh manual/reload browser (fetchNow(true)
+// di mount, jalan seketika terlepas dari timer ini), (c) kembali fokus ke tab (alt-tab balik/pindah
+// tab balik tetap trigger fetch instan lewat listener focus/visibilitychange di bawah, BUKAN nunggu
+// interval). Jadi dalam pemakaian normal (orang aktif klik-klik/pindah tab) dampaknya nyaris tidak
+// terasa -- cuma kasus tab didiamkan total yang tertunda dari maks 30 detik jadi maks 2 menit.
+const POLL_INTERVAL_MS = 120_000;
 
 /** Mount sekali di root layout (lihat app/layout.tsx). Mengisi useMrpStore dari Supabase lewat
  *  getFlowSnapshotAction (Server Action), menggantikan zustand `persist`/localStorage yang lama.
@@ -16,10 +29,11 @@ const POLL_INTERVAL_MS = 30_000;
  *  CATATAN PERFORMA (revisi setelah testing): versi awal refetch di SETIAP perpindahan halaman
  *  (pathname berubah) -- snapshot penuh (~30 tabel) makan waktu ratusan ms - beberapa detik,
  *  jadi tiap klik navigasi terasa lambat. Sekarang cuma fetch: (1) sekali saat mount, (2) saat
- *  tab kembali fokus (alt-tab balik / pindah tab balik), (3) polling ringan tiap 30 detik selagi
- *  tab kelihatan -- supaya perubahan dari user/tab LAIN tetap muncul tanpa bikin SETIAP klik
- *  navigasi menunggu roundtrip Supabase. Aksi milik user sendiri (lib/mrp/store.ts, tiap action
- *  memanggil refresh() setelah sukses) TETAP langsung ter-refresh seketika, tidak menunggu poll.
+ *  tab kembali fokus (alt-tab balik / pindah tab balik), (3) polling ringan (lihat POLL_INTERVAL_MS
+ *  di atas) selagi tab kelihatan -- supaya perubahan dari user/tab LAIN tetap muncul tanpa bikin
+ *  SETIAP klik navigasi menunggu roundtrip Supabase. Aksi milik user sendiri (lib/mrp/store.ts,
+ *  tiap action memanggil refresh() setelah sukses) TETAP langsung ter-refresh seketika, tidak
+ *  menunggu poll.
  *
  *  Di halaman publik (mis. "/" atau "/vendor-maklon/login") belum tentu ada sesi login -- error
  *  "Unauthorized" dari getFlowSnapshotAction di situ SENGAJA ditelan diam-diam, bukan bug. */
