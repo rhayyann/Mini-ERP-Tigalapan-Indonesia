@@ -19,7 +19,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireSession, requireInternalRole, requireAnyInternalRole } from "../auth/session";
 import { supabaseServer } from "../supabase/server";
-import { nextReadableId } from "./repo/ids";
+import { nextReadableId, nextPoDisplayId } from "./repo/ids";
 import { getFlowSnapshot } from "./repo/snapshot";
 import {
   localDateString,
@@ -334,18 +334,20 @@ export async function sendPoToFinanceAction(mrpId: string): Promise<{ materialPO
     pairTotals.set(key, cur);
   }
 
-  // PERFORMA: dulu 2 batch nextReadableId terpisah (Promise.all maklonPoIds, BARU SETELAH itu
-  // selesai, Promise.all materialPoIds) -- 2 round-trip RPC berurutan padahal keduanya sama
-  // sekali tidak saling bergantung (satu dari vendorRows, satu dari pairTotals, keduanya sudah
-  // dihitung murni di atas tanpa I/O). Digabung jadi SATU Promise.all -- aman karena
-  // next_readable_id() pakai nextval() Postgres sequence (atomik, lihat migration
-  // 0003_id_sequence.sql), jadi urutan/pencampuran prefix PO-MKL & PO-SUP dalam satu batch
-  // paralel tidak berisiko tabrakan ID.
+  // PERFORMA: dulu 2 batch id generation terpisah (Promise.all maklonPoIds, BARU SETELAH itu
+  // selesai, Promise.all materialPoIds) -- 2 round-trip berurutan padahal keduanya sama sekali
+  // tidak saling bergantung (satu dari vendorRows, satu dari pairTotals, keduanya sudah dihitung
+  // murni di atas tanpa I/O). Digabung jadi SATU Promise.all -- aman karena setiap panggilan
+  // nextPoDisplayId (lib/mrp/repo/ids.ts, item 2026-09-13 "format ID PO deskriptif") sudah
+  // menargetkan kombinasi (mrpId, vendor) / (mrpId, vendor, supplier) yang BERBEDA-BEDA per entry
+  // (vendorEntries/pairEntries hasil grouping di atas, tidak pernah ada kombinasi yang sama 2x
+  // dalam 1 batch ini), jadi tidak ada 2 candidate ID yang sama-sama "diperebutkan" secara
+  // paralel -- pengecekan tabrakan per candidate (loop suffix -2/-3) tetap independen aman.
   const vendorEntries = Array.from(vendorRows.entries());
   const pairEntries = Array.from(pairTotals.values());
   const [maklonPoIds, materialPoIds] = await Promise.all([
-    Promise.all(vendorEntries.map(() => nextReadableId("PO-MKL"))),
-    Promise.all(pairEntries.map(() => nextReadableId("PO-SUP"))),
+    Promise.all(vendorEntries.map(([vendor]) => nextPoDisplayId("maklon_pos", "PO-MKL", [mrpId, vendor]))),
+    Promise.all(pairEntries.map((p) => nextPoDisplayId("material_pos", "PO-SUP", [mrpId, p.vendor, p.supplier]))),
   ]);
   // Field2 di bawah (cancelledLines/invoicedByColor/availableRolls/invoicedRolls/status/approved/
   // daysSincePO) sengaja LANGSUNG diisi bentuk final MaklonPO/MaterialPO (bukan cuma kolom yang
@@ -505,8 +507,10 @@ export async function approveMaterialPoAction(id: string): Promise<void> {
   const po = await fetchOneMaterialPo(db, id);
   if (!po) return;
 
-  const distinctEntitas = new Set(po.colorBreakdown.map((c) => c.entitas ?? po.entity));
-  const newIds = await Promise.all(Array.from({ length: Math.max(0, distinctEntitas.size - 1) }).map(() => nextReadableId("PO-SUP")));
+  const entitasOrder = Array.from(new Set(po.colorBreakdown.map((c) => c.entitas ?? po.entity)));
+  const newIds = await Promise.all(
+    entitasOrder.slice(1).map((entitas) => nextPoDisplayId("material_pos", "PO-SUP", [po.mrpId, po.vendorProduksi, po.supplier, entitas]))
+  );
   const parts = splitMaterialPoByEntitas(po, newIds).map((p) => ({ ...p, approved: true }));
 
   await writeMaterialPoSplit(db, id, parts);
@@ -876,7 +880,7 @@ export async function transferMaterialAction(
         await db.from("maklon_pos").update({ qty: newQty, amount: toMaklon.qty > 0 ? Math.round((toMaklon.amount / toMaklon.qty) * newQty) : pcsMoved * 7000 }).eq("id", toMaklon.id);
         await db.from("maklon_po_cancelled_lines").insert({ maklon_po_id: toMaklon.id, note: `Material diterima dari vendor lain`, rolls: actualMoved, pcs: pcsMoved, from_vendor: "Procurement", time: nowClock() });
       } else {
-        const newMaklonId = await nextReadableId("PO-MKL");
+        const newMaklonId = await nextPoDisplayId("maklon_pos", "PO-MKL", [inv.mrpId, toVendor]);
         await db.from("maklon_pos").insert({
           id: newMaklonId,
           mrp_id: inv.mrpId,
@@ -1020,7 +1024,7 @@ export async function withdrawVendorProductionAction(mrpId: string, fromVendor: 
           time: nowClock(),
         });
       } else {
-        const newMaklonId = await nextReadableId("PO-MKL");
+        const newMaklonId = await nextPoDisplayId("maklon_pos", "PO-MKL", [mrpId, toVendor]);
         await db.from("maklon_pos").insert({
           id: newMaklonId,
           mrp_id: mrpId,
@@ -1530,8 +1534,10 @@ export async function approveAllMaterialPosAction(): Promise<void> {
   const toApprove = await fetchUnapprovedMaterialPos(db, undefined);
   const mrpIds = Array.from(new Set(toApprove.map((po) => po.mrpId)));
   for (const po of toApprove) {
-    const distinctEntitas = new Set(po.colorBreakdown.map((c) => c.entitas ?? po.entity));
-    const newIds = await Promise.all(Array.from({ length: Math.max(0, distinctEntitas.size - 1) }).map(() => nextReadableId("PO-SUP")));
+    const entitasOrder = Array.from(new Set(po.colorBreakdown.map((c) => c.entitas ?? po.entity)));
+    const newIds = await Promise.all(
+      entitasOrder.slice(1).map((entitas) => nextPoDisplayId("material_pos", "PO-SUP", [po.mrpId, po.vendorProduksi, po.supplier, entitas]))
+    );
     const parts = splitMaterialPoByEntitas(po, newIds).map((p) => ({ ...p, approved: true }));
     await writeMaterialPoSplit(db, po.id, parts);
   }
@@ -1543,8 +1549,10 @@ export async function approveVendorMaterialPosAction(mrpId: string, vendor: stri
   const db = supabaseServer();
   const toApprove = await fetchUnapprovedMaterialPos(db, { mrpId, vendorProduksi: vendor });
   for (const po of toApprove) {
-    const distinctEntitas = new Set(po.colorBreakdown.map((c) => c.entitas ?? po.entity));
-    const newIds = await Promise.all(Array.from({ length: Math.max(0, distinctEntitas.size - 1) }).map(() => nextReadableId("PO-SUP")));
+    const entitasOrder = Array.from(new Set(po.colorBreakdown.map((c) => c.entitas ?? po.entity)));
+    const newIds = await Promise.all(
+      entitasOrder.slice(1).map((entitas) => nextPoDisplayId("material_pos", "PO-SUP", [po.mrpId, po.vendorProduksi, po.supplier, entitas]))
+    );
     const parts = splitMaterialPoByEntitas(po, newIds).map((p) => ({ ...p, approved: true }));
     await writeMaterialPoSplit(db, po.id, parts);
   }
@@ -2376,7 +2384,7 @@ export async function reassignMaterialToSupplierAction(poId: string, warna: stri
 
   const { hargaKain, hargaKainPks } = await fetchHargaTables(db);
   const newPoColorBreakdown = [{ warna, lengan, rollCount: qty, entitas: colorEntry.entitas ?? po.entity }];
-  const newPoId = await nextReadableId("PO-SUP");
+  const newPoId = await nextPoDisplayId("material_pos", "PO-SUP", [po.mrpId, po.vendorProduksi, newSupplier]);
   const newPoAmount = materialAmountForPo(hargaKain, hargaKainPks, newSupplier, newPoColorBreakdown);
 
   await db.from("material_po_color_breakdown").update({ roll_count: newColorBreakdown.find((c) => c.warna === warna && c.lengan === lengan)!.rollCount }).eq("material_po_id", poId).eq("warna", warna).eq("lengan", lengan);
