@@ -1,6 +1,6 @@
-import { EKSPEDISI_RATES, MATERIAL_RATE_PER_ROLL, ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "./seed";
+import { MATERIAL_RATE_PER_ROLL, ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "./seed";
 import type { MrpDetail, PpicApprovalStatus } from "./store";
-import type { HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
+import type { EkspedisiRateRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
 import type { AduanPolaRow, ColorBreakdown, DeliveryItemKind, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, Usia, VendorDepositEntry, VendorInvoice, VendorInvoiceLine, WarehouseReceipt } from "./types";
 
 export function formatRupiah(n: number) {
@@ -821,35 +821,40 @@ export function materialPoFullStatusBadge(status: MaterialPoFullStatus) {
   return map[status];
 }
 
-export function ekspedisiPrice(ekspedisi: string, beratKg: number): number {
-  const brackets = EKSPEDISI_RATES.filter((r) => r.ekspedisi === ekspedisi);
-  if (brackets.length === 0) return 0;
-  const match = brackets.find((r) => beratKg >= r.minKg && beratKg < r.maxKg) ?? brackets[brackets.length - 1];
-  return Math.round(match.pricePerKg * beratKg);
+/** Tarif ongkir FLAT per kg dari Master Data "Ekspedisi" (`ekspedisi_rates`, lihat
+ *  EkspedisiRateRow di masterData.ts) -- MENGGANTIKAN tarif tier/berjenjang hardcode lama
+ *  (EKSPEDISI_RATES di lib/mrp/seed.ts, sudah dihapus). Matching nama EXACT (case-sensitive,
+ *  tanpa trim) -- ekspedisi yang namanya tidak ketemu di `rates` SENGAJA menghasilkan ongkir 0
+ *  (bukan fallback tarif lama), supaya Procurement sadar harus menambahkan barisnya di Master
+ *  Data. `rates` di-thread dari pemanggil (fungsi ini harus tetap pure, tidak boleh baca store). */
+export function ekspedisiPrice(ekspedisi: string, beratKg: number, rates: EkspedisiRateRow[]): number {
+  const rate = rates.find((r) => r.nama === ekspedisi);
+  if (!rate) return 0;
+  return Math.round(rate.pricePerKg * beratKg);
 }
 
 /** Item 2026-09-11 (feedback: "Checkbox Koli yang mau dikirim (disamakan ekspedisinya - jadi satu
  *  resi)" -- migration 0026): ongkir RIIL 1 koli. Kalau koli ini bagian dari grup resi
  *  (`resiGroupId`, >=1 koli dikirim bareng lewat SATU aksi "Set Ekspedisi & Resi"), tarif
- *  ekspedisi dihitung dari BERAT TOTAL seluruh koli SEGRUP (1 resi = SATU KALI timbang riil di
- *  ekspedisi, bukan dijumlah dari tarif per-koli terpisah -- yang lebih mahal karena tarif
- *  ekspedisi biasanya berjenjang/tidak linear terhadap berat) -- lalu DIPRORATA BALIK ke koli ini
- *  berdasar porsi beratnya dari total grup, supaya "ongkir per koli" (yang owner minta tetap ada
- *  sebagai catatan/histori) tetap masuk akal & jumlah semua koli dalam 1 grup PERSIS balik ke
- *  ongkir riil 1 resi itu (tidak lebih/kurang dari yang benar-benar dibayar).
+ *  ekspedisi (flat per kg, lihat ekspedisiPrice) dihitung dari BERAT TOTAL seluruh koli SEGRUP
+ *  (1 resi = SATU KALI timbang riil di ekspedisi, `Math.round` sekali di level grup -- bukan
+ *  dijumlah dari tarif per-koli terpisah) -- lalu DIPRORATA BALIK ke koli ini berdasar porsi
+ *  beratnya dari total grup, supaya "ongkir per koli" (yang owner minta tetap ada sebagai
+ *  catatan/histori) tetap masuk akal & jumlah semua koli dalam 1 grup PERSIS balik ke ongkir riil
+ *  1 resi itu (tidak lebih/kurang dari yang benar-benar dibayar).
  *
  *  Koli TANPA `resiGroupId` (data lama sebelum migration 0026, atau -- karena SEKARANG setiap
  *  koli SELALU dapat resiGroupId begitu ekspedisinya di-set -- pada praktiknya cuma kasus data
  *  lama) dihitung APA ADANYA seperti sebelumnya (grup isinya cuma dirinya sendiri, portion = 1) --
  *  MENGGANTIKAN semua pemanggilan `ekspedisiPrice(k.ekspedisi, k.beratKoli ?? 0)` langsung di
  *  seluruh app (autoOngkirForInvoice, hppRowsForInvoicePerRoll, halaman Pengiriman). */
-export function koliOngkirShare(koli: DeliveryKoli, allKolis: DeliveryKoli[]): number {
+export function koliOngkirShare(koli: DeliveryKoli, allKolis: DeliveryKoli[], rates: EkspedisiRateRow[]): number {
   if (!koli.ekspedisi) return 0;
-  if (!koli.resiGroupId) return ekspedisiPrice(koli.ekspedisi, koli.beratKoli ?? 0);
+  if (!koli.resiGroupId) return ekspedisiPrice(koli.ekspedisi, koli.beratKoli ?? 0, rates);
   const group = allKolis.filter((k) => k.resiGroupId === koli.resiGroupId);
   const totalWeight = group.reduce((s, k) => s + (k.beratKoli ?? 0), 0);
   if (totalWeight <= 0) return 0;
-  const totalOngkir = ekspedisiPrice(koli.ekspedisi, totalWeight);
+  const totalOngkir = ekspedisiPrice(koli.ekspedisi, totalWeight, rates);
   return totalOngkir * ((koli.beratKoli ?? 0) / totalWeight);
 }
 
@@ -2976,20 +2981,20 @@ export type HppRow = {
 };
 
 /** Ongkir 1 invoice vendor — dihitung OTOMATIS dari koli pengiriman (deliveryKolis) milik
- *  vendor+MRP invoice ini, pakai tarif tier ekspedisi (EKSPEDISI_RATES via ekspedisiPrice)
- *  berdasarkan berat koli AKTUAL. Sebelumnya field ini diisi manual oleh Finance padahal data
- *  berat+ekspedisi-nya sudah ada dari halaman Pengiriman vendor — sekarang selalu dihitung LIVE
- *  dari data terbaru (bukan snapshot yang disimpan), jadi otomatis ikut berubah kalau delivery-nya
- *  berubah (koli baru ditambah, berat direvisi, dst). Koli yang beratnya belum diisi vendor
- *  (beratKoli undefined) dianggap 0 sampai ditimbang. */
-export function autoOngkirForInvoice(inv: VendorInvoice, deliveryKolis: DeliveryKoli[]): number {
+ *  vendor+MRP invoice ini, pakai tarif FLAT per kg dari Master Data "Ekspedisi" (`ekspedisiRates`
+ *  via ekspedisiPrice) berdasarkan berat koli AKTUAL. Sebelumnya field ini diisi manual oleh
+ *  Finance padahal data berat+ekspedisi-nya sudah ada dari halaman Pengiriman vendor — sekarang
+ *  selalu dihitung LIVE dari data terbaru (bukan snapshot yang disimpan), jadi otomatis ikut
+ *  berubah kalau delivery-nya berubah (koli baru ditambah, berat direvisi, dst). Koli yang
+ *  beratnya belum diisi vendor (beratKoli undefined) dianggap 0 sampai ditimbang. */
+export function autoOngkirForInvoice(inv: VendorInvoice, deliveryKolis: DeliveryKoli[], ekspedisiRates: EkspedisiRateRow[]): number {
   const mrpIdsInInvoice = Array.from(new Set(inv.lines.map((l) => l.mrpId)));
   return deliveryKolis
     .filter((k) => k.vendorProduksi === inv.vendorProduksi && mrpIdsInInvoice.includes(k.mrpId))
     // `deliveryKolis` UTUH (bukan hasil filter di atas) diteruskan sebagai basis grup resi --
     // 1 resi/grup BISA mencakup koli dari MRP LAIN yang tidak ikut invoice ini (migration 0026,
     // koliOngkirShare butuh SEMUA anggota grup buat hitung total berat & prorata yang benar).
-    .reduce((sum, k) => sum + koliOngkirShare(k, deliveryKolis), 0);
+    .reduce((sum, k) => sum + koliOngkirShare(k, deliveryKolis, ekspedisiRates), 0);
 }
 
 export function hppRowsForInvoice(
@@ -3249,7 +3254,8 @@ export function hppRowsForInvoicePerRoll(
   productionResults: ProductionResult[],
   productionGroupMeta: ProductionGroupMeta[],
   rawInvoices: RawMaterialInvoice[],
-  deliveryKolis: DeliveryKoli[]
+  deliveryKolis: DeliveryKoli[],
+  ekspedisiRates: EkspedisiRateRow[]
 ): HppRow[] {
   const rows: HppRow[] = [];
   const legacyLines: VendorInvoiceLine[] = [];
@@ -3399,7 +3405,7 @@ export function hppRowsForInvoicePerRoll(
       // 0024). Revisi 2026-09-11 (migration 0026): kalau koli ini bagian dari grup resi (>1 koli
       // dikirim bareng), ongkir dihitung dari TOTAL berat segrup lalu diprorata balik -- lihat
       // koliOngkirShare.
-      const koliOngkirTotal = koliOngkirShare(koli, deliveryKolis);
+      const koliOngkirTotal = koliOngkirShare(koli, deliveryKolis, ekspedisiRates);
       const ongkirPerPc = totalPcsInKoli > 0 ? koliOngkirTotal / totalPcsInKoli : 0;
 
       // Denda/reward TIDAK masuk HPP di jalur baru ini (keputusan user, ikut Excel) -- biaya
@@ -3462,7 +3468,7 @@ export function hppRowsForInvoicePerRoll(
       const takeQty = takeEnd - takeStart;
 
       const totalPcsInKoli = c.koli.items.reduce((s, it) => s + it.qty, 0);
-      const koliOngkirTotal = koliOngkirShare(c.koli, deliveryKolis);
+      const koliOngkirTotal = koliOngkirShare(c.koli, deliveryKolis, ekspedisiRates);
       const ongkirPerPc = totalPcsInKoli > 0 ? koliOngkirTotal / totalPcsInKoli : 0;
 
       const biayaProduksiPerItem = line.ratePerPc;
@@ -3512,7 +3518,7 @@ export function hppRowsForInvoicePerRoll(
   // biaya produksi/COGS bahan (TIDAK terpengaruh bug ongkir di bawah, aman dipakai apa adanya).
   if (legacyLines.length > 0) {
     const legacyInv: VendorInvoice = { ...inv, lines: legacyLines };
-    const ongkirTotal = autoOngkirForInvoice(legacyInv, deliveryKolis);
+    const ongkirTotal = autoOngkirForInvoice(legacyInv, deliveryKolis, ekspedisiRates);
     const legacyRows = hppRowsForInvoice(legacyInv, ongkirTotal, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis);
 
     // BUG FIX (2026-09-09, user-reported): `autoOngkirForInvoice` (dipakai `ongkirTotal` di atas)
@@ -3543,7 +3549,7 @@ export function hppRowsForInvoicePerRoll(
     for (const k of relevantKolis) {
       const totalPcsInKoli = k.items.reduce((s, it) => s + it.qty, 0);
       if (totalPcsInKoli <= 0) continue;
-      const koliOngkirTotal = koliOngkirShare(k, deliveryKolis);
+      const koliOngkirTotal = koliOngkirShare(k, deliveryKolis, ekspedisiRates);
       const rollCoveredPcs = Math.min(totalPcsInKoli, rollCoveredPcsForKoli(k, productionBatches));
       const nonRollPcs = totalPcsInKoli - rollCoveredPcs;
       correctOngkirTotal += koliOngkirTotal * (nonRollPcs / totalPcsInKoli);
@@ -3624,9 +3630,10 @@ export function invoiceKoliBreakdown(
   productionResults: ProductionResult[],
   productionGroupMeta: ProductionGroupMeta[],
   rawInvoices: RawMaterialInvoice[],
-  deliveryKolis: DeliveryKoli[]
+  deliveryKolis: DeliveryKoli[],
+  ekspedisiRates: EkspedisiRateRow[]
 ): { groups: InvoiceKoliGroup[]; legacyRows: InvoiceKoliBreakdownRow[] } {
-  const hppRows = hppRowsForInvoicePerRoll(inv, allVendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis);
+  const hppRows = hppRowsForInvoicePerRoll(inv, allVendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates);
   const groupsByResi = new Map<string, InvoiceKoliGroup & { noKoliList: string[] }>();
   const legacyRows: InvoiceKoliBreakdownRow[] = [];
   for (const r of hppRows) {
@@ -3760,7 +3767,8 @@ export function warehouseReceivableGroups(
   productionResults: ProductionResult[],
   productionGroupMeta: ProductionGroupMeta[],
   rawInvoices: RawMaterialInvoice[],
-  warehouseReceipts: WarehouseReceipt[]
+  warehouseReceipts: WarehouseReceipt[],
+  ekspedisiRates: EkspedisiRateRow[]
 ): WarehouseReceivableGroup[] {
   // R8: kandidat = SEMUA koli dalam grup sudah delivered, DAN grup belum pernah diterima penuh
   // oleh Warehouse (1 resi group = tepat 1 warehouse_receipt, lihat R10/R12) -- grup yang sudah
@@ -3787,7 +3795,7 @@ export function warehouseReceivableGroups(
     // tetap non-REVISION (basis alokasi FIFO yang benar, konsisten dgn pemanggilan lain di app).
     const invoicesForVendor = vendorInvoices.filter((i) => i.vendorProduksi === vendorProduksi);
     const rows = invoicesForVendor.flatMap((inv) =>
-      hppRowsForInvoicePerRoll(inv, nonRevisionInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis)
+      hppRowsForInvoicePerRoll(inv, nonRevisionInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates)
     );
     hppRowsByVendor.set(vendorProduksi, rows);
     return rows;

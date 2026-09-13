@@ -26,7 +26,7 @@ import type {
   WarehouseReceipt,
 } from "./types";
 import type { ParsedMrpImport } from "./parseImport";
-import type { EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
+import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
 import { localDateString } from "./derive";
 import * as rawActions from "./actions";
 
@@ -211,6 +211,10 @@ export type FlowState = {
   hargaKainPks: HargaKainPksRow[];
   entitasList: EntitasRow[];
   supplierList: SupplierRow[];
+  /** Tarif ongkir ekspedisi, flat per kg -- DIPAKAI LIVE (lihat EkspedisiRateRow di masterData.ts)
+   *  oleh ekspedisiPrice/koliOngkirShare (derive.ts), bukan cuma data referensi seperti hargaMaklon
+   *  dkk di atas. */
+  ekspedisiRates: EkspedisiRateRow[];
   /** Kategori & kapasitas produksi PER MINGGU asli tiap vendor produksi (dari spreadsheet
    *  Procurement, lihat migration 0019_vendor_kapasitas_asli.sql) -- sumber utama untuk
    *  `vendorProduksiRows` (derive.ts) & kolom "Qty vs Kapasitas" di portal vendor
@@ -339,6 +343,9 @@ type FlowActions = {
   updateSupplier: (id: string, nama: string) => Promise<void>;
   deleteSupplier: (id: string) => Promise<void>;
   replaceSupplier: (rows: SupplierRow[]) => Promise<void>;
+  addEkspedisiRateRow: () => Promise<void>;
+  updateEkspedisiRateRow: (id: string, patch: Partial<EkspedisiRateRow>) => Promise<void>;
+  deleteEkspedisiRateRow: (id: string) => Promise<void>;
 
   setMaterialPoEntity: (poId: string, entitas: string) => Promise<void>;
   setMaterialPoColorEntity: (poId: string, warna: string, lengan: Lengan, entitas: string) => Promise<void>;
@@ -438,6 +445,7 @@ const emptyState: FlowState = {
   hargaKainPks: [],
   entitasList: [],
   supplierList: [],
+  ekspedisiRates: [],
   vendorProduksiList: [],
   hydrated: false,
   busy: false,
@@ -1168,6 +1176,34 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
   },
   replaceSupplier: async (rows) => {
     await actions.replaceSupplierAction(rows);
+    backgroundRefresh();
+  },
+  addEkspedisiRateRow: async () => {
+    await actions.addEkspedisiRateAction();
+    backgroundRefresh();
+  },
+  updateEkspedisiRateRow: async (id, patch) => {
+    const previous = get().ekspedisiRates;
+    set({ ekspedisiRates: previous.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
+    try {
+      await actions.updateEkspedisiRateAction(id, patch);
+    } catch (err) {
+      set({ ekspedisiRates: previous });
+      window.alert("Gagal menyimpan tarif ekspedisi -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
+    backgroundRefresh();
+  },
+  deleteEkspedisiRateRow: async (id) => {
+    const previous = get().ekspedisiRates;
+    set({ ekspedisiRates: previous.filter((r) => r.id !== id) });
+    try {
+      await actions.deleteEkspedisiRateAction(id);
+    } catch (err) {
+      set({ ekspedisiRates: previous });
+      window.alert("Gagal menghapus baris ekspedisi -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
     backgroundRefresh();
   },
 

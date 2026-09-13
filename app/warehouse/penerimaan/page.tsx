@@ -101,6 +101,7 @@ export default function WarehousePenerimaanPage() {
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const rawInvoices = useMrpStore((s) => s.invoices);
   const warehouseReceipts = useMrpStore((s) => s.warehouseReceipts);
+  const ekspedisiRates = useMrpStore((s) => s.ekspedisiRates);
 
   if (!mounted) return null;
 
@@ -113,7 +114,8 @@ export default function WarehousePenerimaanPage() {
     productionResults,
     productionGroupMeta,
     rawInvoices,
-    warehouseReceipts
+    warehouseReceipts,
+    ekspedisiRates
   );
 
   const readyCount = groups.filter((g) => !g.gateReason).length;

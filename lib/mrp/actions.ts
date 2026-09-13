@@ -3440,7 +3440,8 @@ export async function receiveWarehouseResiGroupAction(resiGroupId: string, note?
     snapshot.productionResults,
     snapshot.productionGroupMeta,
     snapshot.invoices,
-    snapshot.warehouseReceipts
+    snapshot.warehouseReceipts,
+    snapshot.ekspedisiRates
   );
   const group = groups.find((g) => g.resiGroupId === resiGroupId);
   // Validasi server-side ulang (R11): grup tidak ditemukan berarti resi ini sudah tidak eligible
@@ -3610,7 +3611,7 @@ export async function getFlowSnapshotAction() {
 // dipakai halaman Master Data (add/update/delete satu baris) & tombol "Import dari Google
 // Sheets" (replaceX -- ganti SELURUH tabel, bukan merge, persis perilaku lama).
 // =========================================================================
-import type { EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow } from "./masterData";
+import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow } from "./masterData";
 
 async function requireMasterDataRole() {
   const session = await requireSession();
@@ -3788,5 +3789,29 @@ export async function replaceSupplierAction(rows: SupplierRow[]): Promise<void> 
   if (rows.length === 0) return;
   const ids = await Promise.all(rows.map(() => nextReadableId("SUP")));
   const { error } = await db.from("suppliers").insert(rows.map((r, i) => ({ id: ids[i], nama: r.nama })));
+  if (error) throw new Error(error.message);
+}
+
+// Master Data "Ekspedisi" (tarif ongkir flat per kg, DIPAKAI LIVE, lihat masterData.ts) -- tanpa
+// replaceXAction (tidak ada import Google Sheets untuk tabel ini, lihat spec).
+export async function addEkspedisiRateAction(): Promise<void> {
+  await requireMasterDataRole();
+  const id = await nextReadableId("EKS");
+  // Placeholder nama = id itu sendiri (bukan "") -- constraint unique(nama) di DB akan menolak 2
+  // baris kosong sekaligus kalau user klik "+ Tambah baris" berulang sebelum mengisi nama asli.
+  const { error } = await supabaseServer().from("ekspedisi_rates").insert({ id, nama: id, price_per_kg: 0 });
+  if (error) throw new Error(error.message);
+}
+export async function updateEkspedisiRateAction(id: string, patch: Partial<EkspedisiRateRow>): Promise<void> {
+  await requireMasterDataRole();
+  const p: Record<string, unknown> = {};
+  if (patch.nama !== undefined) p.nama = patch.nama;
+  if (patch.pricePerKg !== undefined) p.price_per_kg = patch.pricePerKg;
+  const { error } = await supabaseServer().from("ekspedisi_rates").update(p).eq("id", id);
+  if (error) throw new Error(error.message);
+}
+export async function deleteEkspedisiRateAction(id: string): Promise<void> {
+  await requireMasterDataRole();
+  const { error } = await supabaseServer().from("ekspedisi_rates").delete().eq("id", id);
   if (error) throw new Error(error.message);
 }

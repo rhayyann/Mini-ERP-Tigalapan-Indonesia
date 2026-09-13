@@ -110,6 +110,7 @@ export function AppShell({
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const warehouseReceipts = useMrpStore((s) => s.warehouseReceipts);
+  const ekspedisiRates = useMrpStore((s) => s.ekspedisiRates);
   const materialClaimResolutions = useMrpStore((s) => s.materialClaimResolutions);
   const materialClaimReturRequests = useMrpStore((s) => s.materialClaimReturRequests);
   const materialClaimReturDeliveries = useMrpStore((s) => s.materialClaimReturDeliveries);
@@ -201,7 +202,8 @@ export function AppShell({
         productionResults,
         productionGroupMeta,
         invoices,
-        warehouseReceipts
+        warehouseReceipts,
+        ekspedisiRates
       ),
     };
   } else if (role === "vendorMaklon" && vendorId) {

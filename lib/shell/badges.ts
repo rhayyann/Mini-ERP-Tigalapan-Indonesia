@@ -17,6 +17,7 @@ import {
   warnaLenganGroupsWithFg,
 } from "@/lib/mrp/derive";
 import type { MrpDetail } from "@/lib/mrp/store";
+import type { EkspedisiRateRow } from "@/lib/mrp/masterData";
 import type { DeliveryKoli, MaklonInvoice, MaklonPO, MaterialPO, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, VendorInvoice, WarehouseReceipt } from "@/lib/mrp/types";
 
 /** Minimal shape yang dibutuhkan dari `MrpDetail` — dideklarasikan lokal (bukan import
@@ -399,11 +400,21 @@ export function countWarehousePendingReceipt(
   productionResults: ProductionResult[],
   productionGroupMeta: ProductionGroupMeta[],
   rawInvoices: RawMaterialInvoice[],
-  warehouseReceipts: WarehouseReceipt[]
+  warehouseReceipts: WarehouseReceipt[],
+  ekspedisiRates: EkspedisiRateRow[]
 ): number {
-  return warehouseReceivableGroups(deliveryKolis, vendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, warehouseReceipts).filter(
-    (g) => !g.gateReason
-  ).length;
+  return warehouseReceivableGroups(
+    deliveryKolis,
+    vendorInvoices,
+    mrpDetails,
+    staticMrps,
+    productionBatches,
+    productionResults,
+    productionGroupMeta,
+    rawInvoices,
+    warehouseReceipts,
+    ekspedisiRates
+  ).filter((g) => !g.gateReason).length;
 }
 
 export function countPengirimanPendingForMrp(

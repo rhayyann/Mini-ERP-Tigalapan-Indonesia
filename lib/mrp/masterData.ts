@@ -54,6 +54,15 @@ export type HargaKainPksRow = {
 export type EntitasRow = { id: string; nama: string };
 export type SupplierRow = { id: string; nama: string };
 
+/** Tarif ongkir ekspedisi, FLAT per kg (harga/kg x berat kg total 1 resi/grup pengiriman) --
+ *  BEDA dari Harga Maklon/Harga Kain/Harga Kain PKS di atas (yang masih murni data referensi
+ *  inert): tabel ini DIPAKAI LIVE oleh ekspedisiPrice/koliOngkirShare (lib/mrp/derive.ts) untuk
+ *  menghitung ongkir yang tampil di halaman Pengiriman, Invoice Vendor, Payment Maklon, Laporan
+ *  HPP, dan Penerimaan Warehouse -- menggantikan tarif tier hardcode lama (EKSPEDISI_RATES di
+ *  lib/mrp/seed.ts, sudah dihapus). Matching nama EXACT (case-sensitive) ke `DeliveryKoli.ekspedisi`
+ *  -- nama ekspedisi yang tidak ada di tabel ini menghasilkan ongkir Rp 0 (disengaja). */
+export type EkspedisiRateRow = { id: string; nama: string; pricePerKg: number };
+
 /** Revisi 2026-09-06: data ASLI vendor produksi dari spreadsheet Procurement (kategori & kapasitas
  *  produksi PER MINGGU) -- sumbernya kolom `kategori`/`base_capacity` di tabel `vendors_produksi`
  *  (lihat migration 0019_vendor_kapasitas_asli.sql). Nama sengaja BEDA dari `VendorProduksiRow` di

@@ -22,7 +22,7 @@ import {
   rollRemainingBySizeForMrp,
 } from "@/lib/mrp/derive";
 import { countPengirimanPendingForMrp, pendingMarker } from "@/lib/shell/badges";
-import { EKSPEDISI_LIST, VENDOR_PRODUKSI } from "@/lib/mrp/seed";
+import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { AvailableFgRow } from "@/lib/mrp/derive";
 import type { DeliveryKoli, DeliveryKoliItem, Lengan, ShippableKind, Usia } from "@/lib/mrp/types";
 
@@ -168,6 +168,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   const productionResults = useMrpStore((s) => s.productionResults);
   const productionBatches = useMrpStore((s) => s.productionBatches);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
+  const ekspedisiRates = useMrpStore((s) => s.ekspedisiRates);
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const maklonPOs = useMrpStore((s) => s.maklonPOs);
   const createDeliveryKoli = useMrpStore((s) => s.createDeliveryKoli);
@@ -182,6 +183,11 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
   const mrpIds = Array.from(
     new Set([...mrpIdsWithUnpackedFg(vendorId, productionResults, deliveryKolis, productionGroupMeta, maklonPOs), ...mrpIdsWithClosedRolls(vendorId, productionBatches, deliveryKolis, maklonPOs, productionGroupMeta)])
   );
+
+  // Item Master Data Ekspedisi (menggantikan EKSPEDISI_LIST hardcode lama, lihat lib/mrp/seed.ts)
+  // -- opsi dropdown "Set Ekspedisi & Resi" SEKARANG bersumber dari Master Data (ekspedisiRates,
+  // dikelola Procurement), diurutkan alfabetis.
+  const ekspedisiNames = [...ekspedisiRates].map((r) => r.nama).sort((a, b) => a.localeCompare(b));
 
   const [mrpId, setMrpId] = useState("");
   const [noKoli, setNoKoli] = useState("");
@@ -780,7 +786,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
               {pendingGroups.map(([groupKey, kolis]) => {
                 const first = kolis[0];
                 const totalDraftWeight = kolis.reduce((s, k) => s + (weightDraft[k.id] ?? 0), 0);
-                const totalEstOngkir = first.ekspedisi && totalDraftWeight > 0 ? ekspedisiPrice(first.ekspedisi, totalDraftWeight) : null;
+                const totalEstOngkir = first.ekspedisi && totalDraftWeight > 0 ? ekspedisiPrice(first.ekspedisi, totalDraftWeight, ekspedisiRates) : null;
                 const allWeighed = kolis.every((k) => (weightDraft[k.id] ?? 0) > 0);
                 return (
                   <div key={groupKey} className="overflow-hidden rounded-md border border-border-subtle bg-white">
@@ -865,7 +871,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
             {deliveredGroups.map(([groupKey, kolis]) => {
               const first = kolis[0];
               const totalWeight = kolis.reduce((s, k) => s + (k.beratKoli ?? 0), 0);
-              const totalOngkir = kolis.reduce((s, k) => s + koliOngkirShare(k, deliveryKolis), 0);
+              const totalOngkir = kolis.reduce((s, k) => s + koliOngkirShare(k, deliveryKolis, ekspedisiRates), 0);
               const koliIds = kolis.map((k) => k.id);
               const alreadyInvoiced = kolis.some((k) => k.resiInvoicedAt);
               return (
@@ -921,7 +927,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
                             {summarizeItems(k.items)}
                           </button>
                           <span className="text-right font-mono">{formatDecimal(k.beratKoli ?? 0)}</span>
-                          <span className="text-right font-mono text-[11px] text-text-muted">{formatRupiah(koliOngkirShare(k, deliveryKolis))}</span>
+                          <span className="text-right font-mono text-[11px] text-text-muted">{formatRupiah(koliOngkirShare(k, deliveryKolis, ekspedisiRates))}</span>
                         </div>
                         {isExpanded && (
                           <div className="border-b border-[#F1F4F7] bg-[#FAFBFC] px-3 py-3 last:border-b-0">
@@ -950,7 +956,7 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
               <div className="font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted">Ekspedisi</div>
               <select value={ekspedisiDraft} onChange={(e) => setEkspedisiDraft(e.target.value)} className="input mt-1 w-full">
                 <option value="">— pilih ekspedisi —</option>
-                {EKSPEDISI_LIST.map((e) => (
+                {ekspedisiNames.map((e) => (
                   <option key={e} value={e}>
                     {e}
                   </option>

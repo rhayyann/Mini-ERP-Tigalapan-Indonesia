@@ -59,26 +59,3 @@ export const ROLL_KG_ESTIMATE = 25;
 export const ENTITAS_LIST = ["Tigalapan Indonesia", "PT Tigalapan Dua", "PT Tigalapan Tiga"];
 
 export const RESTING_TARGET_MINUTES = 180;
-
-export type EkspedisiRate = { ekspedisi: string; minKg: number; maxKg: number; pricePerKg: number };
-
-export const EKSPEDISI_RATES: EkspedisiRate[] = [
-  { ekspedisi: "JNE", minKg: 0, maxKg: 10, pricePerKg: 12000 },
-  { ekspedisi: "JNE", minKg: 10, maxKg: 50, pricePerKg: 9000 },
-  { ekspedisi: "JNE", minKg: 50, maxKg: Infinity, pricePerKg: 7000 },
-  { ekspedisi: "J&T Express", minKg: 0, maxKg: 10, pricePerKg: 11500 },
-  { ekspedisi: "J&T Express", minKg: 10, maxKg: 50, pricePerKg: 8800 },
-  { ekspedisi: "J&T Express", minKg: 50, maxKg: Infinity, pricePerKg: 6800 },
-  { ekspedisi: "SiCepat", minKg: 0, maxKg: 10, pricePerKg: 11800 },
-  { ekspedisi: "SiCepat", minKg: 10, maxKg: 50, pricePerKg: 8900 },
-  { ekspedisi: "SiCepat", minKg: 50, maxKg: Infinity, pricePerKg: 6900 },
-  { ekspedisi: "Ninja Express", minKg: 0, maxKg: 10, pricePerKg: 11000 },
-  { ekspedisi: "Ninja Express", minKg: 10, maxKg: 50, pricePerKg: 8500 },
-  { ekspedisi: "Ninja Express", minKg: 50, maxKg: Infinity, pricePerKg: 6500 },
-  { ekspedisi: "Lion Parcel", minKg: 0, maxKg: 10, pricePerKg: 10500 },
-  { ekspedisi: "Lion Parcel", minKg: 10, maxKg: 50, pricePerKg: 8200 },
-  { ekspedisi: "Lion Parcel", minKg: 50, maxKg: Infinity, pricePerKg: 6200 },
-  { ekspedisi: "Truk Sewa Sendiri", minKg: 0, maxKg: Infinity, pricePerKg: 4000 },
-];
-
-export const EKSPEDISI_LIST = ["JNE", "J&T Express", "SiCepat", "Ninja Express", "Lion Parcel", "Truk Sewa Sendiri"];

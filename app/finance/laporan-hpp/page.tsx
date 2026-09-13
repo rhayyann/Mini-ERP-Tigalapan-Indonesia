@@ -246,6 +246,7 @@ export default function FinanceLaporanHppPage() {
   const productionGroupMeta = useMrpStore((s) => s.productionGroupMeta);
   const rawInvoices = useMrpStore((s) => s.invoices);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
+  const ekspedisiRates = useMrpStore((s) => s.ekspedisiRates);
 
   if (!mounted) return null;
 
@@ -260,7 +261,7 @@ export default function FinanceLaporanHppPage() {
   // lama, sebelum fitur ini ada), jadi histori tidak hilang/kosong.
   const kolisById = new Map<string, DeliveryKoli>(deliveryKolis.map((k) => [k.id, k]));
   const rows: HppTableRow[] = relevantInvoices.flatMap((inv) =>
-    hppRowsForInvoicePerRoll(inv, relevantInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis).map((r, i) => {
+    hppRowsForInvoicePerRoll(inv, relevantInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates).map((r, i) => {
       const koli = r.koliId ? kolisById.get(r.koliId) : undefined;
       return { ...r, rowId: inv.id + "-" + i, tanggalKirim: koli?.deliveredAt, noResi: koli?.noResi };
     })
