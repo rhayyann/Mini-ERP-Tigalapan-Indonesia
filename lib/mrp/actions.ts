@@ -3696,11 +3696,23 @@ export async function resetMrpAction(mrpId: string): Promise<void> {
  *  (dropdown ekspedisi + kalkulasi ongkir yang ditampilkan ke vendor), beda dari 4 tabel costing
  *  internal di atas. Sesi internal (Procurement/Finance/dst) TIDAK terpengaruh sama sekali --
  *  tetap dapat snapshot penuh seperti sebelumnya, CRUD Master Data (addHargaMaklonRowAction dkk)
- *  juga tidak disentuh sama sekali (fungsi terpisah, independen dari sini). */
+ *  juga tidak disentuh sama sekali (fungsi terpisah, independen dari sini).
+ *
+ *  BUG FIX 2026-09-14 (owner-reported: "% HPP & Harga Jual tidak muncul" -- padahal data Master
+ *  Data-nya ada): kondisi di atas cuma cek `session.vendorId` TANPA mempertimbangkan `session.
+ *  internalRoles` -- padahal cookie internal (`erp_internal_session`) dan cookie vendor
+ *  (`erp_vendor_session`) SENGAJA TERPISAH TOTAL & BISA HIDUP BERSAMAAN di 1 browser (lihat
+ *  catatan desain di lib/auth/session.ts -- ini memang didukung untuk skenario 1 browser dipakai
+ *  gonta-ganti banyak role/vendor buat testing). Akibatnya: user yang login sebagai Finance TAPI
+ *  browser-nya masih menyimpan cookie vendor LAMA dari sesi testing sebelumnya (belum expired/
+ *  logout) ikut kena strip juga -- padahal dia jelas-jelas staff internal yang sedang aktif di
+ *  halaman Finance. Sekarang cuma di-strip kalau BENAR-BENAR sesi vendor MURNI (tidak punya role
+ *  internal apa pun sama sekali) -- begitu ada 1 saja internal role aktif, snapshot penuh tetap
+ *  dikirim (sesuai jaminan komentar di atas: "sesi internal TIDAK terpengaruh sama sekali"). */
 export async function getFlowSnapshotAction() {
   const session = await requireSession();
   const snapshot = await getFlowSnapshot();
-  if (session.vendorId) {
+  if (session.vendorId && session.internalRoles.length === 0) {
     return { ...snapshot, hargaMaklon: [], hargaKain: [], hargaKainPks: [], itemSellingPrices: [] };
   }
   return snapshot;
