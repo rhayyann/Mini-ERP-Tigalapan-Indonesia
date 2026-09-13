@@ -17,7 +17,7 @@ import {
   warnaLenganGroupsWithFg,
 } from "@/lib/mrp/derive";
 import type { MrpDetail } from "@/lib/mrp/store";
-import type { EkspedisiRateRow } from "@/lib/mrp/masterData";
+import type { EkspedisiRateRow, ItemSellingPriceRow } from "@/lib/mrp/masterData";
 import type { DeliveryKoli, MaklonInvoice, MaklonPO, MaterialPO, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, VendorInvoice, WarehouseReceipt } from "@/lib/mrp/types";
 
 /** Minimal shape yang dibutuhkan dari `MrpDetail` — dideklarasikan lokal (bukan import
@@ -401,7 +401,8 @@ export function countWarehousePendingReceipt(
   productionGroupMeta: ProductionGroupMeta[],
   rawInvoices: RawMaterialInvoice[],
   warehouseReceipts: WarehouseReceipt[],
-  ekspedisiRates: EkspedisiRateRow[]
+  ekspedisiRates: EkspedisiRateRow[],
+  itemSellingPrices: ItemSellingPriceRow[]
 ): number {
   return warehouseReceivableGroups(
     deliveryKolis,
@@ -413,7 +414,8 @@ export function countWarehousePendingReceipt(
     productionGroupMeta,
     rawInvoices,
     warehouseReceipts,
-    ekspedisiRates
+    ekspedisiRates,
+    itemSellingPrices
   ).filter((g) => !g.gateReason).length;
 }
 

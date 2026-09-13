@@ -3441,7 +3441,8 @@ export async function receiveWarehouseResiGroupAction(resiGroupId: string, note?
     snapshot.productionGroupMeta,
     snapshot.invoices,
     snapshot.warehouseReceipts,
-    snapshot.ekspedisiRates
+    snapshot.ekspedisiRates,
+    snapshot.itemSellingPrices
   );
   const group = groups.find((g) => g.resiGroupId === resiGroupId);
   // Validasi server-side ulang (R11): grup tidak ditemukan berarti resi ini sudah tidak eligible
@@ -3601,9 +3602,25 @@ export async function resetAllAction(): Promise<void> {
   await del("suppliers", "id");
 }
 
+/** Item revisi 2026-09-13 (owner-reported, security review): snapshot penuh ini dulu dikirim APA
+ *  ADANYA ke SIAPA PUN yang punya sesi valid -- termasuk sesi Vendor Produksi eksternal. Beberapa
+ *  tabel Master Data (harga maklon/kain/kain PKS, harga jual item -- semua data costing/margin
+ *  INTERNAL) sama sekali tidak dipakai di halaman vendor manapun (diverifikasi lewat grep
+ *  menyeluruh app/vendor-maklon/**), tapi tetap ikut terkirim ke browser vendor lewat snapshot
+ *  ini. Sekarang di-strip KHUSUS untuk sesi vendor, di level SERVER (bukan disembunyikan di UI
+ *  doang) -- supaya datanya memang tidak pernah keluar ke browser vendor sama sekali.
+ *  `ekspedisiRates` SENGAJA TIDAK di-strip -- itu dipakai LIVE di halaman Pengiriman vendor
+ *  (dropdown ekspedisi + kalkulasi ongkir yang ditampilkan ke vendor), beda dari 4 tabel costing
+ *  internal di atas. Sesi internal (Procurement/Finance/dst) TIDAK terpengaruh sama sekali --
+ *  tetap dapat snapshot penuh seperti sebelumnya, CRUD Master Data (addHargaMaklonRowAction dkk)
+ *  juga tidak disentuh sama sekali (fungsi terpisah, independen dari sini). */
 export async function getFlowSnapshotAction() {
-  await requireSession();
-  return getFlowSnapshot();
+  const session = await requireSession();
+  const snapshot = await getFlowSnapshot();
+  if (session.vendorId) {
+    return { ...snapshot, hargaMaklon: [], hargaKain: [], hargaKainPks: [], itemSellingPrices: [] };
+  }
+  return snapshot;
 }
 
 // =========================================================================

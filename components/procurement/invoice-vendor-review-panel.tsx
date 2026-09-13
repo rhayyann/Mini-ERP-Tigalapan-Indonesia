@@ -43,6 +43,7 @@ export function InvoiceVendorReviewPanel() {
   const rawInvoices = useMrpStore((s) => s.invoices);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const ekspedisiRates = useMrpStore((s) => s.ekspedisiRates);
+  const itemSellingPrices = useMrpStore((s) => s.itemSellingPrices);
   const addVendorInvoiceAdjustment = useMrpStore((s) => s.addVendorInvoiceAdjustment);
   const setVendorInvoiceStatus = useMrpStore((s) => s.setVendorInvoiceStatus);
 
@@ -130,7 +131,7 @@ export function InvoiceVendorReviewPanel() {
               // tidak ikut menjalankan hppRowsForInvoicePerRoll (lumayan berat, alokasi FIFO) utk
               // baris yang collapsed.
               const koliBreakdown = invExpanded
-                ? invoiceKoliBreakdown(inv, vendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates)
+                ? invoiceKoliBreakdown(inv, vendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates, itemSellingPrices)
                 : undefined;
               return (
                 <div key={inv.id}>

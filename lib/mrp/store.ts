@@ -26,7 +26,7 @@ import type {
   WarehouseReceipt,
 } from "./types";
 import type { ParsedMrpImport } from "./parseImport";
-import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
+import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, ItemSellingPriceRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
 import { localDateString } from "./derive";
 import * as rawActions from "./actions";
 
@@ -215,6 +215,10 @@ export type FlowState = {
    *  oleh ekspedisiPrice/koliOngkirShare (derive.ts), bukan cuma data referensi seperti hargaMaklon
    *  dkk di atas. */
   ekspedisiRates: EkspedisiRateRow[];
+  /** Harga jual per item (kategori/warna/lengan/size), di-seed SEKALI dari Item Library Tigalapan
+   *  (lihat ItemSellingPriceRow di masterData.ts, migration 0035) -- dipakai untuk menghitung kolom
+   *  "% HPP" di Laporan HPP (Finance). READ-ONLY, tidak ada action CRUD untuk field ini. */
+  itemSellingPrices: ItemSellingPriceRow[];
   /** Kategori & kapasitas produksi PER MINGGU asli tiap vendor produksi (dari spreadsheet
    *  Procurement, lihat migration 0019_vendor_kapasitas_asli.sql) -- sumber utama untuk
    *  `vendorProduksiRows` (derive.ts) & kolom "Qty vs Kapasitas" di portal vendor
@@ -446,6 +450,7 @@ const emptyState: FlowState = {
   entitasList: [],
   supplierList: [],
   ekspedisiRates: [],
+  itemSellingPrices: [],
   vendorProduksiList: [],
   hydrated: false,
   busy: false,

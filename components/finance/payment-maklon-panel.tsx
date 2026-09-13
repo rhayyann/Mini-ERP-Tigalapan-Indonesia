@@ -19,7 +19,7 @@ import {
 } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 import type { MrpDetail } from "@/lib/mrp/store";
-import type { EkspedisiRateRow } from "@/lib/mrp/masterData";
+import type { EkspedisiRateRow, ItemSellingPriceRow } from "@/lib/mrp/masterData";
 import type { DeliveryKoli, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, RawMaterialInvoice, VendorInvoice } from "@/lib/mrp/types";
 
 /** Detail per-warna/lengan dari satu invoice — dropdown expand baris (pola sama dengan tabel
@@ -36,6 +36,7 @@ function InvoiceLinesDetail({
   rawInvoices,
   deliveryKolis,
   ekspedisiRates,
+  itemSellingPrices,
 }: {
   inv: VendorInvoice;
   vendorInvoices: VendorInvoice[];
@@ -47,6 +48,7 @@ function InvoiceLinesDetail({
   rawInvoices: RawMaterialInvoice[];
   deliveryKolis: DeliveryKoli[];
   ekspedisiRates: EkspedisiRateRow[];
+  itemSellingPrices: ItemSellingPriceRow[];
 }) {
   // Item 2026-09-10 (feedback: "tampilkan informasi yang lebih detail, meliputi Item, Size,
   // Kategori Lengan, Qty, serta nominal ... Tambahkan informasi Nama Vendor dan Tanggal
@@ -54,7 +56,7 @@ function InvoiceLinesDetail({
   // `invoiceKoliBreakdown` (SAMA fungsi yang dipakai Procurement "Invoice Vendor", lihat
   // catatan panjang di lib/mrp/derive.ts) supaya breakdown per size + info koli di sini SELALU
   // konsisten dengan yang sudah dicek Procurement, bukan sumber kebenaran kedua yang berbeda.
-  const breakdown = invoiceKoliBreakdown(inv, vendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates);
+  const breakdown = invoiceKoliBreakdown(inv, vendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates, itemSellingPrices);
   const vendorName = VENDOR_PRODUKSI[inv.vendorProduksi]?.name ?? inv.vendorProduksi;
   return (
     <div className="flex flex-col gap-3">
@@ -204,6 +206,7 @@ function LampiranEkspedisiCell({
   rawInvoices,
   deliveryKolis,
   ekspedisiRates,
+  itemSellingPrices,
 }: {
   inv: VendorInvoice;
   vendorInvoices: VendorInvoice[];
@@ -215,8 +218,9 @@ function LampiranEkspedisiCell({
   rawInvoices: RawMaterialInvoice[];
   deliveryKolis: DeliveryKoli[];
   ekspedisiRates: EkspedisiRateRow[];
+  itemSellingPrices: ItemSellingPriceRow[];
 }) {
-  const breakdown = invoiceKoliBreakdown(inv, vendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates);
+  const breakdown = invoiceKoliBreakdown(inv, vendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates, itemSellingPrices);
   if (breakdown.groups.length === 0) {
     return <span className="font-sans text-[11px] text-text-muted">—</span>;
   }
@@ -259,6 +263,7 @@ export function PaymentMaklonPanel() {
   const rawInvoices = useMrpStore((s) => s.invoices);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const ekspedisiRates = useMrpStore((s) => s.ekspedisiRates);
+  const itemSellingPrices = useMrpStore((s) => s.itemSellingPrices);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [actionResult, setActionResult] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
@@ -364,6 +369,7 @@ export function PaymentMaklonPanel() {
           rawInvoices={rawInvoices}
           deliveryKolis={deliveryKolis}
           ekspedisiRates={ekspedisiRates}
+          itemSellingPrices={itemSellingPrices}
         />
       ),
     },
@@ -391,6 +397,7 @@ export function PaymentMaklonPanel() {
           rawInvoices={rawInvoices}
           deliveryKolis={deliveryKolis}
           ekspedisiRates={ekspedisiRates}
+          itemSellingPrices={itemSellingPrices}
         />
       ),
     },
@@ -463,6 +470,7 @@ export function PaymentMaklonPanel() {
             rawInvoices={rawInvoices}
             deliveryKolis={deliveryKolis}
             ekspedisiRates={ekspedisiRates}
+            itemSellingPrices={itemSellingPrices}
           />
         )}
         emptyText="Belum ada invoice vendor yang disetujui Procurement."
@@ -487,6 +495,7 @@ export function PaymentMaklonPanel() {
             rawInvoices={rawInvoices}
             deliveryKolis={deliveryKolis}
             ekspedisiRates={ekspedisiRates}
+            itemSellingPrices={itemSellingPrices}
           />
         )}
         emptyText="Belum ada invoice vendor yang telah dibayar."

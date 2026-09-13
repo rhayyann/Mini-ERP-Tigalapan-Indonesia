@@ -1,6 +1,6 @@
 import { MATERIAL_RATE_PER_ROLL, ROLL_KG_ESTIMATE, VENDOR_PRODUKSI } from "./seed";
 import type { MrpDetail, PpicApprovalStatus } from "./store";
-import type { EkspedisiRateRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
+import type { EkspedisiRateRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, ItemSellingPriceRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
 import type { AduanPolaRow, ColorBreakdown, DeliveryItemKind, DeliveryKoli, Lengan, LenganGroup, MaklonInvoice, MaklonPO, MaterialPO, MaterialRow, Mrp, ProductionBatch, ProductionGroupMeta, ProductionResult, ProductionResultKind, ProductionYieldResolution, RawMaterialInvoice, ShippableKind, Usia, VendorDepositEntry, VendorInvoice, VendorInvoiceLine, WarehouseReceipt } from "./types";
 
 export function formatRupiah(n: number) {
@@ -2978,6 +2978,16 @@ export type HppRow = {
   ongkirPerItem: number;
   totalOngkirRow: number;
   hppPerItem: number;
+  /** Size ASLI baris ini (variabel yang sudah ada di scope tempat `item`/`jenis` dikonstruksi,
+   *  BUKAN hasil parse ulang dari `jenis`) -- dipakai lookup `sellingPriceFor` di bawah. */
+  size: string;
+  /** Harga jual per item, hasil lookup `sellingPriceFor` ke Master Data seed `itemSellingPrices`
+   *  (warna+lengan+size EXACT match) -- `null` kalau tidak ketemu (BUKAN 0, beda makna: 0 berarti
+   *  harga jual memang Rp 0 di data sumber). */
+  sellingPricePerItem: number | null;
+  /** % HPP = hppPerItem / sellingPricePerItem x 100 -- `null` kalau sellingPricePerItem tidak
+   *  ketemu atau <= 0 (supaya tidak dibagi nol/negatif). */
+  hppPercentage: number | null;
 };
 
 /** Ongkir 1 invoice vendor — dihitung OTOMATIS dari koli pengiriman (deliveryKolis) milik
@@ -2997,6 +3007,15 @@ export function autoOngkirForInvoice(inv: VendorInvoice, deliveryKolis: Delivery
     .reduce((sum, k) => sum + koliOngkirShare(k, deliveryKolis, ekspedisiRates), 0);
 }
 
+/** Harga jual per item, lookup EXACT (case-sensitive, tanpa trim) ke Master Data seed
+ *  `itemSellingPrices` (lihat ItemSellingPriceRow di masterData.ts, migration 0035) -- pola
+ *  matching sama persis seperti `ekspedisiPrice` di atas. `null` kalau tidak ketemu (BUKAN 0,
+ *  supaya kolom "% HPP" di UI tampil "—" alih-alih 0% yang menyesatkan). */
+export function sellingPriceFor(warna: string, lengan: Lengan, size: string, rates: ItemSellingPriceRow[]): number | null {
+  const row = rates.find((r) => r.warna === warna && r.lengan === lengan && r.size === size);
+  return row ? row.price : null;
+}
+
 export function hppRowsForInvoice(
   inv: VendorInvoice,
   ongkirTotal: number,
@@ -3006,7 +3025,8 @@ export function hppRowsForInvoice(
   productionResults: ProductionResult[],
   productionGroupMeta: ProductionGroupMeta[],
   rawInvoices: RawMaterialInvoice[],
-  deliveryKolis: DeliveryKoli[]
+  deliveryKolis: DeliveryKoli[],
+  itemSellingPrices: ItemSellingPriceRow[]
 ): HppRow[] {
   const mrpIdsInInvoice = Array.from(new Set(inv.lines.map((l) => l.mrpId)));
   const totalPcsInKoli = deliveryKolis
@@ -3025,6 +3045,7 @@ export function hppRowsForInvoice(
     lengan: Lengan;
     item: string;
     jenis: string;
+    size: string;
     qtyPo: number;
     cutting: number;
     fg: number;
@@ -3080,6 +3101,7 @@ export function hppRowsForInvoice(
         lengan: line.lengan,
         item: `${line.warna} ${HPP_LENGAN_ABBR[line.lengan]} ${s.size}`,
         jenis: `${line.lengan} ${s.size}`,
+        size: s.size ?? "",
         qtyPo: s.target,
         cutting: s.cutting,
         fg: s.finishGood * lineShare,
@@ -3113,6 +3135,8 @@ export function hppRowsForInvoice(
     const biayaProduksiPerItem = d.fg > 0 ? biayaProduksiTotal / d.fg : d.maklonRate;
     const totalOngkirRow = ongkirPerPc * d.fg;
     const hppPerItem = biayaProduksiPerItem + cogsBahanPerItem + ongkirPerPc;
+    const sellingPricePerItem = sellingPriceFor(d.warna, d.lengan, d.size, itemSellingPrices);
+    const hppPercentage = sellingPricePerItem != null && sellingPricePerItem > 0 ? (hppPerItem / sellingPricePerItem) * 100 : null;
     return {
       invoiceId: inv.id,
       vendorProduksi: inv.vendorProduksi,
@@ -3144,6 +3168,9 @@ export function hppRowsForInvoice(
       ongkirPerItem: ongkirPerPc,
       totalOngkirRow,
       hppPerItem,
+      size: d.size,
+      sellingPricePerItem,
+      hppPercentage,
     };
   });
 }
@@ -3255,7 +3282,8 @@ export function hppRowsForInvoicePerRoll(
   productionGroupMeta: ProductionGroupMeta[],
   rawInvoices: RawMaterialInvoice[],
   deliveryKolis: DeliveryKoli[],
-  ekspedisiRates: EkspedisiRateRow[]
+  ekspedisiRates: EkspedisiRateRow[],
+  itemSellingPrices: ItemSellingPriceRow[]
 ): HppRow[] {
   const rows: HppRow[] = [];
   const legacyLines: VendorInvoiceLine[] = [];
@@ -3417,6 +3445,8 @@ export function hppRowsForInvoicePerRoll(
       const cuttingQty = c.cuttingQty * portion;
       const rejectQty = c.rejectQty * portion;
       const reworkQty = c.reworkQty * portion;
+      const sellingPricePerItem = sellingPriceFor(line.warna, line.lengan, c.size, itemSellingPrices);
+      const hppPercentage = sellingPricePerItem != null && sellingPricePerItem > 0 ? (hppPerItem / sellingPricePerItem) * 100 : null;
       rows.push({
         invoiceId: inv.id,
         vendorProduksi: inv.vendorProduksi,
@@ -3450,6 +3480,9 @@ export function hppRowsForInvoicePerRoll(
         ongkirPerItem: ongkirPerPc,
         totalOngkirRow: ongkirPerPc * fgQty,
         hppPerItem,
+        size: c.size,
+        sellingPricePerItem,
+        hppPercentage,
       });
     }
 
@@ -3474,6 +3507,8 @@ export function hppRowsForInvoicePerRoll(
       const biayaProduksiPerItem = line.ratePerPc;
       const hppPerItem = biayaProduksiPerItem + ongkirPerPc;
       const usiaLabel = c.usia === "KIDS" ? "Kids" : c.usia === "DEWASA" ? "Dewasa" : "";
+      const sellingPricePerItem = sellingPriceFor(line.warna, line.lengan, c.size, itemSellingPrices);
+      const hppPercentage = sellingPricePerItem != null && sellingPricePerItem > 0 ? (hppPerItem / sellingPricePerItem) * 100 : null;
 
       rows.push({
         invoiceId: inv.id,
@@ -3508,6 +3543,9 @@ export function hppRowsForInvoicePerRoll(
         ongkirPerItem: ongkirPerPc,
         totalOngkirRow: ongkirPerPc * takeQty,
         hppPerItem,
+        size: c.size,
+        sellingPricePerItem,
+        hppPercentage,
       });
     }
   }
@@ -3519,7 +3557,7 @@ export function hppRowsForInvoicePerRoll(
   if (legacyLines.length > 0) {
     const legacyInv: VendorInvoice = { ...inv, lines: legacyLines };
     const ongkirTotal = autoOngkirForInvoice(legacyInv, deliveryKolis, ekspedisiRates);
-    const legacyRows = hppRowsForInvoice(legacyInv, ongkirTotal, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis);
+    const legacyRows = hppRowsForInvoice(legacyInv, ongkirTotal, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, itemSellingPrices);
 
     // BUG FIX (2026-09-09, user-reported): `autoOngkirForInvoice` (dipakai `ongkirTotal` di atas)
     // menjumlahkan ongkir SEMUA koli milik mrpId ini apa adanya -- benar untuk invoice yang 100%
@@ -3631,9 +3669,10 @@ export function invoiceKoliBreakdown(
   productionGroupMeta: ProductionGroupMeta[],
   rawInvoices: RawMaterialInvoice[],
   deliveryKolis: DeliveryKoli[],
-  ekspedisiRates: EkspedisiRateRow[]
+  ekspedisiRates: EkspedisiRateRow[],
+  itemSellingPrices: ItemSellingPriceRow[]
 ): { groups: InvoiceKoliGroup[]; legacyRows: InvoiceKoliBreakdownRow[] } {
-  const hppRows = hppRowsForInvoicePerRoll(inv, allVendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates);
+  const hppRows = hppRowsForInvoicePerRoll(inv, allVendorInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates, itemSellingPrices);
   const groupsByResi = new Map<string, InvoiceKoliGroup & { noKoliList: string[] }>();
   const legacyRows: InvoiceKoliBreakdownRow[] = [];
   for (const r of hppRows) {
@@ -3768,7 +3807,8 @@ export function warehouseReceivableGroups(
   productionGroupMeta: ProductionGroupMeta[],
   rawInvoices: RawMaterialInvoice[],
   warehouseReceipts: WarehouseReceipt[],
-  ekspedisiRates: EkspedisiRateRow[]
+  ekspedisiRates: EkspedisiRateRow[],
+  itemSellingPrices: ItemSellingPriceRow[]
 ): WarehouseReceivableGroup[] {
   // R8: kandidat = SEMUA koli dalam grup sudah delivered, DAN grup belum pernah diterima penuh
   // oleh Warehouse (1 resi group = tepat 1 warehouse_receipt, lihat R10/R12) -- grup yang sudah
@@ -3795,7 +3835,7 @@ export function warehouseReceivableGroups(
     // tetap non-REVISION (basis alokasi FIFO yang benar, konsisten dgn pemanggilan lain di app).
     const invoicesForVendor = vendorInvoices.filter((i) => i.vendorProduksi === vendorProduksi);
     const rows = invoicesForVendor.flatMap((inv) =>
-      hppRowsForInvoicePerRoll(inv, nonRevisionInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates)
+      hppRowsForInvoicePerRoll(inv, nonRevisionInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates, itemSellingPrices)
     );
     hppRowsByVendor.set(vendorProduksi, rows);
     return rows;

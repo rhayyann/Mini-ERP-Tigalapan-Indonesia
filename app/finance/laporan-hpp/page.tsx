@@ -124,7 +124,7 @@ function MrpHppDetailTable({ rows }: { rows: HppTableRow[] }) {
   const sortedRows = sortHppRowsForDetail(rows);
   return (
     <div className="overflow-x-auto rounded-md border border-[#E4E9EE] bg-white">
-      <table className="w-full min-w-[1180px] border-collapse">
+      <table className="w-full min-w-[1420px] border-collapse">
         <thead>
           <tr className="border-b border-[#E4E9EE] bg-[#F2F5F8] font-sans text-[10px] font-semibold uppercase tracking-wider text-text-muted">
             <th className="px-3 py-2 text-left">Warna / lengan</th>
@@ -140,6 +140,8 @@ function MrpHppDetailTable({ rows }: { rows: HppTableRow[] }) {
             <th className="px-3 py-2 text-right">COGS Bahan/Item</th>
             <th className="px-3 py-2 text-right">Ongkir/Item</th>
             <th className="px-3 py-2 text-right">HPP/Item</th>
+            <th className="px-3 py-2 text-right">Harga Jual/Item</th>
+            <th className="px-3 py-2 text-right">% HPP</th>
           </tr>
         </thead>
         <tbody>
@@ -160,6 +162,8 @@ function MrpHppDetailTable({ rows }: { rows: HppTableRow[] }) {
               <td className="px-3 py-1.5 text-right font-mono">{formatRupiah(r.cogsBahanPerItem)}</td>
               <td className="px-3 py-1.5 text-right font-mono">{formatRupiah(r.ongkirPerItem)}</td>
               <td className="px-3 py-1.5 text-right font-mono font-semibold text-text-primary">{formatRupiah(r.hppPerItem)}</td>
+              <td className="px-3 py-1.5 text-right font-mono">{r.sellingPricePerItem != null ? formatRupiah(r.sellingPricePerItem) : "—"}</td>
+              <td className="px-3 py-1.5 text-right font-mono">{r.hppPercentage != null ? r.hppPercentage.toFixed(1) + "%" : "—"}</td>
             </tr>
           ))}
         </tbody>
@@ -247,6 +251,7 @@ export default function FinanceLaporanHppPage() {
   const rawInvoices = useMrpStore((s) => s.invoices);
   const deliveryKolis = useMrpStore((s) => s.deliveryKolis);
   const ekspedisiRates = useMrpStore((s) => s.ekspedisiRates);
+  const itemSellingPrices = useMrpStore((s) => s.itemSellingPrices);
 
   if (!mounted) return null;
 
@@ -261,7 +266,7 @@ export default function FinanceLaporanHppPage() {
   // lama, sebelum fitur ini ada), jadi histori tidak hilang/kosong.
   const kolisById = new Map<string, DeliveryKoli>(deliveryKolis.map((k) => [k.id, k]));
   const rows: HppTableRow[] = relevantInvoices.flatMap((inv) =>
-    hppRowsForInvoicePerRoll(inv, relevantInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates).map((r, i) => {
+    hppRowsForInvoicePerRoll(inv, relevantInvoices, mrpDetails, staticMrps, productionBatches, productionResults, productionGroupMeta, rawInvoices, deliveryKolis, ekspedisiRates, itemSellingPrices).map((r, i) => {
       const koli = r.koliId ? kolisById.get(r.koliId) : undefined;
       return { ...r, rowId: inv.id + "-" + i, tanggalKirim: koli?.deliveredAt, noResi: koli?.noResi };
     })

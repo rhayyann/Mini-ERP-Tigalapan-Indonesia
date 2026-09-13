@@ -1,3 +1,5 @@
+import type { Lengan } from "./types";
+
 /** Tipe untuk data "Master Data" — daftar referensi (harga maklon, harga kain, entitas, supplier)
  *  yang tadinya cuma ada di spreadsheet terpisah atau hardcode statis (lib/mrp/seed.ts), sekarang
  *  jadi data yang bisa diimpor sekali dari Google Sheets (publish-to-web CSV, lihat
@@ -62,6 +64,22 @@ export type SupplierRow = { id: string; nama: string };
  *  lib/mrp/seed.ts, sudah dihapus). Matching nama EXACT (case-sensitive) ke `DeliveryKoli.ekspedisi`
  *  -- nama ekspedisi yang tidak ada di tabel ini menghasilkan ongkir Rp 0 (disengaja). */
 export type EkspedisiRateRow = { id: string; nama: string; pricePerKg: number };
+
+/** Harga jual per item (kategori/SKU/warna/lengan/size), di-seed SEKALI dari file "Item Library
+ *  (Tigalapan).csv" (2026-09-13, 2.139 baris, 6 kategori yang dipakai alur MRP: COMBED 24S, COMBED
+ *  30S, KIDS 24S, PANJANG + RIB, TUNIK 24S, WANGKI MYNO) -- dipakai UNTUK MENGHITUNG kolom "% HPP"
+ *  di Laporan HPP (Finance). BUKAN Master Data live: TIDAK ADA CRUD/tombol import ulang/panel edit
+ *  -- kalau harga berubah, perlu migration baru atau UPDATE manual lewat SQL Editor Supabase. */
+export type ItemSellingPriceRow = {
+  id: string;
+  kategori: string;
+  sku: string | null;
+  itemName: string;
+  warna: string;
+  lengan: Lengan;
+  size: string;
+  price: number;
+};
 
 /** Revisi 2026-09-06: data ASLI vendor produksi dari spreadsheet Procurement (kategori & kapasitas
  *  produksi PER MINGGU) -- sumbernya kolom `kategori`/`base_capacity` di tabel `vendors_produksi`

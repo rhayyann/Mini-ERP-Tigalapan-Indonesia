@@ -30,7 +30,7 @@ import type {
   WarehouseReceipt,
   WarehouseReceiptItem,
 } from "../types";
-import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow, VendorProduksiMasterRow } from "../masterData";
+import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, ItemSellingPriceRow, SupplierRow, VendorProduksiMasterRow } from "../masterData";
 import type { FlowState, MrpDates, MrpDetail } from "../store";
 
 /** Ambil SEMUA data flow dari Supabase dan bentuk ulang jadi `FlowState` -- bentuk persis yang
@@ -89,7 +89,8 @@ type RawTables = Record<
   | "entitasRows"
   | "supplierRows"
   | "vendorProduksiMasterRows"
-  | "ekspedisiRateRows",
+  | "ekspedisiRateRows"
+  | "itemSellingPriceRows",
   TableResult
 >;
 
@@ -141,6 +142,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     supplierRows,
     vendorProduksiMasterRows,
     ekspedisiRateRows,
+    itemSellingPriceRows,
   ] = await Promise.all([
     // Fix "list melompat" (lihat migration 0021_stable_snapshot_order.sql untuk penjelasan akar
     // masalahnya) -- `select *` TANPA `.order()` tidak dijamin urutannya oleh Postgres, dan bisa
@@ -195,6 +197,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     // sampai ke client/browser.
     db.from("vendors_produksi").select("id,name,kategori,base_capacity").order("id"),
     db.from("ekspedisi_rates").select("*").order("id"),
+    db.from("item_selling_prices").select("*").order("id"),
   ]);
   return {
     mrpRows,
@@ -239,6 +242,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     supplierRows,
     vendorProduksiMasterRows,
     ekspedisiRateRows,
+    itemSellingPriceRows,
   };
 }
 
@@ -296,6 +300,7 @@ async function fetchFlowRowsFast(db: SupabaseClient): Promise<RawTables> {
     supplierRows: wrap("suppliers"),
     vendorProduksiMasterRows: wrap("vendors_produksi"),
     ekspedisiRateRows: wrap("ekspedisi_rates"),
+    itemSellingPriceRows: wrap("item_selling_prices"),
   };
 }
 
@@ -356,6 +361,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     supplierRows,
     vendorProduksiMasterRows,
     ekspedisiRateRows,
+    itemSellingPriceRows,
   } = await fetchFlowRows(db);
 
   for (const [name, res] of Object.entries({
@@ -378,6 +384,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     entitasRows,
     supplierRows,
     ekspedisiRateRows,
+    itemSellingPriceRows,
   })) {
     if (res.error) throw new Error(`getFlowSnapshot: gagal fetch ${name}: ${res.error.message}`);
   }
@@ -895,6 +902,18 @@ export async function getFlowSnapshot(): Promise<FlowState> {
   // Kolom `price_per_kg` bertipe `numeric` Postgres -- bisa datang sebagai string lewat PostgREST,
   // `Number(...)` wajib di sini (sama seperti kolom numeric lain di file ini).
   const ekspedisiRates: EkspedisiRateRow[] = (ekspedisiRateRows.data ?? []).map((r) => ({ id: r.id, nama: r.nama, pricePerKg: Number(r.price_per_kg) }));
+  // Harga jual per item, seed sekali (lihat migration 0035) -- `price` numeric Postgres, `Number(...)`
+  // wajib sama seperti kolom numeric lain di file ini.
+  const itemSellingPrices: ItemSellingPriceRow[] = (itemSellingPriceRows.data ?? []).map((r) => ({
+    id: r.id,
+    kategori: r.kategori,
+    sku: r.sku,
+    itemName: r.item_name,
+    warna: r.warna,
+    lengan: r.lengan as ItemSellingPriceRow["lengan"],
+    size: r.size,
+    price: Number(r.price),
+  }));
   // ---- Vendor produksi (kategori & kapasitas mingguan asli, lihat migration 0019) ----
   const vendorProduksiList: VendorProduksiMasterRow[] = (vendorProduksiMasterRows.data ?? []).map((r) => ({
     id: r.id,
@@ -934,6 +953,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     entitasList,
     supplierList,
     ekspedisiRates,
+    itemSellingPrices,
     hydrated: true,
     // `busy` bukan bagian data Supabase -- ini murni flag client-side (lihat withBusyTracking di
     // lib/mrp/store.ts). Nilainya di sini tidak penting: hydrate()/refresh() selalu men-spread
