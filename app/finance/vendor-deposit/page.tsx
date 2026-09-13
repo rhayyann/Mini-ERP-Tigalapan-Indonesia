@@ -133,12 +133,6 @@ export default function VendorDepositPage() {
       title="Saldo Deposit Vendor"
       subtitle={`${rows.length} supplier tercatat — total saldo berjalan ${formatRupiah(totalBalance)}`}
     >
-      <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-        Saldo di sini berasal dari klaim selisih berat yang diselesaikan Procurement lewat &quot;retur + pesan ulang&quot; (lihat halaman Klaim Material) --
-        nilai retur roll lama dicatat sebagai kredit, lepas dari PV pengganti mana pun. Saldo ini bisa dipakai untuk mengurangi pembayaran invoice APA PUN ke
-        supplier yang sama, dipilih manual dari halaman Payment. Klik baris untuk lihat rincian setiap transaksi (kredit masuk / dipakai bayar).
-      </div>
-
       <DataTable
         title="Saldo per supplier"
         columns={columns}

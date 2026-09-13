@@ -42,6 +42,26 @@ export default function MrpListPage() {
   const invoices = useMrpStore((s) => s.invoices);
   const vendorInvoices = useMrpStore((s) => s.vendorInvoices);
   const importMrp = useMrpStore((s) => s.importMrp);
+  const resetMrp = useMrpStore((s) => s.resetMrp);
+
+  // Id MRP yang sedang diproses hapus -- dipakai untuk disable tombol supaya tidak bisa diklik
+  // dobel selagi request jalan.
+  const [resettingId, setResettingId] = useState<string | null>(null);
+
+  async function handleResetMrp(mrpId: string) {
+    const ok = window.confirm(
+      `Yakin hapus SEMUA data MRP ${mrpId}? Ini akan menghapus PO, invoice, produksi, dan pengiriman yang terkait MRP ini SAJA (MRP lain tidak terpengaruh). Aksi ini tidak bisa dibatalkan.`
+    );
+    if (!ok) return;
+    setResettingId(mrpId);
+    try {
+      await resetMrp(mrpId);
+    } catch (err) {
+      window.alert(`Reset MRP gagal: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setResettingId(null);
+    }
+  }
 
   const [visibleCols, setVisibleCols] = useState<Set<ColKey>>(new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
   const [colPickerOpen, setColPickerOpen] = useState(false);
@@ -107,10 +127,10 @@ export default function MrpListPage() {
       (!filterStatusProd || r.badges.statusProduksi === filterStatusProd)
   );
 
-  // +1 untuk kolom No. MRP yang selalu tampil (tidak lewat toggle "Kolom") — dipakai sebagai
-  // colSpan baris rincian expand & baris "tidak ada hasil" supaya selalu selebar tabel yang benar
-  // (+1 No. MRP di awal, +1 kolom chevron expand di akhir — keduanya selalu tampil, di luar toggle).
-  const totalCols = 2 + COLUMNS.filter((c) => visibleCols.has(c.key)).length;
+  // +1 untuk kolom No. MRP, +1 kolom chevron expand, +1 kolom aksi "Reset MRP" — semua selalu
+  // tampil (tidak lewat toggle "Kolom") — dipakai sebagai colSpan baris rincian expand & baris
+  // "tidak ada hasil" supaya selalu selebar tabel yang benar.
+  const totalCols = 3 + COLUMNS.filter((c) => visibleCols.has(c.key)).length;
 
   return (
     <AppShell role="ppic" activeHref="/mrp/ppic" breadcrumb={["Dashboard", "Material Requirement Planning"]} title="Material Requirement Planning">
@@ -194,6 +214,7 @@ export default function MrpListPage() {
                 {visibleCols.has("statusPO") && <th className="px-3 py-[9px] text-left">Status PO</th>}
                 {visibleCols.has("statusRM") && <th className="px-3 py-[9px] text-left">Status Raw Material</th>}
                 {visibleCols.has("statusProduksi") && <th className="px-5 py-[9px] text-left">Status Produksi</th>}
+                <th className="px-3 py-[9px] text-left">Aksi</th>
                 <th className="w-8 px-3 py-[9px]" />
               </tr>
             </thead>
@@ -245,6 +266,19 @@ export default function MrpListPage() {
                           <StatusPill tone={badgeTone(badges.statusProduksi)}>{badges.statusProduksi}</StatusPill>
                         </td>
                       )}
+                      <td className="px-3 py-[13px]">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleResetMrp(mrp.id);
+                          }}
+                          disabled={resettingId === mrp.id}
+                          title="Hapus semua data MRP ini saja (PO, invoice, produksi, pengiriman) -- tidak bisa dibatalkan"
+                          className="rounded-[5px] border border-[#EFC9C4] px-2.5 py-[5px] font-sans text-[11px] font-semibold text-danger-fg hover:bg-danger-bg disabled:opacity-50"
+                        >
+                          {resettingId === mrp.id ? "Menghapus…" : "Reset MRP"}
+                        </button>
+                      </td>
                       <td className="px-3 py-[13px]">
                         {isExpanded ? (
                           <ChevronDown className="h-3.5 w-3.5 flex-none text-text-muted" />

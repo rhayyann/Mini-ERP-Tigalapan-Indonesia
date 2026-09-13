@@ -74,7 +74,7 @@ export default function PpicDashboardPage() {
   const colors = ["#2E6FA7", "#1F8A55", "#8FB4D4", "#C9791A"];
 
   return (
-    <AppShell role="ppic" activeHref="/dashboard/ppic" breadcrumb={["Dashboard", "Overview"]} title="Overview produksi" subtitle="Ringkasan seluruh MRP aktif">
+    <AppShell role="ppic" activeHref="/dashboard/ppic" breadcrumb={["Dashboard", "Overview"]} title="Overview produksi">
       <div className="grid grid-cols-4 gap-3.5">
         <KpiCard label="MRP Aktif" value={String(mrpDetails.filter((d) => d.mrp.live).length)} sub={`${formatPcs(stats.totalQty)} pcs terjadwal`} accent="blue" />
         <KpiCard label="Menunggu Approval SCM" value={String(stats.waitingScm)} sub="perlu ditindaklanjuti PPIC" accent="purple" />

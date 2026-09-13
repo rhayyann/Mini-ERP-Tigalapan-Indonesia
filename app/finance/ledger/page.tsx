@@ -17,7 +17,6 @@ export default function LedgerPage() {
       activeHref="/finance/ledger"
       breadcrumb={["Dashboard", "Ledger"]}
       title="Invoice & payment ledger"
-      subtitle="Agu 2026 · supplier & maklon · 2 entitas"
       actions={<button className="rounded-md bg-action-primary px-3 py-[7px] font-sans text-xs font-semibold text-white">Export</button>}
     >
       <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">

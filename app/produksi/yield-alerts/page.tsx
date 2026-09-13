@@ -111,11 +111,6 @@ export default function ProduksiYieldAlertsPage() {
       title="Yield Alert"
       subtitle={`${rows.length} roll dengan yield di bawah baseline 99% — ${unresolvedCount} belum ditindak`}
     >
-      <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-        Daftar ini otomatis berisi roll yang sudah dicutting dengan hasil aduan aktual (diinput vendor di halaman Cutting) di bawah 99% dari target aduan pola —
-        mirip konsep klaim selisih berat bahan, tapi untuk yield hasil potong, dan ditindaklanjuti dari sini (portal internal Produksi), bukan Procurement.
-      </div>
-
       <DataTable
         title="Yield alert per roll"
         columns={columns}

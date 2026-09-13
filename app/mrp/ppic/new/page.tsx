@@ -66,7 +66,7 @@ export default function InputMrpPage() {
   }
 
   return (
-    <AppShell role="ppic" activeHref="/mrp/ppic" breadcrumb={["Dashboard", "MRP saya", "Input manual"]} title="Input MRP manual" subtitle="Fallback tanpa file import — tanpa data aduan pola">
+    <AppShell role="ppic" activeHref="/mrp/ppic" breadcrumb={["Dashboard", "MRP saya", "Input manual"]} title="Input MRP manual">
       <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
         <div className="flex items-center border-b border-border-subtle px-5 py-4">
           <div>

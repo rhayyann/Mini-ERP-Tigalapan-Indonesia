@@ -87,11 +87,6 @@ export function InvoiceVendorReviewPanel() {
 
   return (
     <>
-      <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-        Vendor produksi mengajukan invoice dari menu Invoice &amp; Payment. Tambahkan denda/reward sesuai kontrak bila perlu, lalu Setujui — invoice yang disetujui
-        akan muncul di menu Finance &gt; Payment Maklon untuk diproses pembayarannya.
-      </div>
-
       {pending.length > 0 && (
         <div className="rounded-lg border border-[#F0DFC2] bg-warning-bg px-5 py-2.5 font-sans text-[11.5px] font-medium text-warning-fg">
           {pending.length} invoice vendor menunggu review — klik baris untuk buka detail &amp; Setujui.

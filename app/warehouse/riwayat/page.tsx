@@ -97,7 +97,6 @@ export default function WarehouseRiwayatPage() {
       activeHref="/warehouse/riwayat"
       breadcrumb={["Warehouse", "Riwayat Penerimaan"]}
       title="Riwayat Penerimaan"
-      subtitle="Arsip read-only penerimaan yang sudah dibongkar — item, qty, dan HPP/item tersnapshot saat diterima"
     >
       <div className="grid grid-cols-3 gap-3.5">
         <KpiCard label="Total penerimaan" value={formatPcs(rows.length)} sub="resi sudah dibongkar" accent="blue" />

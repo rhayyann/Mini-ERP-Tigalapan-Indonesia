@@ -151,7 +151,6 @@ export default function WarehousePenerimaanPage() {
       activeHref="/warehouse/penerimaan"
       breadcrumb={["Warehouse", "Penerimaan"]}
       title="Penerimaan"
-      subtitle="Batch pengiriman (resi) dari Vendor Produksi yang siap/dalam antrean dibongkar jadi stok gudang"
     >
       <div className="grid grid-cols-3 gap-3.5">
         <KpiCard label="Siap dibongkar" value={formatPcs(readyCount)} sub="resi dengan invoice sudah dibayar" accent="success" />

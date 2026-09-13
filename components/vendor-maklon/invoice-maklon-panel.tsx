@@ -29,8 +29,7 @@ export function InvoiceMaklonPanel({ vendorId }: { vendorId: string }) {
   return (
     <>
       <div className="rounded-lg border border-[#F0DFC2] bg-warning-bg px-5 py-3.5 font-sans text-[11.5px] leading-[1.5] text-warning-fg">
-        Jalur Invoice Maklon (per-PO) <b>sudah tidak menerima pengajuan baru</b> — semua penagihan hasil produksi sekarang lewat tab{" "}
-        <b>Invoice Vendor (per pcs)</b>. Daftar di bawah ini murni riwayat invoice maklon yang sudah pernah diajukan sebelumnya.
+        Jalur ini <b>sudah ditutup untuk pengajuan baru</b> — penagihan sekarang lewat tab <b>Invoice Vendor (per pcs)</b>.
       </div>
 
       <DataTable

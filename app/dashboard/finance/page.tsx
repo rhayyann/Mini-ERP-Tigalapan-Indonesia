@@ -62,7 +62,7 @@ export default function FinanceDashboardPage() {
   const totalApprovalPending = stats.materialPendingApproval.length + stats.maklonPendingApproval.length;
 
   return (
-    <AppShell role="finance" activeHref="/dashboard/finance" breadcrumb={["Dashboard", "Finance"]} title="Posisi pembayaran" subtitle="Ringkasan seluruh entitas">
+    <AppShell role="finance" activeHref="/dashboard/finance" breadcrumb={["Dashboard", "Finance"]} title="Posisi pembayaran">
       <div className="grid grid-cols-4 gap-3.5">
         <KpiCard label="PO Menunggu Approval" value={String(totalApprovalPending)} sub={`${stats.materialPendingApproval.length} material · ${stats.maklonPendingApproval.length} maklon`} accent="orange" />
         <KpiCard label="Invoice Material Menunggu Bayar" value={String(stats.materialAwaitingPayment.length)} sub={formatRupiah(stats.materialAwaitingAmount)} />

@@ -530,7 +530,6 @@ function PengirimanContent({ vendorId }: { vendorId: string }) {
       activeHref="/vendor-maklon/pengiriman"
       breadcrumb={["Dashboard", "Pengiriman"]}
       title="Pengiriman"
-      subtitle="Buat koli pengiriman, gabung ke satu resi lalu Delivery, dan submit invoice langsung dari sini"
       roleOverride={VENDOR_PRODUKSI[vendorId]?.name ?? vendorId}
       entityOverride="Vendor Produksi"
     >

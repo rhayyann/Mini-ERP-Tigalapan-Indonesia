@@ -9,7 +9,6 @@ export default function VendorSupplierDashboardPage() {
       activeHref="/dashboard/vendor-supplier"
       breadcrumb={["Dashboard", "Order Saya"]}
       title="Order & tagihan saya"
-      subtitle="2 PO aktif · 14 roll dijadwalkan"
       actions={<button className="rounded-md bg-action-primary px-3 py-[7px] font-sans text-xs font-semibold text-white">Submit invoice</button>}
     >
       <div className="grid grid-cols-4 gap-3">

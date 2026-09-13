@@ -62,9 +62,7 @@ export default function InvoiceMaklonPage() {
       notifCount={pending.length}
     >
       <div className="rounded-lg border border-[#F0DFC2] bg-warning-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-warning-fg">
-        Jalur ini <b>sudah tidak menerima pengajuan baru</b> dari vendor (konsolidasi ke Invoice Vendor per-pcs, direview Procurement +
-        bisa dicicil pembayarannya). Tabel di bawah cuma invoice lama yang sudah pernah diajukan sebelum penutupan — tetap perlu
-        diselesaikan: Approve → Bayar akan menandai PO produksi FULLY PAID.
+        Jalur ini <b>sudah ditutup untuk pengajuan baru</b> — penagihan sekarang lewat Invoice Vendor (per pcs). Tabel di bawah arsip invoice lama yang masih perlu diselesaikan.
       </div>
       <DataTable
         title="Semua invoice maklon (arsip)"

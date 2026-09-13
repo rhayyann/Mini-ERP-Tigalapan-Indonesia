@@ -54,7 +54,6 @@ function ProductionContent({ vendorId }: { vendorId: string }) {
       activeHref="/vendor-maklon/production"
       breadcrumb={["Dashboard", "Produksi"]}
       title="Produksi"
-      subtitle="Cutting, finish good, reject, dan rework"
       roleOverride={VENDOR_PRODUKSI[vendorId]?.name ?? vendorId}
       entityOverride="Vendor Produksi"
     >

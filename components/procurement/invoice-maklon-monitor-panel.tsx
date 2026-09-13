@@ -33,9 +33,7 @@ export function InvoiceMaklonMonitorPanel() {
   return (
     <>
       <div className="rounded-lg border border-[#F0DFC2] bg-warning-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-warning-fg">
-        Jalur ini <b>sudah tidak menerima pengajuan baru</b> — vendor sekarang menagih lewat tab Invoice Vendor (per pcs) di menu Invoice
-        Vendor. Tabel di bawah murni arsip + invoice lama yang belum selesai; approve &amp; pembayaran tetap dilakukan Finance di halaman
-        Invoice Maklon.
+        Jalur ini <b>sudah ditutup untuk pengajuan baru</b> — penagihan sekarang lewat Invoice Vendor (per pcs). Tabel di bawah arsip invoice lama.
       </div>
       <DataTable
         title="Semua invoice maklon (arsip)"

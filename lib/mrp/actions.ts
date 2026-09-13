@@ -3545,61 +3545,136 @@ export async function dismissNotificationAction(id: string): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
-/** Hapus SEMUA data bisnis di Supabase (dipakai bersama semua modul & vendor) -- CATATAN
- *  MIGRASI: dulu tombol ini cuma menghapus localStorage BROWSER SENDIRI (aman, cuma data lokal
- *  yang hilang). Sekarang datanya dipakai bersama, jadi ini benar-benar menghapus punya semua
- *  orang -- konfirmasi WAJIB ditampilkan di client SEBELUM memanggil ini (lihat
- *  components/shell/reset-data-button.tsx). Kredensial vendor (vendors_produksi) TIDAK ikut
- *  dihapus -- itu bukan "data bisnis", itu akun login.
+/** Hapus semua data yang terkait SATU MRP saja (bukan seluruh data bisnis) -- khusus PPIC.
+ *  Ganti total fitur "Reset data" lama (resetAllAction, dihapus) yang menghapus SEMUA MRP/modul
+ *  sekaligus.
+ *
+ *  BUG FIX 2026-09-13 #3 (tester-reported, giliran ketiga): fungsi ini TIDAK dibungkus transaksi
+ *  (Supabase JS client tidak punya multi-statement transaction) -- kalau guard/validasi (cek
+ *  lintas-MRP) dan DELETE sungguhan diselang-seling seperti versi sebelumnya, guard yang gagal DI
+ *  TENGAH JALAN membuat sebagian data SUDAH TERLANJUR TERHAPUS padahal fungsi akhirnya throw
+ *  (dilaporkan gagal ke user, tapi sebagian data sudah hilang permanen -- persis skenario yang mau
+ *  dicegah). Sekarang fungsi ini dibagi TEGAS 2 FASE:
+ *  FASE VALIDASI (baca-saja, TIDAK ADA delete APA PUN) -- kumpulkan SEMUA id yang akan dihapus &
+ *  jalankan SEMUA pengecekan lintas-MRP dulu; kalau ADA SATU SAJA yang gagal, throw DI SINI, sebelum
+ *  baris kode delete pertama sekalipun dieksekusi.
+ *  FASE HAPUS (cuma jalan kalau FASE VALIDASI lolos semua) -- urutan hapus PENTING, jangan diubah
+ *  tanpa alasan kuat: (1) vendor_invoices, (2) warehouse_receipt_items -> warehouse_receipt_kolis ->
+ *  warehouse_receipts, (3) material_claim_photos & invoice_payment_proofs (pakai id raw_material_
+ *  invoices yang sudah dikumpulkan di fase validasi -- SEBELUM mrp dihapus, karena raw_material_
+ *  invoices ikut cascade begitu mrp dihapus), (4) material_claim_history, (5) TERAKHIR baris `mrp`
+ *  (memicu cascade FK ON DELETE CASCADE untuk lengan_groups, aduan_pola_rows, material_rows,
+ *  material_pos, maklon_pos, raw_material_invoices, maklon_invoices, production_batches,
+ *  production_results, production_group_meta, delivery_kolis, vendor_invoice_lines).
+ *  `vendor_deposits` dan `notifications` SENGAJA TIDAK disentuh -- vendor_deposits adalah ledger
+ *  KUMULATIF PER SUPPLIER (bukan per MRP), dan notifications tidak punya kolom mrp_id sama sekali.
  */
-export async function resetAllAction(): Promise<void> {
-  await requireSession(); // siapa saja yang sudah login (role apapun / vendor) boleh -- sama seperti perilaku lama
+export async function resetMrpAction(mrpId: string): Promise<void> {
+  await requireInternalRole(await requireSession(), "ppic");
   const db = supabaseServer();
-  // BUG FIX 2026-09-11 (owner: "kenapa fitur reset data tidak bisa bekerja?"): dulu tidak ada satu
-  // pun pengecekan `.error` di bawah -- klien Supabase TIDAK melempar exception untuk error query
-  // (RLS block, tabel terkunci, dst.), cuma mengembalikan `{ error }` di hasilnya. Tanpa dicek,
-  // delete yang gagal lewat diam-diam: function ini "selesai" tanpa throw, client (reset-data-
-  // button.tsx) mengira sukses dan reload halaman -- padahal sebagian/semua data MASIH ADA. Dari
-  // sisi user persis kelihatan seperti "tombol reset tidak bekerja" (tidak ada error, tapi data
-  // tidak hilang). Sekarang tiap delete dicek, throw begitu ada yang gagal supaya errornya sampai
-  // ke reset-data-button.tsx (lihat try/catch barunya di sana) dan terlihat oleh user.
-  async function del(table: string, col: string) {
-    const { error } = await db.from(table).delete().neq(col, "");
-    if (error) throw new Error(`Reset data gagal di tabel "${table}": ${error.message}`);
+
+  const { data: mrpRow, error: mrpFetchErr } = await db.from("mrp").select("id").eq("id", mrpId).maybeSingle();
+  if (mrpFetchErr) throw new Error(`Gagal memvalidasi MRP ${mrpId} sebelum reset: ${mrpFetchErr.message}`);
+  if (!mrpRow) throw new Error(`MRP ${mrpId} tidak ditemukan.`);
+
+  // ===== FASE VALIDASI -- baca-saja, TIDAK ADA delete di bawah sampai bagian "FASE HAPUS" =====
+  //
+  // BUG FIX 2026-09-13 #4 (reviewer-reported): SEMUA query select di fase ini sekarang WAJIB cek
+  // `{ error }` dan throw -- sebelumnya cuma destructure `{ data }` lalu fallback `?? []` kalau
+  // query gagal, jadi query yang GAGAL (network blip, dst) tidak bisa dibedakan dari "memang tidak
+  // ada baris lintas-MRP". Itu artinya guard bisa diam-diam menyimpulkan "aman" padahal sebenarnya
+  // TIDAK TAHU -- melanggar tujuan utama fase ini (mendeteksi kondisi tidak aman SEBELUM hapus
+  // apa pun). Sekarang query gagal = throw jelas, bukan lolos diam-diam sebagai array kosong.
+
+  // Cegah invoice vendor lintas-MRP ikut rusak -- satu vendor_invoice bisa berisi lines dari LEBIH
+  // DARI SATU MRP sekaligus (fitur gabung resi pengiriman, lihat submitResiGroupInvoiceAction).
+  const { data: linesForThisMrp, error: linesErr } = await db.from("vendor_invoice_lines").select("vendor_invoice_id").eq("mrp_id", mrpId);
+  if (linesErr) throw new Error(`Gagal memvalidasi invoice vendor sebelum reset MRP ${mrpId}: ${linesErr.message}`);
+  const affectedInvoiceIds = Array.from(new Set((linesForThisMrp ?? []).map((r) => r.vendor_invoice_id)));
+  if (affectedInvoiceIds.length > 0) {
+    const { data: crossLines, error: crossLinesErr } = await db.from("vendor_invoice_lines").select("vendor_invoice_id,mrp_id").in("vendor_invoice_id", affectedInvoiceIds).neq("mrp_id", mrpId);
+    if (crossLinesErr) throw new Error(`Gagal memvalidasi invoice vendor lintas-MRP sebelum reset MRP ${mrpId}: ${crossLinesErr.message}`);
+    if (crossLines && crossLines.length > 0) {
+      const crossIds = Array.from(new Set(crossLines.map((r) => r.vendor_invoice_id)));
+      throw new Error(
+        `Tidak bisa reset MRP ${mrpId} -- invoice vendor ${crossIds.join(", ")} juga berisi baris dari MRP lain (dibuat lewat gabungan resi pengiriman). Selesaikan/pisahkan invoice itu dulu secara manual sebelum reset MRP ini.`
+      );
+    }
   }
-  // vendor_invoices dihapus DULU -- vendor_invoice_lines beracuan ke mrp_id (cascade lewat mrp),
-  // tapi baris vendor_invoices sendiri TIDAK beracuan ke mrp -- kalau mrp dihapus duluan, baris
-  // vendor_invoices bakal jadi "cangkang kosong" tanpa lines, bukan ikut terhapus.
-  await del("vendor_invoices", "id");
-  // Hapus mrp -- cascade ke SEMUA tabel turunannya (lengan_groups, aduan_pola_rows, material_rows,
-  // material_pos, maklon_pos, raw_material_invoices, maklon_invoices, production_batches,
-  // production_results, production_group_meta, delivery_kolis, dst -- lihat FK ON DELETE CASCADE
-  // di supabase/migrations/0001_init.sql).
-  await del("mrp", "id");
-  await del("notifications", "id");
-  // BUG FIX 2026-09-07: vendor_deposits (saldo deposit vendor, migration 0018) SENGAJA standalone
-  // -- tidak beracuan FK ke mrp/raw_material_invoices sama sekali (source_claim_id/source_invoice_id
-  // cuma teks bebas, bukan constraint), jadi TIDAK ikut cascade terhapus waktu mrp dihapus di atas.
-  // Baris ledger-nya jadi "yatim" (menunjuk ke invoice/klaim yang sudah tidak ada) tapi tetap
-  // dihitung ke saldo berjalan supplier itu -- itu sebabnya saldo lama tetap muncul setelah reset.
-  await del("vendor_deposits", "id");
-  // BUG FIX 2026-09-07 (lanjutan, ketemu owner lewat "kenapa masih ada data lain di Riwayat Klaim
-  // setelah reset?"): 3 tabel arsip/payload-terpisah lain punya masalah persis sama seperti
-  // vendor_deposits di atas -- SEMUA `create table` di migration 0011/0014/0017 sengaja tidak
-  // dikasih FK ke mrp/raw_material_invoices (invoice_id/mrp_id/claim_key cuma teks bebas), jadi
-  // ikut lolos dari cascade delete mrp:
-  // - material_claim_history (arsip Riwayat Klaim Material, migration 0011)
-  // - material_claim_photos (payload foto bukti klaim, migration 0014)
-  // - invoice_payment_proofs (payload bukti transfer/bayar, migration 0017)
-  await del("material_claim_history", "id");
-  await del("material_claim_photos", "claim_key");
-  await del("invoice_payment_proofs", "invoice_id");
-  // Master data (bukan vendors_produksi) -- persis initialState lama (semua balik ke []).
-  await del("harga_maklon", "id");
-  await del("harga_kain", "id");
-  await del("harga_kain_pks", "id");
-  await del("entitas", "id");
-  await del("suppliers", "id");
+
+  // Cegah resi Warehouse lintas-MRP ikut rusak -- `warehouse_receipts.mrp_id` HANYA representatif
+  // (koli PERTAMA dalam grup, lihat WarehouseReceivableGroup.mrpId di lib/mrp/derive.ts), SATU resi
+  // bongkar Warehouse BISA mencakup koli dari LEBIH DARI SATU MRP sekaligus (vendor boleh gabung
+  // koli MRP mana pun ke 1 resi, lihat setKoliEkspedisiResiGroupAction, TIDAK ada syarat koli-koli
+  // itu harus 1 MRP yang sama). Di-scope lewat KEANGGOTAAN KOLI (delivery_kolis.mrp_id, BUKAN
+  // warehouse_receipts.mrp_id yang cuma representatif) supaya kedua arah (MRP representatif MAUPUN
+  // MRP non-representatif di resi gabungan yang sama) sama-sama terdeteksi & ditolak.
+  const { data: koliRowsForThisMrp, error: koliErr } = await db.from("delivery_kolis").select("id").eq("mrp_id", mrpId);
+  if (koliErr) throw new Error(`Gagal memvalidasi koli pengiriman sebelum reset MRP ${mrpId}: ${koliErr.message}`);
+  const koliIdsForThisMrp = (koliRowsForThisMrp ?? []).map((r) => r.id);
+  let warehouseReceiptIds: string[] = [];
+  if (koliIdsForThisMrp.length > 0) {
+    const { data: whKoliRows, error: whKoliErr } = await db.from("warehouse_receipt_kolis").select("warehouse_receipt_id").in("delivery_koli_id", koliIdsForThisMrp);
+    if (whKoliErr) throw new Error(`Gagal memvalidasi resi Warehouse sebelum reset MRP ${mrpId}: ${whKoliErr.message}`);
+    const candidateReceiptIds = Array.from(new Set((whKoliRows ?? []).map((r) => r.warehouse_receipt_id)));
+    if (candidateReceiptIds.length > 0) {
+      const { data: allKolisInCandidates, error: allKolisErr } = await db.from("warehouse_receipt_kolis").select("warehouse_receipt_id,delivery_koli_id").in("warehouse_receipt_id", candidateReceiptIds);
+      if (allKolisErr) throw new Error(`Gagal memvalidasi anggota resi Warehouse sebelum reset MRP ${mrpId}: ${allKolisErr.message}`);
+      const allKoliIds = Array.from(new Set((allKolisInCandidates ?? []).map((r) => r.delivery_koli_id)));
+      const { data: koliMrpRows, error: koliMrpErr } = await db.from("delivery_kolis").select("id,mrp_id").in("id", allKoliIds);
+      if (koliMrpErr) throw new Error(`Gagal memvalidasi MRP asal koli sebelum reset MRP ${mrpId}: ${koliMrpErr.message}`);
+      const mrpIdByKoli = new Map((koliMrpRows ?? []).map((r) => [r.id, r.mrp_id]));
+      const crossReceiptIds = new Set(
+        (allKolisInCandidates ?? []).filter((r) => mrpIdByKoli.get(r.delivery_koli_id) !== mrpId).map((r) => r.warehouse_receipt_id)
+      );
+      if (crossReceiptIds.size > 0) {
+        throw new Error(
+          `Tidak bisa reset MRP ${mrpId} -- resi Warehouse ${Array.from(crossReceiptIds).join(", ")} juga berisi koli dari MRP lain (dikirim gabungan). Selesaikan/pisahkan resi itu dulu secara manual sebelum reset MRP ini.`
+        );
+      }
+      warehouseReceiptIds = candidateReceiptIds;
+    }
+  }
+
+  // Tabel dengan kolom referensi TANPA FK constraint ke raw_material_invoices -- kumpulkan ID
+  // invoice-nya DI FASE VALIDASI (sebelum mrp dihapus, karena cascade bakal menghapus
+  // raw_material_invoices duluan begitu baris `mrp` dihapus di FASE HAPUS langkah terakhir).
+  const { data: rawInvoices, error: rawInvoicesErr } = await db.from("raw_material_invoices").select("id").eq("mrp_id", mrpId);
+  if (rawInvoicesErr) throw new Error(`Gagal memvalidasi invoice material sebelum reset MRP ${mrpId}: ${rawInvoicesErr.message}`);
+  const rawInvoiceIds = (rawInvoices ?? []).map((r) => r.id);
+
+  // ===== FASE HAPUS -- semua guard di atas sudah lolos, baru mulai ada operasi delete ===== //
+
+  if (affectedInvoiceIds.length > 0) {
+    const { error: delInvErr } = await db.from("vendor_invoices").delete().in("id", affectedInvoiceIds);
+    if (delInvErr) throw new Error(`Reset MRP gagal di tabel "vendor_invoices": ${delInvErr.message}`);
+  }
+
+  if (warehouseReceiptIds.length > 0) {
+    const { error: whItemsErr } = await db.from("warehouse_receipt_items").delete().in("warehouse_receipt_id", warehouseReceiptIds);
+    if (whItemsErr) throw new Error(`Reset MRP gagal di tabel "warehouse_receipt_items": ${whItemsErr.message}`);
+    const { error: whKolisErr } = await db.from("warehouse_receipt_kolis").delete().in("warehouse_receipt_id", warehouseReceiptIds);
+    if (whKolisErr) throw new Error(`Reset MRP gagal di tabel "warehouse_receipt_kolis": ${whKolisErr.message}`);
+    const { error: whReceiptsErr } = await db.from("warehouse_receipts").delete().in("id", warehouseReceiptIds);
+    if (whReceiptsErr) throw new Error(`Reset MRP gagal di tabel "warehouse_receipts": ${whReceiptsErr.message}`);
+  }
+
+  if (rawInvoiceIds.length > 0) {
+    const { error: photoErr } = await db.from("material_claim_photos").delete().in("invoice_id", rawInvoiceIds);
+    if (photoErr) throw new Error(`Reset MRP gagal di tabel "material_claim_photos": ${photoErr.message}`);
+    const { error: proofErr } = await db.from("invoice_payment_proofs").delete().in("invoice_id", rawInvoiceIds);
+    if (proofErr) throw new Error(`Reset MRP gagal di tabel "invoice_payment_proofs": ${proofErr.message}`);
+  }
+
+  const { error: claimHistErr } = await db.from("material_claim_history").delete().eq("mrp_id", mrpId);
+  if (claimHistErr) throw new Error(`Reset MRP gagal di tabel "material_claim_history": ${claimHistErr.message}`);
+
+  // Hapus baris mrp TERAKHIR -- cascade FK (ON DELETE CASCADE, lihat migration 0001 dkk) otomatis
+  // menghapus lengan_groups, aduan_pola_rows, material_rows, material_pos, maklon_pos,
+  // raw_material_invoices, maklon_invoices, production_batches, production_results,
+  // production_group_meta, delivery_kolis, dan vendor_invoice_lines milik MRP ini.
+  const { error: mrpErr } = await db.from("mrp").delete().eq("id", mrpId);
+  if (mrpErr) throw new Error(`Reset MRP gagal di tabel "mrp": ${mrpErr.message}`);
 }
 
 /** Item revisi 2026-09-13 (owner-reported, security review): snapshot penuh ini dulu dikirim APA

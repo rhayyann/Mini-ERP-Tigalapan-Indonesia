@@ -33,7 +33,7 @@ const LOCKED = { bg: "#EEF1F4", fg: "#94A3B0" };
 
 export default function VendorMaklonDashboardPage() {
   return (
-    <AppShell role="vendorMaklon" activeHref="/dashboard/vendor-maklon" breadcrumb={["Dashboard", "Ringkasan"]} title="Order & kapasitas saya" subtitle="3 PO aktif · 1 claim terbuka">
+    <AppShell role="vendorMaklon" activeHref="/dashboard/vendor-maklon" breadcrumb={["Dashboard", "Ringkasan"]} title="Order & kapasitas saya">
       <div className="grid gap-3.5" style={{ gridTemplateColumns: "1.3fr 1fr 1fr 1fr" }}>
         <div className="rounded-lg border border-border-subtle bg-surface-card p-[15px_17px]">
           <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-text-muted">Kapasitas bulan ini</div>

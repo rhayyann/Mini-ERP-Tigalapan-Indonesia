@@ -76,12 +76,6 @@ export default function ScmApprovalMrpPage() {
       title="Approval MRP"
       subtitle={`${pending.length} MRP dari PPIC menunggu keputusan Anda`}
     >
-      <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-        MRP yang diimpor PPIC masuk ke sini dulu sebelum bisa diproses Procurement. Klik baris untuk lihat rincian per warna (qty/roll/rib) dulu, lalu{" "}
-        <b>Setujui</b> untuk meneruskannya, atau <b>Tolak</b> (wajib isi alasan) supaya PPIC tahu perlu perbaikan apa sebelum impor ulang — tidak ada MRP
-        yang tembus ke Procurement tanpa lewat sini.
-      </div>
-
       <DataTable
         title="Menunggu approval"
         columns={pendingColumns}

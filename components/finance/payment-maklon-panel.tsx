@@ -414,11 +414,6 @@ export function PaymentMaklonPanel() {
 
   return (
     <>
-      <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-        Invoice vendor yang sudah disetujui Procurement (menu Invoice Vendor) muncul di sini untuk diproses pembayarannya. Sudah tidak ada retensi —
-        pembayaran langsung lunas penuh sekaligus. Klik baris untuk lihat rincian per warna/lengan dari kode transaksi tersebut.
-      </div>
-
       {actionResult && (
         <div className="flex items-center gap-2 rounded-lg border border-[#F0DFC2] bg-warning-bg px-5 py-[10px] font-sans text-xs font-medium text-warning-fg">
           {actionResult}

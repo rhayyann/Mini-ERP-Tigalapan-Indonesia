@@ -46,11 +46,6 @@ export function InvoiceVendorPanel({ vendorId }: { vendorId: string }) {
 
   return (
     <>
-      <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-        Invoice diajukan langsung dari halaman Pengiriman — tombol &quot;Submit Invoice&quot; muncul begitu satu grup resi (koli yang dikirim bareng
-        ke ekspedisi yang sama) sudah Delivery penuh. Daftar di bawah ini murni riwayat invoice yang sudah diajukan.
-      </div>
-
       <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
         <div className="border-b border-border-subtle px-4 py-3 font-sans text-[13px] font-semibold text-text-primary">Invoice yang telah dibuat</div>
         <div className="overflow-x-auto">

@@ -387,17 +387,6 @@ export default function MaterialClaimsPage() {
       </div>
 
       {tab === "AKTIF" && (
-        <>
-          <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-            Daftar ini otomatis berisi roll bahan yang diklaim vendor produksi — selisih berat KURANG dari toleransi (lebih ringan dari invoice), ATAU cacat
-            FISIK (shading/kotor/dll, ditemukan vendor saat menghamparkan roll untuk resting/cutting — lihat badge &quot;Fisik&quot;). Prosesnya 3 langkah: (1){" "}
-            <b>Terima Klaim</b> — tandai klaim ini sudah dilihat/ditindaklanjuti; (2) <b>Buat PV Pengganti</b> — pesan ulang bahan itu dengan rate & berat
-            terkini (selisih dari nilai PV lama otomatis tercatat sebagai saldo deposit di supplier itu, lihat Payment di Finance); (3){" "}
-            <b>Tandai Sudah Dikirim</b> — sekali klik setelah PV pengganti LUNAS, sekaligus mengirim PV pengganti itu ke Good Receive vendor (roll
-            penggantinya baru bisa diisi code roll di sana) dan menutup klaim ini. Klaim lama yang masih berstatus retur (diminta/dikirim/diterima) tetap
-            bisa diselesaikan lewat jalur lamanya.
-          </div>
-
           <DataTable
             title="Klaim selisih berat"
             columns={columns}
@@ -426,15 +415,9 @@ export default function MaterialClaimsPage() {
             ]}
             emptyText="Belum ada klaim selisih berat KURANG dari toleransi."
           />
-        </>
       )}
 
       {tab === "RIWAYAT" && (
-        <>
-          <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-5 py-3 font-sans text-[11.5px] leading-[1.5] text-info-fg">
-            Arsip klaim selisih berat yang SUDAH SELESAI — baik lewat timbang ulang yang hasilnya sesuai toleransi, atau ditutup manual oleh Procurement. Murni
-            pencatatan (read-only), tidak memengaruhi status produksi.
-          </div>
           <DataTable
             title="Riwayat klaim selisih berat"
             columns={historyColumns}
@@ -458,7 +441,6 @@ export default function MaterialClaimsPage() {
             ]}
             emptyText="Belum ada klaim yang selesai/diarsipkan."
           />
-        </>
       )}
 
       {replacingClaim && (

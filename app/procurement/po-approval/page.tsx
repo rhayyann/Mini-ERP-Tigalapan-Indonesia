@@ -350,14 +350,15 @@ export default function PoApprovalPage() {
         <div className="grid gap-3.5" style={{ gridTemplateColumns: "1.3fr 1fr" }}>
           <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
             <div className="border-b border-border-subtle px-4 py-3 font-sans text-[13px] font-semibold text-text-primary">Vendor produksi</div>
+            {/* Item 2026-09-13 (user-reported): kolom "%" (persentase kapasitas terpakai) dihapus
+               -- tidak relevan buat keputusan di halaman ini, cuma bikin tabel penuh. */}
             <div
               className="grid gap-x-2 border-b border-border-subtle bg-[#F7F9FB] px-4 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
-              style={{ gridTemplateColumns: "1fr 80px 80px 55px 130px" }}
+              style={{ gridTemplateColumns: "1fr 80px 80px 130px" }}
             >
               <span>Nama vendor</span>
               <span className="text-right">Qty plan</span>
               <span className="text-right">Kapasitas</span>
-              <span className="text-right">%</span>
               <span className="text-right">Est. biaya</span>
             </div>
             {vendorRows.map((v) => {
@@ -367,12 +368,11 @@ export default function PoApprovalPage() {
                   key={v.vendor}
                   onClick={() => setDrillVendor(v.vendor)}
                   className="grid w-full items-center gap-x-2 border-b border-[#F1F4F7] px-4 py-[11px] text-left font-sans text-xs text-[#31414F] last:border-b-0 hover:bg-[#F7F9FB]"
-                  style={{ gridTemplateColumns: "1fr 80px 80px 55px 130px" }}
+                  style={{ gridTemplateColumns: "1fr 80px 80px 130px" }}
                 >
                   <span className="font-medium">{v.name}</span>
                   <span className="text-right font-mono">{formatPcs(v.qty)}</span>
                   <span className="text-right font-mono">{formatPcs(v.baseCapacity)}</span>
-                  <span className="text-right font-mono">{v.capacityPct}%</span>
                   <span className="flex flex-col items-end gap-0.5 font-mono">
                     <span>{formatRupiah(v.fee)}</span>
                     <RateBadge explanation={maklonRateExplanation(hargaMaklon, v.vendor, aduanRows)} />

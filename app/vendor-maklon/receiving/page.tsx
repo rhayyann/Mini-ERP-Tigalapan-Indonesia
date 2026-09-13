@@ -160,7 +160,6 @@ function ReceivingContent({ vendorId }: { vendorId: string }) {
       activeHref="/vendor-maklon/receiving"
       breadcrumb={["Dashboard", "Good Receive"]}
       title="Good Receive — Terima Material"
-      subtitle="Tandai roll yang fisiknya sudah datang — timbang berat bersih & bandingkan dengan berat kotor dilakukan di halaman Cutting"
       roleOverride={VENDOR_PRODUKSI[vendorId]?.name ?? vendorId}
       entityOverride="Vendor Produksi"
     >

@@ -422,7 +422,6 @@ export default function FinanceLaporanHppPage() {
       activeHref="/finance/laporan-hpp"
       breadcrumb={["Dashboard", "Laporan HPP"]}
       title="Laporan HPP"
-      subtitle="Harga pokok penjualan per item — biaya produksi (maklon) + COGS bahan + ongkir (otomatis dari data delivery), dari invoice vendor yang sudah diajukan"
     >
       <div className="grid grid-cols-4 gap-3.5">
         <KpiCard label="Total FG" value={formatPcs(totalFg)} sub="pcs terhitung HPP" accent="blue" />

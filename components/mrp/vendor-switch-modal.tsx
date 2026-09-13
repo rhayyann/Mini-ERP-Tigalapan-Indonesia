@@ -25,6 +25,12 @@ export function VendorSwitchModal({
   // 1 dropdown (pilih vendor tujuan) + 1 tombol "Switch →" per baris, pola sama seperti
   // TransferMaterialModal.
   const [targetByRow, setTargetByRow] = useState<Record<string, string>>({});
+  // Item 2026-09-13 (user-reported, "ada element salign timpa"): header pakai gridTemplateColumns
+  // beda dari body (200px vs 130px kolom terakhir) -- header & body jadi TIDAK SEJAJAR (1fr di
+  // masing-masing dihitung dari total lebar yang beda), dan 130px terlalu sempit untuk dropdown +
+  // tombol "Switch →" sekaligus (butuh ~190px minimum) sehingga kontennya meluber/tumpang tindih.
+  // Sekarang SATU konstanta dipakai di header maupun body, dilebarkan supaya muat tanpa mepet.
+  const gridCols = "1fr 1fr 90px 90px 210px";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B131B]/45 p-4">
       <div className="w-full max-w-[780px] overflow-hidden rounded-[9px] bg-surface-card shadow-[0_12px_32px_rgba(11,19,27,.28)]">
@@ -37,26 +43,25 @@ export function VendorSwitchModal({
             Tutup ✕
           </Button>
         </div>
-        <div
-          className="grid border-b border-border-subtle bg-[#F7F9FB] px-5 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted"
-          style={{ gridTemplateColumns: "1fr 1fr 90px 90px 200px" }}
-        >
-          <span>Kategori / warna</span>
-          <span>Panjang lengan</span>
-          <span className="text-right">Roll</span>
-          <span className="text-right">Qty</span>
-          <span />
+        {/* Item 2026-09-13 (user-reported): semua isi kolom (bukan cuma header) dipusatkan
+           (text-center), bukan rata kiri/kanan seperti sebelumnya. */}
+        <div className="grid border-b border-border-subtle bg-[#F7F9FB] px-5 py-[9px] font-sans text-[10.5px] font-medium uppercase tracking-wider text-text-muted" style={{ gridTemplateColumns: gridCols }}>
+          <span className="text-center">Kategori / warna</span>
+          <span className="text-center">Panjang lengan</span>
+          <span className="text-center">Roll</span>
+          <span className="text-center">Qty</span>
+          <span className="text-center">Aksi</span>
         </div>
         <div className="max-h-[360px] overflow-y-auto">
           {rows.map((r) => (
-            <div key={r.id} className="grid items-center border-b border-[#F1F4F7] px-5 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0" style={{ gridTemplateColumns: "1fr 1fr 90px 90px 130px" }}>
-              <span>
+            <div key={r.id} className="grid items-center border-b border-[#F1F4F7] px-5 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0" style={{ gridTemplateColumns: gridCols }}>
+              <span className="text-center">
                 {r.warna} <span className="font-mono text-text-muted">· {r.kode}</span>
               </span>
-              <span>{r.lengan}</span>
-              <span className="text-right font-mono">{r.qtyRoll}</span>
-              <span className="text-right font-mono">{formatPcs(r.qty)}</span>
-              <span className="flex justify-end gap-1.5">
+              <span className="text-center">{r.lengan}</span>
+              <span className="text-center font-mono">{r.qtyRoll}</span>
+              <span className="text-center font-mono">{formatPcs(r.qty)}</span>
+              <span className="flex items-center justify-center gap-1.5">
                 <select
                   value={targetByRow[r.id] ?? otherVendors[0]?.id ?? ""}
                   onChange={(e) => setTargetByRow((prev) => ({ ...prev, [r.id]: e.target.value }))}

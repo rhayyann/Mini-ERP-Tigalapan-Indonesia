@@ -110,10 +110,6 @@ export function HargaKainPksPanel() {
 
   return (
     <>
-      <div className="rounded-lg border border-[#CFE0EF] bg-info-bg px-4 py-2.5 font-sans text-[11px] leading-[1.5] text-info-fg">
-        Harga bertingkat berdasarkan tonase — kalau order tidak mencapai tonase minimum manapun, pakai harga flat di tab{" "}
-        <b>Harga Kain / Material</b> sebagai fallback. Aturan ini belum otomatis dihitung sistem, tabel ini murni referensi.
-      </div>
       <DataTable
         title="Harga Kain PKS (bertingkat per tonase)"
         subtitle={`${rows.length} baris. Belum dipakai otomatis di kalkulasi PO material.`}

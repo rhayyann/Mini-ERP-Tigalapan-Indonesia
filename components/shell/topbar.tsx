@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { ResetDataButton } from "@/components/shell/reset-data-button";
 import type { Notification } from "@/lib/mrp/types";
 
 function formatNotifTime(time: string) {
@@ -115,7 +114,6 @@ export function Topbar({
           </button>
           {profileOpen && (
             <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-[190px] overflow-hidden rounded-lg border border-border-subtle bg-white py-1 shadow-lg">
-              <ResetDataButton variant="menu-item" />
               {onLogout && (
                 <button
                   onClick={onLogout}

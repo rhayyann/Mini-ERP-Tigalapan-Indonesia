@@ -414,10 +414,10 @@ type FlowActions = {
    *  (dipakai untuk membersihkan baris "yatim" hasil test/reset dari sebelum resetAllAction ikut
    *  menghapus tabel ini). */
   deleteMaterialClaimHistory: (id: string) => Promise<void>;
-  /** Dulu menghapus semua data LOKAL (localStorage browser sendiri) + reload -- sekarang benar2
-   *  menghapus data BERSAMA di Supabase (semua modul & vendor). Confirm dialog WAJIB ditampilkan
-   *  di caller SEBELUM memanggil ini -- lihat components/shell/reset-data-button.tsx. */
-  resetAll: () => Promise<void>;
+  /** Hapus semua data terkait SATU MRP saja (bukan seluruh data bisnis) -- lihat resetMrpAction.
+   *  Ganti total fitur "Reset data" lama (resetAll, dihapus). Confirm dialog WAJIB ditampilkan di
+   *  caller SEBELUM memanggil ini -- lihat app/mrp/ppic/page.tsx. */
+  resetMrp: (mrpId: string) => Promise<void>;
 };
 
 const emptyState: FlowState = {
@@ -482,7 +482,7 @@ function notYetMigrated(name: string) {
 // menunggu terlihat" -- semua action tetap benar-benar menunggu tulisannya selesai (tidak berubah
 // jadi optimistic), cuma penundaan itu tidak lagi ditampilkan ke user.
 const BUSY_TRACKED_ACTIONS = new Set<string>([
-  "resetAll",
+  "resetMrp",
   "approvePpicMrp",
   "rejectPpicMrp",
   "sendPoToFinance",
@@ -1672,8 +1672,8 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     }
     backgroundRefresh();
   },
-  resetAll: async () => {
-    await actions.resetAllAction();
+  resetMrp: async (mrpId: string) => {
+    await actions.resetMrpAction(mrpId);
     backgroundRefresh();
   },
   });
