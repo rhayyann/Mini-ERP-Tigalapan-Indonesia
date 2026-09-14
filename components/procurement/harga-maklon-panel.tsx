@@ -126,6 +126,7 @@ export function HargaMaklonPanel() {
       keyOf={(r) => r.id}
       firstColumnLabel="No."
       firstColumnRender={(r) => <span className="font-mono text-[11px] text-text-muted">{rows.indexOf(r) + 1}</span>}
+      search={{ placeholder: "Cari nama/kode vendor…", getText: (r) => `${r.namaVendor} ${r.kodeVendor}` }}
       filterDefs={[
         { label: "Kode Vendor", options: Array.from(new Set(rows.map((r) => r.kodeVendor).filter(Boolean))), test: (r, v) => r.kodeVendor === v },
         { label: "Tipe Lengan", options: Array.from(new Set(rows.map((r) => r.tipeLengan).filter(Boolean))), test: (r, v) => r.tipeLengan === v },

@@ -51,6 +51,7 @@ export function KerahMansetSettingsPanel() {
       columns={columns}
       rows={rows}
       keyOf={(r) => r.kind}
+      search={{ placeholder: "Cari item…", getText: (r) => (r.kind === "KERAH" ? "Kerah" : "Manset") }}
       firstColumnLabel="No."
       firstColumnRender={(r) => <span className="font-mono text-[11px] text-text-muted">{rows.indexOf(r) + 1}</span>}
       emptyText="Data belum tersedia."

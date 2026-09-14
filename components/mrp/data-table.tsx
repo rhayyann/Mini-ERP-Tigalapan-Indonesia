@@ -17,6 +17,18 @@ export type FilterDef<T> = {
   test: (row: T, value: string) => boolean;
 };
 
+/** Item revisi 2026-09-15 (owner: "tambahkan searchbar di semua fitur master, langsung tampil
+ *  seiring diketik, tidak perlu Enter") — kotak cari bebas teks, BEDA dari `filterDefs` (dropdown
+ *  exact-match per kolom) -- ini substring match (case-insensitive) lintas beberapa kolom
+ *  sekaligus lewat `getText`, filter LANGSUNG tiap keystroke (React onChange biasa, TIDAK ada
+ *  submit/Enter/debounce -- `rows` yang dipakai di app ini semuanya sudah di memori client,
+ *  bukan query server, jadi filter di setiap ketikan tidak mahal). Opsional -- pemakai DataTable
+ *  yang tidak mengisi prop ini TIDAK berubah perilaku sama sekali. */
+export type SearchDef<T> = {
+  placeholder?: string;
+  getText: (row: T) => string;
+};
+
 export function DataTable<T>({
   title,
   subtitle,
@@ -25,6 +37,7 @@ export function DataTable<T>({
   rows,
   keyOf,
   filterDefs,
+  search,
   emptyText = "Tidak ada data.",
   firstColumnLabel,
   firstColumnRender,
@@ -41,6 +54,7 @@ export function DataTable<T>({
   rows: T[];
   keyOf: (row: T) => string;
   filterDefs?: FilterDef<T>[];
+  search?: SearchDef<T>;
   emptyText?: string;
   firstColumnLabel: string;
   firstColumnRender: (row: T) => ReactNode;
@@ -68,6 +82,7 @@ export function DataTable<T>({
   const [visible, setVisible] = useState<Set<string>>(new Set(columns.filter((c) => c.default).map((c) => c.key)));
   const [colOpen, setColOpen] = useState(false);
   const [filterValues, setFilterValues] = useState<string[]>((filterDefs ?? []).map(() => ""));
+  const [searchQuery, setSearchQuery] = useState("");
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
   const prevCollapseSignal = useRef(collapseSignal);
   useEffect(() => {
@@ -95,7 +110,12 @@ export function DataTable<T>({
     });
   }
 
-  const filtered = rows.filter((r) => (filterDefs ?? []).every((f, i) => !filterValues[i] || f.test(r, filterValues[i])));
+  const trimmedQuery = searchQuery.trim().toLowerCase();
+  const filtered = rows.filter(
+    (r) =>
+      (filterDefs ?? []).every((f, i) => !filterValues[i] || f.test(r, filterValues[i])) &&
+      (!search || !trimmedQuery || search.getText(r).toLowerCase().includes(trimmedQuery))
+  );
   const visibleColumns = columns.filter((c) => visible.has(c.key));
 
   return (
@@ -125,9 +145,17 @@ export function DataTable<T>({
         </div>
       </div>
 
-      {filterDefs && filterDefs.length > 0 && (
+      {((filterDefs && filterDefs.length > 0) || search) && (
         <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle bg-[#FAFBFC] px-5 py-2.5">
-          {filterDefs.map((f, i) => (
+          {search && (
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={search.placeholder ?? "Cari…"}
+              className="w-[220px] rounded-md border border-border-subtle bg-white px-2.5 py-[6px] font-sans text-[11.5px] font-medium text-[#31414F]"
+            />
+          )}
+          {filterDefs?.map((f, i) => (
             <select
               key={f.label}
               value={filterValues[i]}

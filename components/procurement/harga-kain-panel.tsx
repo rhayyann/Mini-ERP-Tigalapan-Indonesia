@@ -86,6 +86,7 @@ export function HargaKainPanel() {
       keyOf={(r) => r.id}
       firstColumnLabel="No."
       firstColumnRender={(r) => <span className="font-mono text-[11px] text-text-muted">{rows.indexOf(r) + 1}</span>}
+      search={{ placeholder: "Cari warna/supplier…", getText: (r) => `${r.warna} ${r.namaSupplier} ${r.kodeSupplier} ${r.kategori}` }}
       filterDefs={[
         { label: "Kode Supplier", options: Array.from(new Set(rows.map((r) => r.kodeSupplier).filter(Boolean))), test: (r, v) => r.kodeSupplier === v },
         { label: "Kategori", options: Array.from(new Set(rows.map((r) => r.kategori).filter(Boolean))), test: (r, v) => r.kategori === v },
