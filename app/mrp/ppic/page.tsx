@@ -43,6 +43,7 @@ export default function MrpListPage() {
   const vendorInvoices = useMrpStore((s) => s.vendorInvoices);
   const importMrp = useMrpStore((s) => s.importMrp);
   const resetMrp = useMrpStore((s) => s.resetMrp);
+  const kerahMansetSettings = useMrpStore((s) => s.kerahMansetSettings);
 
   // Id MRP yang sedang diproses hapus -- dipakai untuk disable tombol supaya tidak bisa diklik
   // dobel selagi request jalan.
@@ -134,7 +135,7 @@ export default function MrpListPage() {
 
   return (
     <AppShell role="ppic" activeHref="/mrp/ppic" breadcrumb={["Dashboard", "Material Requirement Planning"]} title="Material Requirement Planning">
-      <ImportDropzone onConfirm={handleConfirm} />
+      <ImportDropzone onConfirm={handleConfirm} kerahMansetSettings={kerahMansetSettings} />
 
       <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
         <div className="flex items-center gap-2 border-b border-border-subtle px-5 py-3.5">

@@ -53,7 +53,10 @@ function toLengan(raw: string): Lengan {
   return upper.startsWith("PANJANG") ? "PANJANG" : "PENDEK";
 }
 
-export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
+export async function parseMrpImportFile(
+  file: File,
+  kerahMansetSettings?: { kind: "KERAH" | "MANSET"; kgPerPcs: number; hargaPerKg: number }[]
+): Promise<ParsedMrpImport> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
 
@@ -137,6 +140,12 @@ export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
     }
   }
 
+  // Master Data "Kerah/Manset" (migration 0036) -- faktor konversi qty PCS -> kg, GLOBAL untuk
+  // semua warna WANGKI MYNO. Fallback 0.02/0.03 (SAMA seperti seed default migration) kalau
+  // parameter tidak diisi -- supaya pemanggil lain/test lama yang belum di-update tidak patah.
+  const kerahKgPerPcs = kerahMansetSettings?.find((s) => s.kind === "KERAH")?.kgPerPcs ?? 0.02;
+  const mansetKgPerPcs = kerahMansetSettings?.find((s) => s.kind === "MANSET")?.kgPerPcs ?? 0.03;
+
   const lenganGroups = Array.from(groupMap.values()).map((g) => {
     if (!g.totalQty) g.totalQty = g.sizes.reduce((a, s) => a + s.qty, 0);
     if (!g.ribKg) g.ribKg = Math.round(((g.totalQty * 6.5) / 1000) * 1000) / 1000;
@@ -147,6 +156,13 @@ export async function parseMrpImportFile(file: File): Promise<ParsedMrpImport> {
     if (g.totalQty > 0 && !g.vendorDefault) {
       throw new Error(`Kolom VENDOR untuk ${g.warna} · ${g.lengan} (qty ${g.totalQty}) kosong/"-" di semua barisnya — isi salah satu baris dengan kode/nama vendor yang valid.`);
     }
+    // Angka `g.kerahKg`/`g.mansetKg` di titik ini MASIH mentah dari override Excel (qty PCS, BUKAN
+    // kg sungguhan -- lihat catatan panjang di "Current state" spec) -- konversi ke kg sungguhan DI
+    // SINI, SEKALI, sebelum disimpan/ditampilkan di preview manapun. `if (g.kerahKg)` bukan
+    // `if (g.kerahKg !== undefined)` -- SENGAJA, konsisten dengan pola `if (kerahOverride)`/
+    // `if (ribOverride)` di atas, 0 tetap 0 tidak perlu dikonversi.
+    if (g.kerahKg) g.kerahKg = Math.round(g.kerahKg * kerahKgPerPcs * 1000) / 1000;
+    if (g.mansetKg) g.mansetKg = Math.round(g.mansetKg * mansetKgPerPcs * 1000) / 1000;
     return g;
   });
   // Item 2026-09-12 (user-reported, DIREVERT 2026-09-12): grup qty 0 (placeholder murni dari

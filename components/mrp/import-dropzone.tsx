@@ -5,7 +5,16 @@ import { parseMrpImportFile, type ParsedMrpImport } from "@/lib/mrp/parseImport"
 import { formatPcs } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
 
-export function ImportDropzone({ onConfirm }: { onConfirm: (parsed: ParsedMrpImport, customId?: string) => void }) {
+export function ImportDropzone({
+  onConfirm,
+  kerahMansetSettings,
+}: {
+  onConfirm: (parsed: ParsedMrpImport, customId?: string) => void;
+  // Master Data "Kerah/Manset" (migration 0036) -- di-thread dari app/mrp/ppic/page.tsx (yang
+  // punya akses useMrpStore) supaya konversi qty pcs -> kg SUDAH diterapkan di preview parse ini
+  // (bukan cuma nanti pas commit), konsisten dengan data yang benar-benar tersimpan.
+  kerahMansetSettings?: { kind: "KERAH" | "MANSET"; kgPerPcs: number; hargaPerKg: number }[];
+}) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [parsed, setParsed] = useState<ParsedMrpImport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +30,7 @@ export function ImportDropzone({ onConfirm }: { onConfirm: (parsed: ParsedMrpImp
     setSuccess(null);
     setFileName(file.name);
     try {
-      const result = await parseMrpImportFile(file);
+      const result = await parseMrpImportFile(file, kerahMansetSettings);
       setParsed(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Gagal membaca file.");

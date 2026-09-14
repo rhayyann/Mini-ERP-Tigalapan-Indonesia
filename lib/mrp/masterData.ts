@@ -81,6 +81,14 @@ export type ItemSellingPriceRow = {
   price: number;
 };
 
+/** Master Data "Kerah/Manset" (konversi qty PCS -> kg + harga/kg, GLOBAL untuk semua warna kategori
+ *  WANGKI MYNO, migration 0036) -- SELALU PERSIS 2 baris (`kind` "KERAH"/"MANSET"), tidak ada
+ *  add/delete. Dipakai LIVE oleh `parseMrpImportFile` (lib/mrp/parseImport.ts) untuk mengonversi
+ *  angka qty pcs mentah dari kolom Excel KERAH/MANSET jadi kg sungguhan, dan oleh PO Approval
+ *  (app/procurement/po-approval/page.tsx) untuk estimasi nominal Rp (PURELY DISPLAY, tidak
+ *  mengubah nilai PO Bahan aktual). */
+export type KerahMansetSettingRow = { kind: "KERAH" | "MANSET"; kgPerPcs: number; hargaPerKg: number };
+
 /** Revisi 2026-09-06: data ASLI vendor produksi dari spreadsheet Procurement (kategori & kapasitas
  *  produksi PER MINGGU) -- sumbernya kolom `kategori`/`base_capacity` di tabel `vendors_produksi`
  *  (lihat migration 0019_vendor_kapasitas_asli.sql). Nama sengaja BEDA dari `VendorProduksiRow` di

@@ -30,7 +30,7 @@ import type {
   WarehouseReceipt,
   WarehouseReceiptItem,
 } from "../types";
-import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, ItemSellingPriceRow, SupplierRow, VendorProduksiMasterRow } from "../masterData";
+import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, ItemSellingPriceRow, KerahMansetSettingRow, SupplierRow, VendorProduksiMasterRow } from "../masterData";
 import type { FlowState, MrpDates, MrpDetail } from "../store";
 
 /** Ambil SEMUA data flow dari Supabase dan bentuk ulang jadi `FlowState` -- bentuk persis yang
@@ -90,7 +90,8 @@ type RawTables = Record<
   | "supplierRows"
   | "vendorProduksiMasterRows"
   | "ekspedisiRateRows"
-  | "itemSellingPriceRows",
+  | "itemSellingPriceRows"
+  | "kerahMansetSettingRows",
   TableResult
 >;
 
@@ -143,6 +144,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     vendorProduksiMasterRows,
     ekspedisiRateRows,
     itemSellingPriceRows,
+    kerahMansetSettingRows,
   ] = await Promise.all([
     // Fix "list melompat" (lihat migration 0021_stable_snapshot_order.sql untuk penjelasan akar
     // masalahnya) -- `select *` TANPA `.order()` tidak dijamin urutannya oleh Postgres, dan bisa
@@ -198,6 +200,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     db.from("vendors_produksi").select("id,name,kategori,base_capacity").order("id"),
     db.from("ekspedisi_rates").select("*").order("id"),
     db.from("item_selling_prices").select("*").order("id"),
+    db.from("kerah_manset_settings").select("*").order("kind"),
   ]);
   return {
     mrpRows,
@@ -243,6 +246,7 @@ async function fetchFlowRowsLegacy(db: SupabaseClient): Promise<RawTables> {
     vendorProduksiMasterRows,
     ekspedisiRateRows,
     itemSellingPriceRows,
+    kerahMansetSettingRows,
   };
 }
 
@@ -301,6 +305,7 @@ async function fetchFlowRowsFast(db: SupabaseClient): Promise<RawTables> {
     vendorProduksiMasterRows: wrap("vendors_produksi"),
     ekspedisiRateRows: wrap("ekspedisi_rates"),
     itemSellingPriceRows: wrap("item_selling_prices"),
+    kerahMansetSettingRows: wrap("kerah_manset_settings"),
   };
 }
 
@@ -362,6 +367,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     vendorProduksiMasterRows,
     ekspedisiRateRows,
     itemSellingPriceRows,
+    kerahMansetSettingRows,
   } = await fetchFlowRows(db);
 
   for (const [name, res] of Object.entries({
@@ -385,6 +391,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     supplierRows,
     ekspedisiRateRows,
     itemSellingPriceRows,
+    kerahMansetSettingRows,
   })) {
     if (res.error) throw new Error(`getFlowSnapshot: gagal fetch ${name}: ${res.error.message}`);
   }
@@ -914,6 +921,13 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     size: r.size,
     price: Number(r.price),
   }));
+  // Master Data "Kerah/Manset" (konversi pcs->kg + harga/kg, migration 0036) -- `kg_per_pcs`/
+  // `harga_per_kg` numeric Postgres, `Number(...)` wajib sama seperti kolom numeric lain di file ini.
+  const kerahMansetSettings: KerahMansetSettingRow[] = (kerahMansetSettingRows.data ?? []).map((r) => ({
+    kind: r.kind as "KERAH" | "MANSET",
+    kgPerPcs: Number(r.kg_per_pcs),
+    hargaPerKg: Number(r.harga_per_kg),
+  }));
   // ---- Vendor produksi (kategori & kapasitas mingguan asli, lihat migration 0019) ----
   const vendorProduksiList: VendorProduksiMasterRow[] = (vendorProduksiMasterRows.data ?? []).map((r) => ({
     id: r.id,
@@ -954,6 +968,7 @@ export async function getFlowSnapshot(): Promise<FlowState> {
     supplierList,
     ekspedisiRates,
     itemSellingPrices,
+    kerahMansetSettings,
     hydrated: true,
     // `busy` bukan bagian data Supabase -- ini murni flag client-side (lihat withBusyTracking di
     // lib/mrp/store.ts). Nilainya di sini tidak penting: hydrate()/refresh() selalu men-spread

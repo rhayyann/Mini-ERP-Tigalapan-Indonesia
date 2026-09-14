@@ -4053,7 +4053,7 @@ export async function getFlowSnapshotAction() {
 // dipakai halaman Master Data (add/update/delete satu baris) & tombol "Import dari Google
 // Sheets" (replaceX -- ganti SELURUH tabel, bukan merge, persis perilaku lama).
 // =========================================================================
-import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, SupplierRow } from "./masterData";
+import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, KerahMansetSettingRow, SupplierRow } from "./masterData";
 
 async function requireMasterDataRole() {
   const session = await requireSession();
@@ -4255,5 +4255,16 @@ export async function updateEkspedisiRateAction(id: string, patch: Partial<Ekspe
 export async function deleteEkspedisiRateAction(id: string): Promise<void> {
   await requireMasterDataRole();
   const { error } = await supabaseServer().from("ekspedisi_rates").delete().eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
+// Master Data "Kerah/Manset" (konversi pcs->kg + harga/kg, GLOBAL, migration 0036) -- SELALU
+// PERSIS 2 baris (KERAH & MANSET), tidak ada add/delete, cuma update.
+export async function updateKerahMansetSettingAction(kind: "KERAH" | "MANSET", patch: Partial<Pick<KerahMansetSettingRow, "kgPerPcs" | "hargaPerKg">>): Promise<void> {
+  await requireMasterDataRole();
+  const p: Record<string, unknown> = {};
+  if (patch.kgPerPcs !== undefined) p.kg_per_pcs = patch.kgPerPcs;
+  if (patch.hargaPerKg !== undefined) p.harga_per_kg = patch.hargaPerKg;
+  const { error } = await supabaseServer().from("kerah_manset_settings").update(p).eq("kind", kind);
   if (error) throw new Error(error.message);
 }

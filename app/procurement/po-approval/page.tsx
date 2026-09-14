@@ -69,6 +69,9 @@ export default function PoApprovalPage() {
   const hargaMaklon = useMrpStore((s) => s.hargaMaklon);
   const supplierList = useMrpStore((s) => s.supplierList);
   const vendorProduksiList = useMrpStore((s) => s.vendorProduksiList);
+  const kerahMansetSettings = useMrpStore((s) => s.kerahMansetSettings);
+  const kerahHargaPerKg = kerahMansetSettings.find((s) => s.kind === "KERAH")?.hargaPerKg ?? 0;
+  const mansetHargaPerKg = kerahMansetSettings.find((s) => s.kind === "MANSET")?.hargaPerKg ?? 0;
 
   const [selectedId, setSelectedId] = useState<string>("");
   const [drillVendor, setDrillVendor] = useState<string | null>(null);
@@ -389,7 +392,9 @@ export default function PoApprovalPage() {
               // Item BAGIAN 2 (Req 20) — kolom Kerah/Manset kg cuma ditampilkan kalau ADA material
               // row MRP ini yang benar-benar punya nilai (kategori "WANGKI MYNO").
               const showKerahManset = materialGroups.some((g) => g.totalKerahKg > 0 || g.totalMansetKg > 0);
-              const cols = showKerahManset ? "1fr 50px 60px 60px 60px 1fr" : "1fr 50px 60px 1fr";
+              // + 2 kolom "Est. Kerah (Rp)"/"Est. Manset (Rp)" (PURELY DISPLAY, tidak mengubah nilai
+              // PO Bahan aktual) -- gated kondisi SAMA seperti kolom kg (showKerahManset).
+              const cols = showKerahManset ? "1fr 50px 60px 60px 60px 90px 90px 1fr" : "1fr 50px 60px 1fr";
               return (
                 <>
                   <div
@@ -401,6 +406,8 @@ export default function PoApprovalPage() {
                     <span className="text-right">Rib kg</span>
                     {showKerahManset && <span className="text-right">Kerah kg</span>}
                     {showKerahManset && <span className="text-right">Manset kg</span>}
+                    {showKerahManset && <span className="text-right">Est. Kerah (Rp)</span>}
+                    {showKerahManset && <span className="text-right">Est. Manset (Rp)</span>}
                     <span>Vendor material</span>
                   </div>
                   {materialGroups.map((g) => {
@@ -409,13 +416,40 @@ export default function PoApprovalPage() {
                     // supplier+warna yang harganya tidak ada sama sekali (yang berujung PO jatuh ke
                     // fallback "Estimasi" pakai angka flat jauh di bawah harga pasar).
                     const optionsForWarna = materialSupplierNamesForWarna(hargaKain, supplierList, g.warna);
+                    // Fix (review 2026-09-14): MRP WANGKI MYNO yang di-import SEBELUM fitur konversi
+                    // pcs->kg ini (lihat parseImport.ts) masih punya kerah_kg/manset_kg berisi ANGKA
+                    // PCS MENTAH (bukan kg -- data lama SENGAJA tidak dimigrasi, lihat spec Non-goals).
+                    // Tanpa penanda apa pun, itu kelihatan "sama sahnya" dengan kg yang sudah benar --
+                    // heuristik murah di sini: kg per roll yang MASUK AKAL untuk Kerah/Manset ada di
+                    // kisaran ~117 pcs/roll x 0.02-0.03 kg/pcs = 2-4 kg/roll (lihat rollEstimate di
+                    // parseImport.ts) -- kalau lebih dari 10x lipat itu, kemungkinan besar angkanya
+                    // masih pcs mentah (bukan bug perhitungan baru, cuma data historis yang belum
+                    // pernah lewat konversi ini). Estimasi Rp di kolom sebelah jadi ikut TIDAK MASUK
+                    // AKAL kalau ini terjadi -- badge ini murni sinyal visual, TIDAK mengubah angka
+                    // apa pun, TIDAK memblokir apa pun.
+                    const kerahLooksUnconverted = g.totalRoll > 0 && g.totalKerahKg / g.totalRoll > 10;
+                    const mansetLooksUnconverted = g.totalRoll > 0 && g.totalMansetKg / g.totalRoll > 10;
                     return (
                       <div key={g.warna} className="grid gap-x-3 items-center border-b border-[#F1F4F7] px-4 py-[11px] font-sans text-xs text-[#31414F] last:border-b-0" style={{ gridTemplateColumns: cols }}>
                         <span>{g.warna}</span>
                         <span className="text-right font-mono">{g.totalRoll}</span>
                         <span className="text-right font-mono">{g.totalRibKg.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>
-                        {showKerahManset && <span className="text-right font-mono">{g.totalKerahKg.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>}
-                        {showKerahManset && <span className="text-right font-mono">{g.totalMansetKg.toLocaleString("id-ID", { maximumFractionDigits: 2 })}</span>}
+                        {showKerahManset && (
+                          <span className="text-right font-mono" title={kerahLooksUnconverted ? "Angka ini tampak jauh di luar wajar (kg per roll terlalu besar) -- kemungkinan MRP lama yang di-import sebelum Master Data Kerah/Manset ada, belum pernah terkonversi ke kg sungguhan." : undefined}>
+                            {kerahLooksUnconverted && <span className="text-warning-fg">⚠ </span>}
+                            {g.totalKerahKg.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                          </span>
+                        )}
+                        {showKerahManset && (
+                          <span className="text-right font-mono" title={mansetLooksUnconverted ? "Angka ini tampak jauh di luar wajar (kg per roll terlalu besar) -- kemungkinan MRP lama yang di-import sebelum Master Data Kerah/Manset ada, belum pernah terkonversi ke kg sungguhan." : undefined}>
+                            {mansetLooksUnconverted && <span className="text-warning-fg">⚠ </span>}
+                            {g.totalMansetKg.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                          </span>
+                        )}
+                        {/* Estimasi Rp (kg terkonversi x harga/kg dari Master Data Kerah/Manset) -- PURELY
+                            DISPLAY, tidak mengubah total_biaya/nilai PO Bahan aktual manapun. */}
+                        {showKerahManset && <span className="text-right font-mono">{formatRupiah(g.totalKerahKg * kerahHargaPerKg)}</span>}
+                        {showKerahManset && <span className="text-right font-mono">{formatRupiah(g.totalMansetKg * mansetHargaPerKg)}</span>}
                         <select
                           value={g.supplier ?? ""}
                           onChange={(e) => {
@@ -435,7 +469,7 @@ export default function PoApprovalPage() {
                           ))}
                         </select>
                         {optionsForWarna.length === 0 && (
-                          <div className={(showKerahManset ? "col-span-6" : "col-span-4") + " -mt-1.5 pb-0.5 font-sans text-[10.5px] font-medium text-warning-fg"}>
+                          <div className={(showKerahManset ? "col-span-8" : "col-span-4") + " -mt-1.5 pb-0.5 font-sans text-[10.5px] font-medium text-warning-fg"}>
                             ⚠ Belum ada supplier dengan harga untuk warna {g.warna} di Master Data Harga Kain.
                           </div>
                         )}

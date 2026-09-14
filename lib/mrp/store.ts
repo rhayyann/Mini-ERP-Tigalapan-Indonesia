@@ -26,7 +26,7 @@ import type {
   WarehouseReceipt,
 } from "./types";
 import type { ParsedMrpImport } from "./parseImport";
-import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, ItemSellingPriceRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
+import type { EkspedisiRateRow, EntitasRow, HargaKainPksRow, HargaKainRow, HargaMaklonRow, ItemSellingPriceRow, KerahMansetSettingRow, SupplierRow, VendorProduksiMasterRow } from "./masterData";
 import { localDateString } from "./derive";
 import * as rawActions from "./actions";
 
@@ -219,6 +219,11 @@ export type FlowState = {
    *  (lihat ItemSellingPriceRow di masterData.ts, migration 0035) -- dipakai untuk menghitung kolom
    *  "% HPP" di Laporan HPP (Finance). READ-ONLY, tidak ada action CRUD untuk field ini. */
   itemSellingPrices: ItemSellingPriceRow[];
+  /** Master Data "Kerah/Manset" (konversi qty PCS -> kg + harga/kg, GLOBAL, migration 0036) --
+   *  SELALU PERSIS 2 baris (KERAH & MANSET), tidak ada add/delete. DIPAKAI LIVE oleh
+   *  `parseMrpImportFile` (konversi qty pcs mentah dari kolom Excel KERAH/MANSET jadi kg sungguhan
+   *  saat import MRP kategori WANGKI MYNO) & PO Approval (estimasi nominal Rp, PURELY DISPLAY). */
+  kerahMansetSettings: KerahMansetSettingRow[];
   /** Kategori & kapasitas produksi PER MINGGU asli tiap vendor produksi (dari spreadsheet
    *  Procurement, lihat migration 0019_vendor_kapasitas_asli.sql) -- sumber utama untuk
    *  `vendorProduksiRows` (derive.ts) & kolom "Qty vs Kapasitas" di portal vendor
@@ -350,6 +355,7 @@ type FlowActions = {
   addEkspedisiRateRow: () => Promise<void>;
   updateEkspedisiRateRow: (id: string, patch: Partial<EkspedisiRateRow>) => Promise<void>;
   deleteEkspedisiRateRow: (id: string) => Promise<void>;
+  updateKerahMansetSetting: (kind: "KERAH" | "MANSET", patch: Partial<Pick<KerahMansetSettingRow, "kgPerPcs" | "hargaPerKg">>) => Promise<void>;
 
   setMaterialPoEntity: (poId: string, entitas: string) => Promise<void>;
   setMaterialPoColorEntity: (poId: string, warna: string, lengan: Lengan, entitas: string) => Promise<void>;
@@ -468,6 +474,7 @@ const emptyState: FlowState = {
   supplierList: [],
   ekspedisiRates: [],
   itemSellingPrices: [],
+  kerahMansetSettings: [],
   vendorProduksiList: [],
   hydrated: false,
   busy: false,
@@ -1287,6 +1294,18 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     } catch (err) {
       set({ ekspedisiRates: previous });
       window.alert("Gagal menghapus baris ekspedisi -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    }
+    backgroundRefresh();
+  },
+  updateKerahMansetSetting: async (kind, patch) => {
+    const previous = get().kerahMansetSettings;
+    set({ kerahMansetSettings: previous.map((r) => (r.kind === kind ? { ...r, ...patch } : r)) });
+    try {
+      await actions.updateKerahMansetSettingAction(kind, patch);
+    } catch (err) {
+      set({ kerahMansetSettings: previous });
+      window.alert("Gagal menyimpan Master Data Kerah/Manset -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
       throw err;
     }
     backgroundRefresh();
