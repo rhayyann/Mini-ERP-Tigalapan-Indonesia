@@ -2150,6 +2150,268 @@ export async function createClaimReplacementInvoiceAction(
   return invoiceId;
 }
 
+/** Versi GABUNGAN dari createClaimReplacementInvoiceAction di atas (2026-09-14, fitur "PV Pengganti
+ *  gabungan") -- PARALEL, bukan pengganti: fungsi lama TIDAK disentuh sama sekali, dipertahankan
+ *  untuk klik satu-satu per roll seperti sekarang. Fungsi ini dipakai kalau Procurement mencentang
+ *  >=2 klaim roll SEKALIGUS dari 1 invoice asal yang sama, supaya cuma perlu 1 PV pengganti (1
+ *  upload bukti, 1 kali dibayar Finance) alih-alih N PV terpisah.
+ *
+ *  Beda kunci dari versi single:
+ *  - Rate (Rp/kg) PER WARNA (bukan per roll) -- `ratesByWarnaLengan` key-nya `"${warna}|${lengan}"`,
+ *    dipakai bersama oleh semua roll dengan warna/lengan yang sama dalam bundle ini. Berat (kg)
+ *    TETAP per roll individual (`beratByKey`, key-nya claim key) -- fisik, tidak bisa digabung.
+ *  - Kredit lama & debit (penerapan otomatis) dihitung dari TOTAL gabungan semua roll di bundle,
+ *    BUKAN per-roll independen (lihat 1.7 di bawah) -- ini konsekuensi alami dari "1 invoice
+ *    pengganti gabungan, 1 kali bayar" (roll yang nilai barunya di atas kredit ROLL ITU SENDIRI
+ *    bisa "ketutup" oleh roll lain dalam bundle yang kreditnya lebih dari cukup).
+ *  - `raw_material_invoice_rolls.claim_replacement_invoice_id` tetap diisi PER ROLL ASAL (bukan
+ *    field baru) -- cuma nilainya SAMA (invoice gabungan) untuk semua roll yang ikut bundle ini,
+ *    jadi markClaimReplacementShippedAction (step 3, per klaim) otomatis tetap benar tanpa
+ *    perubahan apa pun (lihat komentar di fungsi itu). */
+export async function createClaimReplacementInvoiceBundleAction(
+  keys: string[],
+  ratesByWarnaLengan: Record<string, number>,
+  beratByKey: Record<string, number>,
+  buktiInvoiceDataUrl?: string,
+  buktiInvoiceFileName?: string
+): Promise<string> {
+  await requireInternalRole(await requireSession(), "procurement");
+
+  // 1.1 Validasi awal -- server tidak pernah percaya input client apa pun, termasuk validasi yang
+  // sudah dilakukan UI (checkbox disable dkk, lihat material-claims/page.tsx).
+  if (keys.length < 2) {
+    throw new Error("Pilih minimal 2 klaim untuk PV gabungan -- kalau cuma 1, pakai tombol 'Buat PV Pengganti' biasa.");
+  }
+  const parsedList = keys.map((key) => ({ key, parsed: parseClaimKey(key) }));
+  for (const { key, parsed } of parsedList) {
+    if (!parsed) throw new Error(`Klaim tidak valid: ${key}`);
+  }
+  const parsedEntries = parsedList as { key: string; parsed: NonNullable<ReturnType<typeof parseClaimKey>> }[];
+  const invoiceId = parsedEntries[0].parsed.invoiceId;
+  for (const { parsed } of parsedEntries) {
+    if (parsed.invoiceId !== invoiceId) throw new Error("Semua klaim yang digabung harus dari invoice asal yang sama.");
+  }
+
+  const db = supabaseServer();
+
+  // Per key: gate "sudah diterima Procurement" (sama persis gate versi single) + cari openId arsip
+  // + validasi rate/berat > 0 dari client.
+  const rollRows = await Promise.all(
+    parsedEntries.map(({ parsed }) =>
+      db
+        .from("raw_material_invoice_rolls")
+        .select("claim_accepted_at, claim_retur_requested_at")
+        .eq("invoice_color_id", parsed.invoiceColorId)
+        .eq("roll_index", parsed.rollIndex)
+        .maybeSingle()
+    )
+  );
+  parsedEntries.forEach(({ parsed }, i) => {
+    const rollRow = rollRows[i].data;
+    if (!rollRow?.claim_accepted_at && !rollRow?.claim_retur_requested_at) {
+      throw new Error(`Klaim ${parsed.warna} · ${parsed.lengan} roll #${parsed.rollIndex + 1} belum diterima Procurement -- klik 'Terima Klaim' dulu.`);
+    }
+  });
+
+  const openIds = await Promise.all(
+    parsedEntries.map(({ parsed }) => findOpenClaimHistoryId(db, parsed.invoiceId, parsed.warna, parsed.lengan, parsed.rollIndex))
+  );
+  parsedEntries.forEach(({ parsed }, i) => {
+    if (!openIds[i]) throw new Error(`Klaim ${parsed.warna} · ${parsed.lengan} roll #${parsed.rollIndex + 1} tidak ditemukan di arsip atau sudah selesai.`);
+  });
+
+  parsedEntries.forEach(({ key, parsed }) => {
+    const rate = ratesByWarnaLengan[`${parsed.warna}|${parsed.lengan}`];
+    if (!(rate > 0)) throw new Error(`Rate pengganti untuk warna ${parsed.warna} · ${parsed.lengan} harus lebih dari 0.`);
+    if (!(beratByKey[key] > 0)) throw new Error(`Berat roll pengganti untuk ${parsed.warna} · ${parsed.lengan} roll #${parsed.rollIndex + 1} harus lebih dari 0.`);
+  });
+
+  // 1.2 Data yang dibagi bersama (sama untuk semua key karena 1 invoice asal yang sama).
+  const { data: origInv } = await db.from("raw_material_invoices").select("entity").eq("id", invoiceId).single();
+  if (!origInv) throw new Error("Invoice asal klaim tidak ditemukan.");
+
+  // 1.3 Per key: rate lama (dari raw_material_invoice_colors, BUKAN dari input user) + arsip klaim
+  // lengkap (gross_kg dkk) -- query read-only, aman diparalelkan (pola sama seperti di atas).
+  const [origColors, claimRowsRes] = await Promise.all([
+    Promise.all(parsedEntries.map(({ parsed }) => db.from("raw_material_invoice_colors").select("harga_per_roll").eq("id", parsed.invoiceColorId).single())),
+    Promise.all(openIds.map((openId) => db.from("material_claim_history").select("*").eq("id", openId as string).single())),
+  ]);
+  claimRowsRes.forEach(({ data, error }, i) => {
+    if (error || !data) throw new Error(`Gagal membaca arsip klaim untuk ${parsedEntries[i].parsed.warna} · ${parsedEntries[i].parsed.lengan}.`);
+  });
+  origColors.forEach(({ data, error }, i) => {
+    if (error || !data) throw new Error(`Data rate lama tidak ditemukan untuk ${parsedEntries[i].parsed.warna} · ${parsedEntries[i].parsed.lengan}.`);
+  });
+
+  // claimRow untyped (any) -- sama seperti versi single (baris ~2021, .select("*").single() tanpa
+  // generic type dari Supabase client di sini).
+  type PerKeyCalc = { key: string; parsed: NonNullable<ReturnType<typeof parseClaimKey>>; openId: string; claimRow: any; rateLama: number; kredit: number; nilaiBaru: number };
+  const perKey: PerKeyCalc[] = parsedEntries.map(({ key, parsed }, i) => {
+    const claimRow = claimRowsRes[i].data;
+    const rateLama = Number(origColors[i].data!.harga_per_roll);
+    const kredit = rateLama * Number(claimRow.gross_kg);
+    const nilaiBaru = ratesByWarnaLengan[`${parsed.warna}|${parsed.lengan}`] * beratByKey[key];
+    return { key, parsed, openId: openIds[i] as string, claimRow, rateLama, kredit, nilaiBaru };
+  });
+
+  const totalKredit = perKey.reduce((sum, p) => sum + p.kredit, 0);
+  const totalNilaiBaru = perKey.reduce((sum, p) => sum + p.nilaiBaru, 0);
+
+  // 1.3b FIX (review 2026-09-14, "double-credit lewat race condition"): sebelum ini, arsip klaim
+  // (material_claim_history.replacement_invoice_id) baru ditutup PALING TERAKHIR (setelah invoice +
+  // SEMUA kredit + debit selesai ditulis) -- jendela antara findOpenClaimHistoryId() di atas (baca)
+  // sampai penutupan itu (tulis) bisa diisi PULUHAN round-trip sequential untuk bundle besar, jauh
+  // lebih lebar dari versi single. Kalau user klik 2x / submit dari 2 tab dengan overlap klaim yang
+  // sama dalam jendela itu, KEDUANYA lolos gate baca (openId masih "terbuka" buat keduanya) ->
+  // kredit vendor_deposits DOBEL untuk roll yang sama, gagal senyap tanpa error apa pun.
+  // Sekarang klaim DIKUNCI DI SINI, SEBELUM satu pun baris invoice/kredit/debit ditulis -- 1 UPDATE
+  // ber-syarat (WHERE id IN (...) AND resolved_at IS NULL AND replacement_invoice_id IS NULL),
+  // dieksekusi Postgres sebagai SATU statement atomik (bukan loop per-baris) -- kalau baris yang
+  // ke-UPDATE lebih sedikit dari openIds.length, berarti ADA klaim yang sudah "direbut" panggilan
+  // lain (curiga submit ganda) -- langsung throw & batalkan SEBELUM uang bergerak sama sekali.
+  // Trade-off yang disadari: kalau proses SETELAH ini gagal di tengah (mis. insert kredit roll ke-3
+  // dari 5 gagal), klaim yang sudah terkunci TIDAK BISA di-retry lewat tombol manapun di UI (bukan
+  // "terbuka" lagi) -- perlu campur tangan manual (lihat replacement_invoice_id di material_claim_
+  // history untuk cari invoice pengganti yang "setengah jadi" itu). Ini SENGAJA dipilih di atas
+  // kredit dobel senyap -- state macet itu TERLIHAT (klaim nyangkut di stage PV_DIBUAT dengan
+  // invoice yang jelas timpang), kredit dobel senyap TIDAK TERLIHAT sampai direkonsiliasi manual.
+  const newInvoiceId = await nextReadableId("INV");
+  const { data: lockedRows, error: lockErr } = await db
+    .from("material_claim_history")
+    .update({ resolution_kind: "RETUR_REORDER", replacement_invoice_id: newInvoiceId })
+    .in(
+      "id",
+      perKey.map((p) => p.openId)
+    )
+    .is("resolved_at", null)
+    .is("replacement_invoice_id", null)
+    .select("id");
+  if (lockErr) throw new Error(`Gagal mengunci klaim untuk PV gabungan: ${lockErr.message}`);
+  if ((lockedRows?.length ?? 0) !== perKey.length) {
+    throw new Error("Sebagian klaim ini sudah diproses lewat PV Pengganti lain (kemungkinan submit ganda) -- muat ulang halaman & cek status klaimnya sebelum coba lagi.");
+  }
+
+  // 1.4 SATU invoice pengganti baru menaungi semua roll di bundle ini.
+  const claimRowFirst = perKey[0].claimRow;
+  const { error: insErr } = await db.from("raw_material_invoices").insert({
+    id: newInvoiceId,
+    po_id: claimRowFirst.po_id,
+    mrp_id: claimRowFirst.mrp_id,
+    vendor_produksi: claimRowFirst.vendor_produksi,
+    supplier: claimRowFirst.supplier,
+    qty_ready: keys.length, // konvensi qty_ready = total roll count (sama seperti bookInvoiceAction)
+    diskon: 0,
+    total_biaya: totalNilaiBaru,
+    // Beda dari versi single (kode_transaksi = "KLAIM-" + openId TUNGGAL) -- di sini banyak openId,
+    // jangan paksa satu kolom kode_transaksi memuat semuanya. Sumber kebenaran keterkaitan tiap
+    // roll asal tetap di raw_material_invoice_rolls.claim_replacement_invoice_id (langkah 1.9).
+    kode_transaksi: `KLAIM-BUNDLE-${newInvoiceId}`,
+    no_invoice_vendor: "",
+    entity: origInv.entity,
+    status: "INVOICED",
+    destination_vendor: claimRowFirst.vendor_produksi,
+    booked_at: today(),
+    source_claim_id: keys[0], // 1 sumber utama disimpan (pola lama) -- semua key tetap tertaut lewat langkah 1.9.
+    bukti_pv_storage_path: buktiInvoiceDataUrl ?? null,
+    bukti_pv_file_name: buktiInvoiceFileName ?? null,
+  });
+  if (insErr) throw new Error(`Gagal membuat PV pengganti gabungan: ${insErr.message}`);
+
+  // 1.5 Per DISTINCT (warna,lengan): 1 raw_material_invoice_colors row (rate PER WARNA) + roll_index
+  // BARU mulai dari 0 per grup warna (ikuti pola bookInvoiceAction, BUKAN rollIndex roll asal).
+  const groupsMap = new Map<string, PerKeyCalc[]>();
+  for (const p of perKey) {
+    const groupKey = `${p.parsed.warna}|${p.parsed.lengan}`;
+    const list = groupsMap.get(groupKey) ?? [];
+    list.push(p);
+    groupsMap.set(groupKey, list);
+  }
+  for (const [groupKey, items] of groupsMap) {
+    const [warna, lengan] = groupKey.split("|");
+    const colorId = `${newInvoiceId}-${warna}-${lengan}`;
+    const { error: colorErr } = await db
+      .from("raw_material_invoice_colors")
+      .insert({ id: colorId, invoice_id: newInvoiceId, warna, lengan, harga_per_roll: ratesByWarnaLengan[groupKey] });
+    if (colorErr) throw new Error(`PV pengganti terbuat tapi gagal mencatat warna ${warna} · ${lengan}: ${colorErr.message}`);
+    const rollsPayload = items.map((p, idx) => ({ invoice_color_id: colorId, roll_index: idx, gross_kg: beratByKey[p.key] }));
+    const { error: rollErr } = await db.from("raw_material_invoice_rolls").insert(rollsPayload);
+    if (rollErr) throw new Error(`PV pengganti terbuat tapi gagal mencatat roll ${warna} · ${lengan}: ${rollErr.message}`);
+  }
+
+  // 1.6 Kredit lama TETAP dicatat 1 baris PER ROLL ASLI (bukan digabung) supaya jejak audit di
+  // Saldo Deposit Vendor tetap bisa ditelusuri ke roll spesifik mana pun -- sama pola seperti versi
+  // single, cuma untuk semua roll dalam bundle. FIX (review 2026-09-14): dulu di-loop 1 insert per
+  // roll (N round-trip berurutan, N titik gagal) -- sekarang ID-nya digenerate dulu (nextReadableId
+  // tetap harus dipanggil berurutan, itu sequence server), TAPI baris kreditnya di-insert SEKALIGUS
+  // lewat 1 panggilan `.insert([...])` (Postgres eksekusi sebagai 1 statement) -- mengecilkan jumlah
+  // titik potensial gagal-di-tengah dari N jadi 1, tanpa mengubah jejak audit "1 baris per roll".
+  const depositIds = await Promise.all(perKey.map(() => nextReadableId("VDP")));
+  const { error: depErr } = await db.from("vendor_deposits").insert(
+    perKey.map((p, i) => ({
+      id: depositIds[i],
+      supplier: p.claimRow.supplier,
+      kind: "CREDIT" as const,
+      amount: p.kredit,
+      source_claim_id: p.key,
+      note: `Kredit retur roll #${p.claimRow.roll_index + 1} (${p.claimRow.warna} · ${p.claimRow.lengan}, invoice ${p.parsed.invoiceId}) -- diganti PV gabungan ${newInvoiceId}.`,
+    }))
+  );
+  if (depErr) throw new Error(`PV pengganti terbuat tapi gagal mencatat kredit deposit: ${depErr.message}`);
+
+  // 1.7 DEBIT gabungan -- SATU baris dari TOTAL kredit & TOTAL nilai baru semua roll di bundle
+  // (beda dari 1.6 yang tetap per-roll) -- lihat komentar "DUA ARAH" panjang di
+  // createClaimReplacementInvoiceAction untuk alasan lengkap kenapa kredit lama otomatis
+  // diterapkan sebagai pelunasan (sebagian/penuh) ke PV pengganti ini, bukan menunggu Finance
+  // klik "Bayar" manual.
+  const debitApplied = Math.min(totalKredit, totalNilaiBaru);
+  const debitId = await nextReadableId("VDP");
+  const { error: debitErr } = await db.from("vendor_deposits").insert({
+    id: debitId,
+    supplier: claimRowFirst.supplier,
+    kind: "DEBIT",
+    amount: debitApplied,
+    source_invoice_id: newInvoiceId,
+    note: `Otomatis diterapkan dari kredit retur gabungan (${perKey.length} roll) ke PV pengganti ${newInvoiceId}.`,
+  });
+  if (debitErr) throw new Error(`PV pengganti & kredit terbuat tapi gagal mencatat penerapan kredit: ${debitErr.message}`);
+
+  const autoLunas = totalNilaiBaru <= totalKredit + 0.5; // toleransi floating point kecil, sama seperti versi single
+  if (autoLunas) {
+    await db.from("raw_material_invoices").update({ status: "PAID", paid_at: today() }).eq("id", newInvoiceId);
+    const { data: mrpRow } = await db.from("mrp").select("first_payment_at").eq("id", claimRowFirst.mrp_id).single();
+    if (mrpRow && !mrpRow.first_payment_at) await db.from("mrp").update({ first_payment_at: today() }).eq("id", claimRowFirst.mrp_id);
+  }
+
+  // 1.9 Per key: tandai roll ASAL (claim_replacement_invoice_id/claim_replacement_at) -- SAMA
+  // PERSIS pola versi single, cuma di-loop untuk semua key & invoiceId-nya SAMA (invoice gabungan)
+  // untuk semua key. Status per-klaim (stage) tetap PER ROLL sendiri-sendiri setelah ini (bukan
+  // ikut digabung) -- lihat markClaimReplacementShippedAction yang otomatis tetap benar tanpa
+  // perubahan. `material_claim_history` (resolution_kind + replacement_invoice_id) SUDAH ditulis
+  // lebih awal di 1.3b (langkah kunci anti-race) -- SENGAJA TIDAK ditulis ulang di sini.
+  for (const p of perKey) {
+    await db
+      .from("raw_material_invoice_rolls")
+      .update({ claim_replacement_invoice_id: newInvoiceId, claim_replacement_at: today() })
+      .eq("invoice_color_id", p.parsed.invoiceColorId)
+      .eq("roll_index", p.parsed.rollIndex);
+  }
+
+  // 1.10 Notifikasi Finance SATU KALI (bukan per roll).
+  const sisaDeposit = totalKredit - debitApplied;
+  const kekuranganBayar = totalNilaiBaru - debitApplied;
+  const warnaList = Array.from(new Set(perKey.map((p) => `${p.parsed.warna} · ${p.parsed.lengan}`))).join(", ");
+  await insertNotification(
+    notif(
+      autoLunas
+        ? `Klaim retur ${perKey.length} roll (${warnaList}, invoice ${invoiceId}) diselesaikan lewat pesan ulang gabungan -- PV pengganti ${newInvoiceId} (Rp ${Math.round(totalNilaiBaru).toLocaleString("id-ID")}) OTOMATIS LUNAS dari kredit retur (tidak perlu bayar baru), sisa Rp ${Math.round(sisaDeposit).toLocaleString("id-ID")} tercatat di saldo deposit ${claimRowFirst.supplier}.`
+        : `Klaim retur ${perKey.length} roll (${warnaList}, invoice ${invoiceId}) diselesaikan lewat pesan ulang gabungan -- PV pengganti ${newInvoiceId} (Rp ${Math.round(totalNilaiBaru).toLocaleString("id-ID")}) dibuat, kredit retur PV lama Rp ${Math.round(debitApplied).toLocaleString("id-ID")} OTOMATIS diterapkan -- tinggal SELISIH Rp ${Math.round(kekuranganBayar).toLocaleString("id-ID")} yang perlu dibayar di Payment.`,
+      ["finance"]
+    )
+  );
+
+  return newInvoiceId;
+}
+
 /** Step 3 flow klaim bertahap (2026-09-11): Procurement "Tandai Sudah Dikirim" -- SATU klik yang
  *  melakukan DUA hal sekaligus (keputusan desain D3 di spec, sengaja tidak dipecah jadi 2 aksi
  *  UI terpisah -- itulah akar keluhan user, langkah kedua selalu terlupa):

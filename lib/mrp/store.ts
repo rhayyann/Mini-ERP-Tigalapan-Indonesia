@@ -404,6 +404,18 @@ type FlowActions = {
    *  (supplier) itu kalau nilainya lebih kecil dari yang sudah dibayar untuk roll yang diretur.
    *  Lihat createClaimReplacementInvoiceAction & claim-replacement-modal.tsx. */
   createClaimReplacementInvoice: (key: string, rateBaru: number, beratBaruKg: number, buktiInvoiceDataUrl?: string, buktiInvoiceFileName?: string) => Promise<string>;
+  /** Versi GABUNGAN (2026-09-14, fitur "PV Pengganti gabungan") -- >=2 klaim roll dari 1 invoice
+   *  asal yang sama sekaligus jadi 1 PV pengganti. PARALEL dengan createClaimReplacementInvoice di
+   *  atas (tidak menggantikannya). Lihat createClaimReplacementInvoiceBundleAction &
+   *  claim-replacement-bundle-modal.tsx. `ratesByWarnaLengan` key-nya `"${warna}|${lengan}"`,
+   *  `beratByKey` key-nya claim key (sama seperti `keys`). */
+  createClaimReplacementInvoiceBundle: (
+    keys: string[],
+    ratesByWarnaLengan: Record<string, number>,
+    beratByKey: Record<string, number>,
+    buktiInvoiceDataUrl?: string,
+    buktiInvoiceFileName?: string
+  ) => Promise<string>;
   /** Pakai sebagian/semua saldo deposit vendor (supplier) untuk mengurangi pembayaran invoice yang
    *  dipilih -- SELALU dipilih manual oleh Finance (lihat payment-panel.tsx), tidak pernah
    *  otomatis. Validasi `amount <= saldo tersedia` diulang di server (applyVendorDepositAction). */
@@ -1641,6 +1653,19 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     // pindah stage tanpa jeda terlihat.
     const previous = get().materialClaimReplacements;
     set({ materialClaimReplacements: { ...previous, [key]: { invoiceId: newInvoiceId, at: localDateString(new Date()) } } });
+    backgroundRefresh();
+    return newInvoiceId;
+  },
+  // Pola SAMA seperti createClaimReplacementInvoice di atas (tidak optimistic, tunggu 1
+  // round-trip server dulu karena id invoice pengganti digenerate server) -- cuma di sini SEMUA
+  // key dalam bundle di-set sekaligus ke invoice pengganti gabungan yang SAMA.
+  createClaimReplacementInvoiceBundle: async (keys, ratesByWarnaLengan, beratByKey, buktiInvoiceDataUrl, buktiInvoiceFileName) => {
+    const newInvoiceId = await actions.createClaimReplacementInvoiceBundleAction(keys, ratesByWarnaLengan, beratByKey, buktiInvoiceDataUrl, buktiInvoiceFileName);
+    const previous = get().materialClaimReplacements;
+    const patch: typeof previous = {};
+    const at = localDateString(new Date());
+    for (const key of keys) patch[key] = { invoiceId: newInvoiceId, at };
+    set({ materialClaimReplacements: { ...previous, ...patch } });
     backgroundRefresh();
     return newInvoiceId;
   },

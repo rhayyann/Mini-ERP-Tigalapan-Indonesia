@@ -6,6 +6,7 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { ClaimReplacementModal } from "@/components/mrp/claim-replacement-modal";
+import { ClaimReplacementBundleModal } from "@/components/mrp/claim-replacement-bundle-modal";
 import { useMrpStore } from "@/lib/mrp/store";
 import { formatDate, formatDecimal, materialClaimsList, materialClaimStage, type MaterialClaimRow, type MaterialClaimStage } from "@/lib/mrp/derive";
 import { VENDOR_PRODUKSI } from "@/lib/mrp/seed";
@@ -68,6 +69,7 @@ export default function MaterialClaimsPage() {
   const cancelMaterialClaimReturRequest = useMrpStore((s) => s.cancelMaterialClaimReturRequest);
   const markMaterialClaimReturDelivered = useMrpStore((s) => s.markMaterialClaimReturDelivered);
   const createClaimReplacementInvoice = useMrpStore((s) => s.createClaimReplacementInvoice);
+  const createClaimReplacementInvoiceBundle = useMrpStore((s) => s.createClaimReplacementInvoiceBundle);
   const deleteMaterialClaimHistory = useMrpStore((s) => s.deleteMaterialClaimHistory);
   const hargaKain = useMrpStore((s) => s.hargaKain);
   const hargaKainPks = useMrpStore((s) => s.hargaKainPks);
@@ -75,6 +77,12 @@ export default function MaterialClaimsPage() {
   const [tab, setTab] = useState<ViewTab>("AKTIF");
   // Revisi 2026-09-06: key klaim yang sedang buka modal "Buat PV Pengganti" -- null = tidak ada.
   const [replacingKey, setReplacingKey] = useState<string | null>(null);
+  // Fitur "PV Pengganti gabungan" (2026-09-14): klaim yang dicentang user (checkbox per baris) +
+  // apakah modal gabungan sedang terbuka. Semua key di sini DIJAMIN dari 1 invoiceId yang sama
+  // oleh constraint UI di bawah (checkbox row invoice lain otomatis disabled begitu ada 1
+  // tercentang) -- server tetap validasi ulang, lihat createClaimReplacementInvoiceBundleAction.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [bundleOpen, setBundleOpen] = useState(false);
 
   if (!mounted) return null;
 
@@ -114,7 +122,44 @@ export default function MaterialClaimsPage() {
     SELESAI: { label: "Sudah ditindak", tone: "success" },
   };
 
+  // Checkbox eligible HANYA untuk row yang sudah punya tombol "Buat PV Pengganti" (KLAIM_DITERIMA
+  // atau legacy RETUR_*) -- row BELUM/PV_DIBUAT/SELESAI tidak bisa dicentang untuk bundle.
+  function checkboxEligible(s: MaterialClaimStage): boolean {
+    return s === "KLAIM_DITERIMA" || s === "RETUR_DIMINTA" || s === "RETUR_DIKIRIM" || s === "RETUR_DITERIMA";
+  }
+  function toggleSelected(key: string) {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+  // Begitu ada 1 row tercentang, semua row dari invoice LAIN jadi disabled (cakupan gabung cuma
+  // 1 invoice asal yang sama, lihat "Keputusan" di spec).
+  const selectedInvoiceId = selectedKeys.size > 0 ? rows.find((r) => selectedKeys.has(r.key))?.invoiceId ?? null : null;
+
   const columns: ColumnDef<MaterialClaimRow>[] = [
+    {
+      key: "pilih",
+      label: "",
+      default: true,
+      render: (r) => {
+        const s = stage(r.key);
+        if (!checkboxEligible(s)) return null;
+        const disabled = selectedInvoiceId !== null && r.invoiceId !== selectedInvoiceId;
+        return (
+          <input
+            type="checkbox"
+            checked={selectedKeys.has(r.key)}
+            disabled={disabled}
+            title={disabled ? "Cuma bisa gabung klaim dari 1 invoice yang sama -- kosongkan pilihan dulu untuk pilih invoice lain." : undefined}
+            onChange={() => toggleSelected(r.key)}
+            className="h-3.5 w-3.5 accent-accent-blue disabled:cursor-not-allowed"
+          />
+        );
+      },
+    },
     { key: "invoice", label: "No Invoice", default: true, render: (r) => <span className="font-mono font-medium">{r.invoiceId}</span> },
     { key: "supplierVendor", label: "Supplier → Vendor", default: true, render: (r) => `${r.supplier} → ${VENDOR_PRODUKSI[r.vendorProduksi]?.name ?? r.vendorProduksi}` },
     // default:false — warna/berat/tanggal dibatasi ke toggle "Kolom" supaya default tetap 7
@@ -354,6 +399,7 @@ export default function MaterialClaimsPage() {
   }
 
   const replacingClaim = replacingKey ? rows.find((r) => r.key === replacingKey) ?? null : null;
+  const selectedClaims = rows.filter((r) => selectedKeys.has(r.key));
 
   return (
     <AppShell
@@ -385,6 +431,25 @@ export default function MaterialClaimsPage() {
           </button>
         ))}
       </div>
+
+      {tab === "AKTIF" && selectedKeys.size > 0 && (
+        <div className="flex items-center gap-3 rounded-md bg-info-bg px-4 py-2.5">
+          <span className="font-sans text-[12px] font-semibold text-info-fg">
+            {selectedKeys.size} klaim dipilih dari invoice {selectedInvoiceId}
+          </span>
+          <button
+            onClick={() => setBundleOpen(true)}
+            disabled={selectedKeys.size < 2}
+            title={selectedKeys.size < 2 ? "Pilih minimal 2 klaim" : undefined}
+            className="rounded-md bg-action-primary px-2.5 py-[6px] font-sans text-[11px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Buat PV Pengganti Gabungan
+          </button>
+          <button onClick={() => setSelectedKeys(new Set())} className="font-sans text-[11px] font-semibold text-action-primary underline">
+            Batal pilih
+          </button>
+        </div>
+      )}
 
       {tab === "AKTIF" && (
           <DataTable
@@ -453,6 +518,21 @@ export default function MaterialClaimsPage() {
           onSubmit={async (rateBaru, beratBaruKg, buktiInvoiceDataUrl, buktiInvoiceFileName) => {
             await createClaimReplacementInvoice(replacingClaim.key, rateBaru, beratBaruKg, buktiInvoiceDataUrl, buktiInvoiceFileName);
             setReplacingKey(null);
+          }}
+        />
+      )}
+
+      {bundleOpen && selectedClaims.length >= 2 && (
+        <ClaimReplacementBundleModal
+          claims={selectedClaims}
+          rateLamaByKey={Object.fromEntries(selectedClaims.map((c) => [c.key, rateLamaFor(c)]))}
+          hargaKain={hargaKain}
+          hargaKainPks={hargaKainPks}
+          onCancel={() => setBundleOpen(false)}
+          onSubmit={async (rates, beratByKey, buktiInvoiceDataUrl, buktiInvoiceFileName) => {
+            await createClaimReplacementInvoiceBundle([...selectedKeys], rates, beratByKey, buktiInvoiceDataUrl, buktiInvoiceFileName);
+            setBundleOpen(false);
+            setSelectedKeys(new Set());
           }}
         />
       )}
