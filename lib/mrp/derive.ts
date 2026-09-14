@@ -32,7 +32,12 @@ export function materialSupplierNames(hargaKain: HargaKainRow[], supplierList: S
  *  pelengkap yang sengaja belum ada data harganya — user yang pilih itu tahu risikonya). */
 export function materialSupplierNamesForWarna(hargaKain: HargaKainRow[], supplierList: SupplierRow[], warna: string): string[] {
   const names = new Set<string>();
-  for (const r of hargaKain) if (r.namaSupplier && normKey(r.warna) === normKey(warna)) names.add(r.namaSupplier);
+  const baseWarna = baseWarnaForKainFallback(warna);
+  for (const r of hargaKain) {
+    if (!r.namaSupplier) continue;
+    if (normKey(r.warna) === normKey(warna)) names.add(r.namaSupplier);
+    else if (baseWarna && normKey(r.warna) === normKey(baseWarna)) names.add(r.namaSupplier);
+  }
   for (const r of supplierList) if (r.nama) names.add(r.nama);
   return Array.from(names).sort((a, b) => a.localeCompare(b, "id-ID"));
 }
@@ -88,6 +93,26 @@ export function materialGroupsByWarna(materialRows: MaterialRow[]): MaterialGrou
 
 function normKey(s: string): string {
   return s.trim().toUpperCase().replace(/[\s-]/g, "");
+}
+
+// Item revisi 2026-09-14 (owner: "KID/TUNIK/RIB sebenarnya bahan yang sama"): varian warna ini
+// SELALU berpola "{WARNA DASAR} {AKHIRAN}" (dikonfirmasi lewat data live -- "ABU MUDA 24S KID"
+// dari "ABU MUDA 24S", dst, konsisten untuk puluhan warna, TANPA pengecualian format yang
+// ditemukan) -- owner konfirmasi eksplisit bahan & harganya SAMA PERSIS dengan warna dasarnya
+// (termasuk RIB, BUKAN cuma KID/TUNIK). Dipakai sebagai fallback SAJA di hargaKainRateInfo &
+// materialSupplierNamesForWarna di bawah -- match PERSIS untuk warna varian itu sendiri TETAP
+// diutamakan kalau suatu saat ada yang menambahkannya secara eksplisit.
+const KAIN_VARIANT_SUFFIXES = [" KID", " RIB", " TUNIK"];
+function baseWarnaForKainFallback(warna: string): string | null {
+  const trimmed = warna.trim();
+  const upper = trimmed.toUpperCase();
+  for (const suf of KAIN_VARIANT_SUFFIXES) {
+    if (upper.endsWith(suf)) {
+      const base = trimmed.slice(0, trimmed.length - suf.length).trim();
+      return base.length > 0 ? base : null;
+    }
+  }
+  return null;
 }
 
 /** Match Harga Maklon row ke vendor key internal app (mis. "BAYU","GI-01") — cocokkan ke
@@ -159,6 +184,15 @@ export function hargaKainRateInfo(hargaKain: HargaKainRow[], hargaKainPks: Harga
     return { rate: best.hargaPerKg, source: "PKS", totalKg, band: best };
   }
   if (flatMatches.length > 0) return { rate: flatMatches[0].hargaPerKg, source: "Standar", totalKg };
+  // Fallback (lihat baseWarnaForKainFallback) -- CUMA dipakai kalau warna varian ini SENDIRI
+  // benar-benar tidak ada entri sama sekali (PKS maupun flat) di atas. Rekursi di sini SELALU
+  // berhenti (setiap panggilan ulang warna-nya STRICTLY lebih pendek, minimal berkurang 4
+  // karakter dari salah satu akhiran di KAIN_VARIANT_SUFFIXES) -- di data nyata cuma 1 tingkat
+  // (tidak ada warna berakhiran >1 suffix bertumpuk, mis. "X KID RIB"), TAPI kalau suatu saat ada
+  // kasus begitu, fungsi ini tetap aman & benar lewat 2+ tingkat rekursi (baseWarnaForKainFallback
+  // sendiri cuma strip SATU akhiran per panggilan, bukan langsung ke warna paling dasar).
+  const baseWarna = baseWarnaForKainFallback(warna);
+  if (baseWarna) return hargaKainRateInfo(hargaKain, hargaKainPks, supplierName, baseWarna, totalKg);
   return { rate: MATERIAL_RATE_PER_ROLL / 25, source: "Estimasi", totalKg };
 }
 
