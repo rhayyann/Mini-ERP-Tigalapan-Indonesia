@@ -366,6 +366,11 @@ type FlowActions = {
   payMaklonInvoice: (invoiceId: string) => Promise<void>;
   receiveRawMaterialAddBuy: (invoiceId: string, addBuyId: string) => Promise<void>;
   updateBatchToCutting: (batchId: string, cuttingAt: string, sizeQty?: Record<string, number>) => Promise<void>;
+  /** Versi BATCHED updateBatchToCutting -- SEMUA roll 1 grup (mis. 10 roll) dalam 1 klik "Simpan"
+   *  lewat 1 round-trip server (bukan N), optimistic PENUH (patch state SEBELUM await, pola sama
+   *  seperti markRollArrived) supaya modal Hasil Cutting bisa langsung tertutup tanpa nunggu apa
+   *  pun -- lihat saveGroup di production-cutting-tab.tsx. */
+  updateBatchesToCutting: (batchIds: string[], cuttingAt: string, sizeQtyByBatchId: Record<string, Record<string, number>>) => Promise<void>;
   /** Item 14 (feedback batch 2026-09-10): edit resting_at untuk 1 sesi resting (beberapa batch
    *  sekaligus, semuanya berbagi resting_at yang sama). */
   updateBatchRestingAt: (batchIds: string[], restingAt: string) => Promise<void>;
@@ -892,8 +897,71 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     }
     backgroundRefresh();
   },
+  // Fix loading blocking tombol "Konfirmasi (n)" -- DULU nunggu PENUH round-trip server dulu baru
+  // UI berubah (isPending menahan tombol dgn teks "Mengonfirmasi…"). Sekarang optimistic PENUH
+  // (patch SEBELUM await, pola sama seperti markRollArrived) -- weighConfirmedAt di-set utk SEMUA
+  // roll di `items` SEKETIKA. Kalau server skip SEBAGIAN (net_kg belum terisi/masih claimable/
+  // bukan invoice vendor ini, jarang), batalkan patch optimistic KHUSUS roll yang di-skip itu saja
+  // (bukan revert semua -- yang berhasil dikonfirmasi tetap dikonfirmasi).
   confirmRollWeigh: async (items) => {
-    const result = await actions.confirmRollWeighAction(items);
+    const nowIso = () => {
+      // Mirror helper privat nowIso() di actions.ts (tidak diekspor dari sana) -- format
+      // "YYYY-MM-DD HH:mm", sama seperti nilai yang bakal ditulis confirmRollWeighAction ke
+      // weigh_confirmed_at. Nilai persis TIDAK krusial di sini (weighConfirmedAt cuma dipakai
+      // sebagai flag ada/tidak-ada, lihat derive.ts) -- backgroundRefresh() di bawah akan
+      // menggantinya dengan nilai server yang sebenarnya begitu snapshot berikutnya datang.
+      const d = new Date();
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      return `${localDateString(d)} ${hh}:${mm}`;
+    };
+    const now = nowIso();
+    const previous = get().invoices;
+    set({
+      invoices: previous.map((inv) => {
+        const relevant = items.filter((it) => it.invoiceId === inv.id);
+        if (relevant.length === 0) return inv;
+        const rollReceipts = { ...inv.rollReceipts };
+        for (const it of relevant) {
+          const colorKey = `${it.warna}|${it.lengan}`;
+          const arr = [...(rollReceipts[colorKey] ?? [])];
+          if (arr[it.rollIndex]) arr[it.rollIndex] = { ...arr[it.rollIndex]!, weighConfirmedAt: now };
+          rollReceipts[colorKey] = arr;
+        }
+        return { ...inv, rollReceipts };
+      }),
+    });
+    let result: { confirmed: number; skipped: { invoiceId: string; warna: string; lengan: Lengan; rollIndex: number }[] };
+    try {
+      result = await actions.confirmRollWeighAction(items);
+    } catch (err) {
+      set({ invoices: previous }); // gagal total -- revert semua patch optimistic di atas
+      window.alert("Gagal mengonfirmasi timbang -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      // Fix (review 2026-09-14): confirmRollWeighAction sendiri LOOP per item di server (tidak
+      // atomik) -- kalau throw-nya terjadi di TENGAH loop itu (mis. query ownership utk item ke-3
+      // gagal jaringan), sebagian item SEBELUMNYA bisa saja sudah benar-benar ter-`weigh_confirmed_at`
+      // di DB walau promise ini akhirnya reject. Revert optimistic murni lokal di atas tidak tahu
+      // soal itu -- backgroundRefresh() di sini memastikan client balik konsisten dengan keadaan
+      // DB yang sebenarnya, bukan cuma asumsi "gagal total = tidak ada yang berubah".
+      backgroundRefresh();
+      throw err;
+    }
+    if (result.skipped.length > 0) {
+      set({
+        invoices: get().invoices.map((inv) => {
+          const relevant = result.skipped.filter((it) => it.invoiceId === inv.id);
+          if (relevant.length === 0) return inv;
+          const rollReceipts = { ...inv.rollReceipts };
+          for (const it of relevant) {
+            const colorKey = `${it.warna}|${it.lengan}`;
+            const arr = [...(rollReceipts[colorKey] ?? [])];
+            if (arr[it.rollIndex]) arr[it.rollIndex] = { ...arr[it.rollIndex]!, weighConfirmedAt: undefined };
+            rollReceipts[colorKey] = arr;
+          }
+          return { ...inv, rollReceipts };
+        }),
+      });
+    }
     backgroundRefresh();
     return result;
   },
@@ -1360,6 +1428,38 @@ export const useMrpStore = create<FlowState & FlowActions>()((set, get) => {
     set({
       productionBatches: get().productionBatches.map((b) => (b.id === batchId ? { ...b, cuttingAt: result.cuttingAt, sizeQty: result.sizeQty ?? b.sizeQty } : b)),
     });
+    backgroundRefresh();
+  },
+  // Fix flicker & loading blocking tombol "Simpan" (modal Hasil Cutting, N roll sekaligus) --
+  // saveGroup DULU loop `await updateBatchToCutting` satu-satu (N round-trip berurutan, N
+  // backgroundRefresh terpisah); snapshot READ dari iterasi awal bisa datang BELAKANGAN &
+  // menimpa (overwrite penuh) patch optimistic dari iterasi-iterasi berikutnya yang sudah
+  // selesai duluan -- itu penyebab baris roll yang "sudah diklik" sempat balik jadi "belum".
+  // Fix-nya: 1 round-trip untuk SEMUA batchIds sekaligus (updateBatchesToCuttingAction), patch
+  // optimistic PENUH SEBELUM await (pola sama seperti markRollArrived di atas), 1 kali
+  // backgroundRefresh() di akhir saja (bukan N kali).
+  updateBatchesToCutting: async (batchIds, cuttingAt, sizeQtyByBatchId) => {
+    const idSet = new Set(batchIds);
+    const previous = get().productionBatches;
+    set({
+      productionBatches: previous.map((b) => (idSet.has(b.id) ? { ...b, cuttingAt, sizeQty: sizeQtyByBatchId[b.id] ?? b.sizeQty } : b)),
+    });
+    try {
+      await actions.updateBatchesToCuttingAction(batchIds, cuttingAt, sizeQtyByBatchId);
+    } catch (err) {
+      set({ productionBatches: previous });
+      window.alert("Gagal menyimpan hasil cutting -- perubahan dibatalkan. " + (err instanceof Error ? err.message : String(err)));
+      // Fix (review 2026-09-14): dulu TIDAK ada backgroundRefresh() di jalur gagal ini -- kalau
+      // updateBatchesToCuttingAction sempat menulis SEBAGIAN di server (mis. UPDATE cutting_at
+      // untuk seluruh grup sudah commit, tapi recomputeAutoRejectForGroup di akhir yang gagal
+      // throw), revert `set({ productionBatches: previous })` di atas malah membuat UI client
+      // "nyangkut" salah (tampil belum-cutting) padahal server-nya sudah berubah -- tanpa refresh,
+      // itu baru kebetulan ke-sync lagi kalau ada aksi LAIN yang memicu backgroundRefresh. Sekarang
+      // dipanggil eksplisit di sini juga supaya client selalu balik konsisten dengan DB, apa pun
+      // hasil aslinya di server (bukan cuma percaya revert optimistic lokal).
+      backgroundRefresh();
+      throw err;
+    }
     backgroundRefresh();
   },
   // Item 14 (feedback batch 2026-09-10): edit resting_at untuk semua batch 1 sesi resting

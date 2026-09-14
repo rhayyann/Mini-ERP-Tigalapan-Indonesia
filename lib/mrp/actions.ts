@@ -1620,6 +1620,74 @@ export async function updateBatchToCuttingAction(batchId: string, cuttingAt: str
   return { cuttingAt, sizeQty: rows.length > 0 ? Object.fromEntries(rows) : undefined };
 }
 
+/** Versi BATCHED dari updateBatchToCuttingAction di atas (JANGAN ubah yang lama, fungsi ini
+ *  tambahan paralel) -- root cause flicker & lambat tombol "Simpan" di modal Hasil Cutting adalah
+ *  saveGroup yang LOOP client memanggil versi single N kali (N round-trip berurutan, tiap panggilan
+ *  trigger backgroundRefresh sendiri-sendiri, snapshot READ dari iterasi awal bisa datang belakangan
+ *  & overwrite state yang sudah dipatch optimistic dari iterasi berikutnya -- lihat catatan di
+ *  spec/changes.md). Fix-nya: 1 round-trip untuk SEMUA roll dalam grup sekaligus, 1 kali gate
+ *  "Selesai Produksi", 1 kali recomputeAutoRejectForGroup -- store.ts cukup panggil
+ *  backgroundRefresh() SATU KALI di akhir, bukan N kali. */
+export async function updateBatchesToCuttingAction(
+  batchIds: string[],
+  cuttingAt: string,
+  sizeQtyByBatchId: Record<string, Record<string, number>>
+): Promise<{ batchId: string; cuttingAt: string; sizeQty?: Record<string, number> }[]> {
+  await requireVendorSession();
+  if (batchIds.length === 0) return [];
+  const db = supabaseServer();
+
+  // Validasi SEMUA batchId dari 1 groupKey yang sama -- server TIDAK percaya urutan/isi array dari
+  // client begitu saja (client bisa saja salah kirim campuran grup warna/lengan berbeda).
+  const { data: batchRows, error: batchErr } = await db
+    .from("production_batches")
+    .select("id,mrp_id,vendor_produksi,warna,lengan")
+    .in("id", batchIds);
+  if (batchErr) throw new Error(batchErr.message);
+  if (!batchRows || batchRows.length !== batchIds.length) throw new Error("Sebagian roll tidak ditemukan.");
+  const groupKeys = new Set(batchRows.map((b) => `${b.mrp_id}|${b.warna}|${b.lengan}`));
+  if (groupKeys.size > 1) throw new Error("Semua roll yang disimpan sekaligus harus dari grup warna/lengan yang sama.");
+  const first = batchRows[0];
+  const groupKey = `${first.mrp_id}|${first.warna}|${first.lengan}`;
+
+  const { data: meta } = await db.from("production_group_meta").select("fg_confirmed_at,done_at").eq("group_key", groupKey).maybeSingle();
+  if (meta?.done_at) {
+    throw new Error(
+      `Grup ${first.warna} · ${first.lengan} sudah "Selesai Produksi" (Final Produksi) -- hasil cutting tidak bisa diedit lagi. Buka kunci dulu di tab Final Produksi ("Buka kunci ↺") kalau memang masih ada roll baru untuk warna/lengan ini yang perlu diproses.`
+    );
+  }
+
+  // 1 UPDATE untuk SEMUA batchId sekaligus (cuttingAt seragam untuk 1 grup, lihat komentar
+  // saveGroup di production-cutting-tab.tsx) -- bukan N update terpisah seperti versi single.
+  const { error } = await db.from("production_batches").update({ cutting_at: cuttingAt }).in("id", batchIds);
+  if (error) throw new Error(error.message);
+
+  // 1 DELETE untuk semua batchId, lalu 1 INSERT gabungan semua baris sizeQty dari semua batch --
+  // bukan N delete + N insert terpisah. Error di sini SENGAJA tidak dilempar (sama seperti versi
+  // single) -- fitur tambahan, tidak boleh menggagalkan aksi utama kalau migration 0006 belum ada.
+  const { error: delErr } = await db.from("production_batch_sizes").delete().in("production_batch_id", batchIds);
+  if (delErr) console.error("updateBatchesToCuttingAction: gagal hapus hasil aduan lama", delErr.message);
+  const results: { batchId: string; cuttingAt: string; sizeQty?: Record<string, number> }[] = [];
+  const allRows: { production_batch_id: string; size: string; qty: number }[] = [];
+  for (const batchId of batchIds) {
+    const rows = Object.entries(sizeQtyByBatchId[batchId] ?? {}).filter(([, qty]) => qty > 0);
+    if (rows.length > 0) allRows.push(...rows.map(([size, qty]) => ({ production_batch_id: batchId, size, qty })));
+    results.push({ batchId, cuttingAt, sizeQty: rows.length > 0 ? Object.fromEntries(rows) : undefined });
+  }
+  if (allRows.length > 0) {
+    const { error: sizeErr } = await db.from("production_batch_sizes").insert(allRows);
+    if (sizeErr) console.error("updateBatchesToCuttingAction: gagal simpan hasil aduan (migration 0006 sudah jalan?)", sizeErr.message);
+  }
+
+  // recomputeAutoRejectForGroup 1x untuk groupKey ini (bukan N kali seperti kalau ini dipanggil
+  // lewat loop versi single) -- fungsi ini SUDAH ada & dipakai versi single, reuse apa adanya.
+  if (meta?.fg_confirmed_at && !meta.done_at) {
+    await recomputeAutoRejectForGroup(db, groupKey, first.mrp_id, first.vendor_produksi, first.warna, first.lengan as Lengan);
+  }
+
+  return results;
+}
+
 /** Tandai alert yield <99% roll ini sudah ditindaklanjuti/di-approve dari portal internal
  *  Produksi (audience "produksi" — BUKAN Procurement, beda dari material claim berat). */
 export async function resolveProductionYieldAction(batchId: string, note: string): Promise<void> {

@@ -5,7 +5,6 @@ import { NumberInput } from "@/components/mrp/number-input";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
 import { useMrpStore } from "@/lib/mrp/store";
-import { usePendingActions } from "@/lib/mrp/usePendingActions";
 import {
   availableCodeRollsForColor,
   availableRollsByAduanRow,
@@ -142,7 +141,12 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const invoices = useMrpStore((s) => s.invoices);
   const productionBatches = useMrpStore((s) => s.productionBatches);
   const startProductionBatch = useMrpStore((s) => s.startProductionBatch);
-  const updateBatchToCutting = useMrpStore((s) => s.updateBatchToCutting);
+  // updateBatchToCutting (versi single/lama) TIDAK lagi dipakai di sini -- saveGroup sekarang
+  // pakai updateBatchesToCutting (1 round-trip utk semua roll grup, lihat komentar saveGroup di
+  // bawah). Fungsi single-nya sendiri TIDAK dihapus dari store/actions (mungkin masih dibutuhkan
+  // jalur lain di kemudian hari), cuma binding-nya di komponen ini yang dihapus karena jadi
+  // dead code kalau tetap ditarik dari store tapi tidak dipanggil.
+  const updateBatchesToCutting = useMrpStore((s) => s.updateBatchesToCutting);
   const updateBatchRestingAt = useMrpStore((s) => s.updateBatchRestingAt);
   const receiveRawMaterialRoll = useMrpStore((s) => s.receiveRawMaterialRoll);
   const confirmRollWeigh = useMrpStore((s) => s.confirmRollWeigh);
@@ -176,10 +180,10 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   const [submitNotice, setSubmitNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // Item revisi 2026-09-07 (owner: aksi vendor produksi terasa lambat -- tidak ada tanda loading
-  // sama sekali sebelum ini): dipakai tombol "Konfirmasi" per grup warna/lengan (confirmRollWeigh
-  // TIDAK optimistic -- server yang menentukan roll mana yang benar2 lolos), per-key supaya grup
-  // lain tidak ikut terkunci sementara satu grup diproses.
-  const { isPending, run: runPendingAction } = usePendingActions();
+  // sama sekali sebelum ini) SEKARANG DIBALIK LAGI (owner minta tombol "Konfirmasi (n)" tidak
+  // menahan/blocking sama sekali): confirmRollWeigh SEKARANG optimistic penuh (lihat store.ts),
+  // jadi tombol tidak perlu lagi ditahan usePendingActions/isPending selagi menunggu server --
+  // hook itu dihapus dari sini (tidak dipakai tombol lain di file ini).
   // Timbang roll — dulu ada di Good Receive (vendor timbang begitu roll fisik datang), sekarang
   // dipindah ke sini: roll yang sudah ditandai diterima di Good Receive tapi belum ditimbang (atau
   // masih di luar toleransi & perlu ditimbang ulang) baru bisa dipilih untuk Resting setelah
@@ -245,7 +249,6 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
   // supaya user tahu PERSIS kenapa gagal (mis. perlu "Buka kunci ↺" dulu di tab Final Produksi
   // untuk grup itu) alih-alih menebak-nebak.
   const [cuttingGroupError, setCuttingGroupError] = useState<string | null>(null);
-  const [cuttingGroupSaving, setCuttingGroupSaving] = useState(false);
   // Item 14 (feedback batch 2026-09-10, owner: "Tambahkan fitur untuk bisa edit hasil input ulang
   // (takutnya salah isi jam resting atau qty cutting)"): dulu modal ini cuma bisa dibuka untuk
   // batch yang MASIH butuh input (batchNeedsCuttingInput) -- begitu sesi "selesai" (semua roll
@@ -988,8 +991,8 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                   <span className={"transition-transform " + (weighExpanded ? "rotate-90" : "")}>›</span>
                   {g.warna} · {g.lengan} ({g.rows.length})
                 </button>
-                <Button onClick={() => runPendingAction(g.key, confirmGroup(g.rows))} disabled={isPending(g.key)} variant="success" size="xs">
-                  {isPending(g.key) ? "Mengonfirmasi…" : `Konfirmasi (${g.rows.length}) →`}
+                <Button onClick={() => confirmGroup(g.rows)} variant="success" size="xs">
+                  Konfirmasi ({g.rows.length}) →
                 </Button>
               </div>
               {weighExpanded && (
@@ -1443,24 +1446,40 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
           });
           const canSaveGroup = incompleteIds.length === 0;
           async function saveGroup() {
-            if (!canSaveGroup || cuttingGroupSaving) return;
+            if (!canSaveGroup) return;
             setCuttingGroupError(null);
-            setCuttingGroupSaving(true);
             try {
               // Item 14: mode edit juga bisa mengoreksi tanggal/jam resting sesi ini (dulu tidak
               // ada jalan edit sama sekali setelah "Resting" pertama kali disubmit).
+              // updateBatchRestingAt SUDAH batched (1 call utk semua batchIds) & SUDAH optimistic
+              // -- TIDAK disentuh di fix flicker/loading ini, urutan (duluan dari cutting) tetap
+              // dipertahankan.
               if (cuttingGroupEditAll) {
                 await updateBatchRestingAt(groupBatches.map((b) => b.id), toUtcIso(restingAtEditDraft));
               }
               const effectiveDate = toUtcIso(cuttingGroupDateDraft);
-              for (const b of groupBatches) {
-                await updateBatchToCutting(b.id, effectiveDate, cuttingSizeDraft[b.id] ?? {});
-              }
+              const sizeQtyByBatchId = Object.fromEntries(groupBatches.map((b) => [b.id, cuttingSizeDraft[b.id] ?? {}]));
+              // Opsi A (dipilih sesuai permintaan owner "tidak ada loading, kerja di belakang
+              // layar"): updateBatchesToCutting SENGAJA TIDAK di-`await` di sini -- fungsi itu
+              // sendiri sudah optimistic penuh (patch productionBatches SEBELUM menulis ke server,
+              // lihat store.ts), jadi baris-baris grup ini di tabel Cutting SUDAH kelihatan
+              // "selesai" seketika fungsi ini dipanggil, BUKAN sesudah round-trip server selesai.
+              // Modal langsung ditutup di baris berikutnya tanpa menunggu apa pun (tidak ada lagi
+              // spinner/teks "Menyimpan…" yang blocking). Errornya (mis. gate "Selesai Produksi")
+              // SENGAJA TIDAK di-`.catch()` LAGI di sini -- `updateBatchesToCutting` (store.ts)
+              // SUDAH mem-`window.alert` + revert optimistic patch-nya sendiri kalau server menolak
+              // (pola SAMA seperti markRollArrived & aksi optimistic lain di app ini) -- nempel
+              // `.catch()` lagi di sini cuma akan memunculkan alert DOBEL untuk 1 kegagalan yang
+              // sama. Promise ini sengaja dibiarkan "unhandled" dari sudut pandang komponen --
+              // sudah ditangani tuntas di dalam store, bukan bug/kelalaian.
+              updateBatchesToCutting(
+                groupBatches.map((b) => b.id),
+                effectiveDate,
+                sizeQtyByBatchId
+              );
               closeCuttingGroupModal();
             } catch (err) {
               setCuttingGroupError(err instanceof Error ? err.message : "Gagal menyimpan hasil cutting.");
-            } finally {
-              setCuttingGroupSaving(false);
             }
           }
           return (
@@ -1571,8 +1590,8 @@ export function ProductionCuttingTab({ vendorId }: { vendorId: string }) {
                   <button onClick={closeCuttingGroupModal} className="rounded-md border border-[#CBD5DF] bg-white px-3.5 py-[7px] font-sans text-xs font-semibold text-action-primary">
                     Batal
                   </button>
-                  <Button onClick={saveGroup} disabled={!canSaveGroup || cuttingGroupSaving} variant="success" size="sm">
-                    {cuttingGroupSaving ? "Menyimpan…" : "Simpan"}
+                  <Button onClick={saveGroup} disabled={!canSaveGroup} variant="success" size="sm">
+                    Simpan
                   </Button>
                 </div>
               </div>
