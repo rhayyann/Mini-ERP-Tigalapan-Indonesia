@@ -103,9 +103,33 @@ function normKey(s: string): string {
 // materialSupplierNamesForWarna di bawah -- match PERSIS untuk warna varian itu sendiri TETAP
 // diutamakan kalau suatu saat ada yang menambahkannya secara eksplisit.
 const KAIN_VARIANT_SUFFIXES = [" KID", " RIB", " TUNIK"];
+// Item revisi 2026-09-14 (lanjutan, owner: "ada beberapa warna varian kids yang beda namanya
+// dengan warna 24S biasa"): SEBAGIAN varian (dicek data live, 11 dari 64) TIDAK sekadar
+// "{warna dasar} {akhiran}" -- namanya sendiri MENYIMPANG dari warna dasar yang benar-benar
+// dipakai (mis. "KUNING KNR 24S KID" itu singkatan dari "KUNING KENARI 24S", "HIJAU ARMY 24S
+// KID" itu Indonesia utk "ARMY GREEN 24S") -- strip akhiran otomatis TIDAK BISA menebak ini
+// (butuh pengetahuan domain, bukan pola string). Dikonfirmasi SATU PER SATU oleh owner (bukan
+// tebakan) -- alias EKSPLISIT ini dicek DULUAN, sebelum strip akhiran generik di bawah. Warna
+// yang TIDAK ada di sini & TIDAK match strip akhiran generik (mis. "DENIM BLUE 24S KID") SENGAJA
+// dibiarkan TIDAK ada fallback sama sekali (owner: "biarkan kosong") -- base-nya memang belum
+// punya padanan warna 24S manapun di Master Data, jangan menebak-nebak sendiri.
+const KAIN_WARNA_ALIAS: Record<string, string> = {
+  "BENHUR 24S KID": "BENHUR SPECIAL 24S",
+  "BENHUR 24S RIB": "BENHUR SPECIAL 24S",
+  "HIJAU ARMY 24S KID": "ARMY GREEN 24S",
+  "KUNING KNR 24S KID": "KUNING KENARI 24S",
+  "PINK SOFT 24S KID": "PINK 24S",
+  "PUTIH 24S KID": "PUTIH BLUISH 24S",
+  "PUTIH 24S RIB": "PUTIH BLUISH 24S",
+  "MERAH 24S KID": "MERAH CABE 24S",
+  "MERAH 24S RIB": "MERAH CABE 24S",
+  "FUCHSIA 24S KID": "FANTA 24S",
+};
 function baseWarnaForKainFallback(warna: string): string | null {
   const trimmed = warna.trim();
   const upper = trimmed.toUpperCase();
+  const alias = KAIN_WARNA_ALIAS[upper];
+  if (alias) return alias;
   for (const suf of KAIN_VARIANT_SUFFIXES) {
     if (upper.endsWith(suf)) {
       const base = trimmed.slice(0, trimmed.length - suf.length).trim();
