@@ -55,7 +55,7 @@ export function HargaKainPanel() {
       label: "Harga per kg",
       default: true,
       align: "right",
-      render: (r) => <NumberInput value={r.hargaPerKg} onChange={(v) => updateRow(r.id, { hargaPerKg: v })} currency className="input w-[110px] text-right" />,
+      render: (r) => <NumberInput value={r.hargaPerKg} onChange={(v) => updateRow(r.id, { hargaPerKg: v })} currency commitOnBlurOnly className="input w-[110px] text-right" />,
     },
     {
       key: "aksi",

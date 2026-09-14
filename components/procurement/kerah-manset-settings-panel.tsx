@@ -40,7 +40,7 @@ export function KerahMansetSettingsPanel() {
       label: "Harga per Kg",
       default: true,
       align: "right",
-      render: (r) => <NumberInput value={r.hargaPerKg} onChange={(v) => updateRow(r.kind, { hargaPerKg: v })} currency className="input w-[130px] text-right" />,
+      render: (r) => <NumberInput value={r.hargaPerKg} onChange={(v) => updateRow(r.kind, { hargaPerKg: v })} currency commitOnBlurOnly className="input w-[130px] text-right" />,
     },
   ];
 

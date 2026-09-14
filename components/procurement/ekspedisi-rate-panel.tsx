@@ -30,7 +30,7 @@ export function EkspedisiRatePanel() {
       label: "Harga/kg",
       default: true,
       align: "right",
-      render: (r) => <NumberInput value={r.pricePerKg} onChange={(v) => updateRow(r.id, { pricePerKg: v })} currency className="input w-[130px] text-right" />,
+      render: (r) => <NumberInput value={r.pricePerKg} onChange={(v) => updateRow(r.id, { pricePerKg: v })} currency commitOnBlurOnly className="input w-[130px] text-right" />,
     },
     {
       key: "aksi",

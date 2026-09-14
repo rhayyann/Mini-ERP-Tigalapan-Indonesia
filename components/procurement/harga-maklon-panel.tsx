@@ -95,7 +95,7 @@ export function HargaMaklonPanel() {
       label: "Harga",
       default: true,
       align: "right",
-      render: (r) => <NumberInput value={r.harga} onChange={(v) => updateRow(r.id, { harga: v })} currency className="input w-[110px] text-right" />,
+      render: (r) => <NumberInput value={r.harga} onChange={(v) => updateRow(r.id, { harga: v })} currency commitOnBlurOnly className="input w-[110px] text-right" />,
     },
     {
       key: "aksi",
