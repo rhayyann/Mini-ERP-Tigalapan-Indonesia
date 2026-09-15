@@ -11,8 +11,10 @@ import type { HargaKainPksRow } from "@/lib/mrp/masterData";
 
 /** Master Data — Harga Kain PKS: sama seperti Harga Kain tapi bertingkat berdasarkan tonase
  *  (per SATUAN, biasanya "TON"). Aturan bisnis dari user: kalau order tidak mencapai tonaseMin
- *  manapun, pakai harga flat di tab Harga Kain — aturan ini BELUM diimplementasikan sebagai
- *  lookup otomatis di fase ini, tabel ini murni referensi yang bisa dilihat/diedit. */
+ *  manapun, pakai harga flat di tab Harga Kain -- DIIMPLEMENTASIKAN di `hargaKainRateInfo`
+ *  (lib/mrp/derive.ts): tingkatan tonase di sini dicek LEBIH DULU (match tonaseMin/tonaseMax
+ *  terhadap berat pesanan), baru fallback ke Harga Kain flat kalau tidak ada yang cocok --
+ *  dipakai LIVE oleh PO Approval, Finance PO Material, export PDF PO, dan modal PV Pengganti. */
 export function HargaKainPksPanel() {
   const rows = useMrpStore((s) => s.hargaKainPks);
   const addRow = useMrpStore((s) => s.addHargaKainPksRow);
@@ -138,7 +140,7 @@ export function HargaKainPksPanel() {
     <>
       <DataTable
         title="Harga Kain PKS (bertingkat per tonase)"
-        subtitle={`${rows.length} baris. Belum dipakai otomatis di kalkulasi PO material.`}
+        subtitle={`${rows.length} baris. DIPAKAI LIVE untuk estimasi harga PO Material di PO Approval -- diprioritaskan di atas Harga Kain (flat) kalau berat pesanan cocok salah satu tingkatan tonase (Tonase Min-Max) di sini.`}
         headerActions={
           <Button onClick={addRow} variant="dashed" size="sm">
             + Tambah baris

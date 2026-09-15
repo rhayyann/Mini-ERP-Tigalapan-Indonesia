@@ -10,9 +10,9 @@ import { useMrpStore } from "@/lib/mrp/store";
 import type { HargaMaklonRow } from "@/lib/mrp/masterData";
 
 /** Master Data — Harga Maklon (ongkos jahit per vendor produksi, bertingkat berdasarkan
- *  kapasitas). MURNI data referensi di fase ini — belum dipakai otomatis oleh kalkulasi PO/
- *  invoice manapun (lihat catatan di lib/mrp/masterData.ts). Sel-sel tabel langsung editable
- *  (onChange -> store), tidak ada tombol Simpan terpisah. */
+ *  kapasitas). DIPAKAI LIVE oleh `hargaMaklonRateInfo`/`maklonRateExplanation` (lib/mrp/derive.ts)
+ *  untuk estimasi harga PO Produksi di PO Approval (badge sumber Standar/PKS). Baris harus diklik
+ *  "Edit" dulu sebelum sel-selnya jadi interaktif -- lihat state `editingId` di bawah. */
 export function HargaMaklonPanel() {
   const rows = useMrpStore((s) => s.hargaMaklon);
   const addRow = useMrpStore((s) => s.addHargaMaklonRow);
@@ -134,7 +134,7 @@ export function HargaMaklonPanel() {
   return (
     <DataTable
       title="Harga Maklon"
-      subtitle="Ongkos jahit per vendor produksi — bertingkat berdasarkan kapasitas kumulatif (Standar/PKS). Belum dipakai otomatis di kalkulasi PO/invoice."
+      subtitle="Ongkos jahit per vendor produksi — bertingkat berdasarkan kapasitas kumulatif (Standar/PKS). DIPAKAI LIVE untuk estimasi harga PO Produksi di PO Approval (badge sumber Standar/PKS di sana)."
       headerActions={
         <Button onClick={addRow} variant="dashed" size="sm">
           + Tambah baris

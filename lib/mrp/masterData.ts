@@ -6,11 +6,16 @@ import type { Lengan } from "./types";
  *  lib/mrp/importGoogleSheet.ts) lalu dikelola (tambah/edit/hapus) langsung dari halaman Master
  *  Data masing-masing modul (Procurement/Finance) di dalam store (lib/mrp/store.ts).
  *
- *  PENTING (lihat plan): di fase ini, tabel Harga Maklon / Harga Kain / Harga Kain PKS MURNI
- *  data referensi — belum dipakai otomatis oleh kalkulasi PO/invoice manapun. `ratePerPc` di
- *  VENDOR_PRODUKSI (seed.ts) dan MATERIAL_RATE_PER_ROLL (store.ts) tetap dipakai apa adanya untuk
- *  kalkulasi yang sudah ada. Auto-lookup dari tabel ini ke kalkulasi adalah pekerjaan fase
- *  berikutnya yang terpisah. */
+ *  UPDATE (2026-09-15, cross-check owner: "ini belum dipake estimasi harganya di pembuatan PO?"):
+ *  komentar "PENTING" di bawah ini SUDAH BASI -- Harga Maklon/Harga Kain/Harga Kain PKS SEKARANG
+ *  DIPAKAI LIVE (lihat `hargaMaklonRateInfo`/`hargaKainRateInfo`/`maklonRateExplanation`/
+ *  `materialRateExplanation` di lib/mrp/derive.ts, dipanggil dari app/procurement/po-approval/
+ *  page.tsx, components/finance/po-material-panel.tsx, lib/mrp/exportPoPdf.ts, dan modal PV
+ *  Pengganti) untuk estimasi harga PO Produksi & PO Material -- BUKAN lagi cuma data referensi
+ *  inert. `MATERIAL_RATE_PER_ROLL`/`VENDOR_PRODUKSI.ratePerPc` (seed.ts) TETAP dipakai sebagai
+ *  FALLBACK TERAKHIR ("Estimasi") kalau tidak ada baris Master Data yang cocok sama sekali --
+ *  bukan lagi satu-satunya sumber seperti dulu. Paragraf asli di bawah DIBIARKAN untuk histori,
+ *  TAPI SUDAH TIDAK AKURAT -- rujuk komentar di derive.ts untuk perilaku SEBENARNYA. */
 
 /** Harga maklon (ongkos jahit) per vendor produksi — bertingkat berdasarkan kapasitas kumulatif
  *  ("Standar" = harga dasar flat, "PKS" = harga khusus kalau kapasitas mencapai rentang
@@ -40,8 +45,8 @@ export type HargaKainRow = {
 };
 
 /** Harga kain PKS — sama seperti HargaKainRow tapi bertingkat berdasarkan tonase (per SATUAN,
- *  biasanya "TON"). Kalau order tidak mencapai tonaseMin manapun, fallback ke HargaKainRow biasa
- *  (aturan bisnis dari user — belum diimplementasikan sebagai lookup otomatis di fase ini). */
+ *  biasanya "TON"). Kalau order tidak mencapai tonaseMin manapun, fallback ke HargaKainRow biasa --
+ *  DIIMPLEMENTASIKAN di `hargaKainRateInfo` (lib/mrp/derive.ts), dipakai live di PO Approval dkk. */
 export type HargaKainPksRow = {
   id: string;
   kodeSupplier: string;

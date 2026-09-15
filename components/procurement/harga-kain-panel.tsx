@@ -10,8 +10,10 @@ import { useMrpStore } from "@/lib/mrp/store";
 import type { HargaKainRow } from "@/lib/mrp/masterData";
 
 /** Master Data — Harga Kain/Material flat per kg, per supplier + kategori + warna. Bisa 468+
- *  baris (dari sheet asli) — pakai filterDefs DataTable untuk menyaring. MURNI data referensi di
- *  fase ini, belum dipakai otomatis oleh kalkulasi PO material manapun. */
+ *  baris (dari sheet asli) — pakai filterDefs DataTable untuk menyaring. DIPAKAI LIVE oleh
+ *  `hargaKainRateInfo` (lib/mrp/derive.ts) untuk estimasi harga PO Material di PO Approval,
+ *  Finance PO Material, export PDF PO, dan modal PV Pengganti -- fallback "Standar" kalau tidak
+ *  ada tingkatan tonase Harga Kain PKS yang cocok untuk warna/supplier/berat pesanan itu. */
 export function HargaKainPanel() {
   const rows = useMrpStore((s) => s.hargaKain);
   const addRow = useMrpStore((s) => s.addHargaKainRow);
@@ -92,7 +94,7 @@ export function HargaKainPanel() {
   return (
     <DataTable
       title="Harga Kain / Material"
-      subtitle={`Harga flat per kg — ${rows.length} baris. Belum dipakai otomatis di kalkulasi PO material.`}
+      subtitle={`Harga flat per kg — ${rows.length} baris. DIPAKAI LIVE untuk estimasi harga PO Material di PO Approval/export PDF PO -- kalah prioritas dari Harga Kain PKS kalau berat pesanan cocok salah satu tingkatan tonase di sana.`}
       headerActions={
         <Button onClick={addRow} variant="dashed" size="sm">
           + Tambah baris
