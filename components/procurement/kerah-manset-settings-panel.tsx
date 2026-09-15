@@ -1,7 +1,11 @@
 "use client";
 
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import { NumberInput } from "@/components/mrp/number-input";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
+import { EditableCell } from "@/components/mrp/editable-cell";
+import { formatRupiah } from "@/lib/mrp/derive";
 import { useMrpStore } from "@/lib/mrp/store";
 import type { KerahMansetSettingRow } from "@/lib/mrp/masterData";
 
@@ -20,6 +24,9 @@ export function KerahMansetSettingsPanel() {
   // Urutan tampil KERAH lalu MANSET — tidak terjamin dari server (order by kind di migration
   // seharusnya sudah alfabetis KERAH < MANSET, tapi tetap di-sort eksplisit di sini untuk aman).
   const rows = [...rowsRaw].sort((a, b) => (a.kind === "KERAH" ? 0 : 1) - (b.kind === "KERAH" ? 0 : 1));
+  // Item revisi 2026-09-15 -- baris harus diklik "Edit" dulu sebelum bisa diketik (cegah salah
+  // ketik). Kolom "Item" (Kerah/Manset) TETAP label saja, TIDAK PERNAH interaktif.
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const columns: ColumnDef<KerahMansetSettingRow>[] = [
     {
@@ -33,14 +40,32 @@ export function KerahMansetSettingsPanel() {
       label: "Kg per Pcs",
       default: true,
       align: "right",
-      render: (r) => <NumberInput value={r.kgPerPcs} onChange={(v) => updateRow(r.kind, { kgPerPcs: v })} decimals={3} className="input w-[110px] text-right" />,
+      render: (r) => (
+        <EditableCell editing={editingId === r.kind} display={r.kgPerPcs.toLocaleString("id-ID", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}>
+          <NumberInput value={r.kgPerPcs} onChange={(v) => updateRow(r.kind, { kgPerPcs: v })} decimals={3} className="input w-[110px] text-right" />
+        </EditableCell>
+      ),
     },
     {
       key: "hargaPerKg",
       label: "Harga per Kg",
       default: true,
       align: "right",
-      render: (r) => <NumberInput value={r.hargaPerKg} onChange={(v) => updateRow(r.kind, { hargaPerKg: v })} currency commitOnBlurOnly className="input w-[130px] text-right" />,
+      render: (r) => (
+        <EditableCell editing={editingId === r.kind} display={formatRupiah(r.hargaPerKg)}>
+          <NumberInput value={r.hargaPerKg} onChange={(v) => updateRow(r.kind, { hargaPerKg: v })} currency commitOnBlurOnly className="input w-[130px] text-right" />
+        </EditableCell>
+      ),
+    },
+    {
+      key: "aksi",
+      label: "Aksi",
+      default: true,
+      render: (r) => (
+        <Button onClick={() => setEditingId(editingId === r.kind ? null : r.kind)} variant={editingId === r.kind ? "success" : "ghost"} size="xs">
+          {editingId === r.kind ? "Simpan" : "Edit"}
+        </Button>
+      ),
     },
   ];
 

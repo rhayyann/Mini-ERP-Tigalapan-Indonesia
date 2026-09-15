@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { EditableCell } from "@/components/mrp/editable-cell";
 import { useMrpStore } from "@/lib/mrp/store";
 
 /** Master Data — daftar TAMBAHAN nama Supplier material yang belum sempat masuk ke tab "Harga
@@ -18,6 +19,8 @@ export function SupplierPanel() {
   const deleteSupplier = useMrpStore((s) => s.deleteSupplier);
   const [newName, setNewName] = useState("");
   const [search, setSearch] = useState("");
+  // Item revisi 2026-09-15 -- baris harus diklik "Edit" dulu sebelum bisa diketik (cegah salah ketik).
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   function submitAdd() {
     const name = newName.trim();
@@ -57,7 +60,12 @@ export function SupplierPanel() {
       <div className="max-h-[60vh] overflow-y-auto">
         {filtered.map((r) => (
           <div key={r.id} className="flex items-center gap-2 border-b border-[#F1F4F7] px-5 py-2 last:border-b-0">
-            <input value={r.nama} onChange={(e) => updateSupplier(r.id, e.target.value)} className="input flex-1 max-w-[320px]" />
+            <EditableCell editing={editingId === r.id} display={r.nama || "—"} displayClassName="flex-1 max-w-[320px]">
+              <input value={r.nama} onChange={(e) => updateSupplier(r.id, e.target.value)} className="input flex-1 max-w-[320px]" />
+            </EditableCell>
+            <Button onClick={() => setEditingId(editingId === r.id ? null : r.id)} variant={editingId === r.id ? "success" : "ghost"} size="xs">
+              {editingId === r.id ? "Simpan" : "Edit"}
+            </Button>
             <Button onClick={() => deleteSupplier(r.id)} variant="danger" size="xs">
               Hapus
             </Button>

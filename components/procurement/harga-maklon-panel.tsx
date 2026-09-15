@@ -1,9 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { NumberInput } from "@/components/mrp/number-input";
 import { ImportSheetButton } from "@/components/mrp/import-sheet-button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
+import { EditableCell } from "@/components/mrp/editable-cell";
+import { formatRupiah } from "@/lib/mrp/derive";
 import { useMrpStore } from "@/lib/mrp/store";
 import { GOOGLE_SHEET_URLS, fetchGoogleSheetCsv, mapHargaMaklonRows, parseCsvRows } from "@/lib/mrp/importGoogleSheet";
 import type { HargaMaklonRow } from "@/lib/mrp/masterData";
@@ -18,6 +21,8 @@ export function HargaMaklonPanel() {
   const updateRow = useMrpStore((s) => s.updateHargaMaklonRow);
   const deleteRow = useMrpStore((s) => s.deleteHargaMaklonRow);
   const replaceAll = useMrpStore((s) => s.replaceHargaMaklon);
+  // Item revisi 2026-09-15 -- baris harus diklik "Edit" dulu sebelum bisa diketik (cegah salah ketik).
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   async function handleImport() {
     const csv = await fetchGoogleSheetCsv(GOOGLE_SHEET_URLS.hargaMaklon);
@@ -33,29 +38,43 @@ export function HargaMaklonPanel() {
       key: "kodeVendor",
       label: "Kode Vendor",
       default: false,
-      render: (r) => <input value={r.kodeVendor} onChange={(e) => updateRow(r.id, { kodeVendor: e.target.value })} className="input w-[90px]" />,
+      render: (r) => (
+        <EditableCell editing={editingId === r.id} display={r.kodeVendor || "—"}>
+          <input value={r.kodeVendor} onChange={(e) => updateRow(r.id, { kodeVendor: e.target.value })} className="input w-[90px]" />
+        </EditableCell>
+      ),
     },
     {
       key: "namaVendor",
       label: "Nama Vendor",
       default: true,
-      render: (r) => <input value={r.namaVendor} onChange={(e) => updateRow(r.id, { namaVendor: e.target.value })} className="input w-[150px]" />,
+      render: (r) => (
+        <EditableCell editing={editingId === r.id} display={r.namaVendor || "—"}>
+          <input value={r.namaVendor} onChange={(e) => updateRow(r.id, { namaVendor: e.target.value })} className="input w-[150px]" />
+        </EditableCell>
+      ),
     },
     {
       key: "tipeLengan",
       label: "Tipe Lengan",
       default: true,
-      render: (r) => <input value={r.tipeLengan} onChange={(e) => updateRow(r.id, { tipeLengan: e.target.value })} className="input w-[110px]" placeholder="PDK / PJG / Wangky PDK" />,
+      render: (r) => (
+        <EditableCell editing={editingId === r.id} display={r.tipeLengan || "—"}>
+          <input value={r.tipeLengan} onChange={(e) => updateRow(r.id, { tipeLengan: e.target.value })} className="input w-[110px]" placeholder="PDK / PJG / Wangky PDK" />
+        </EditableCell>
+      ),
     },
     {
       key: "jenisHarga",
       label: "Jenis Harga",
       default: true,
       render: (r) => (
-        <select value={r.jenisHarga} onChange={(e) => updateRow(r.id, { jenisHarga: e.target.value === "PKS" ? "PKS" : "Standar" })} className="input w-[100px]">
-          <option value="Standar">Standar</option>
-          <option value="PKS">PKS</option>
-        </select>
+        <EditableCell editing={editingId === r.id} display={r.jenisHarga}>
+          <select value={r.jenisHarga} onChange={(e) => updateRow(r.id, { jenisHarga: e.target.value === "PKS" ? "PKS" : "Standar" })} className="input w-[100px]">
+            <option value="Standar">Standar</option>
+            <option value="PKS">PKS</option>
+          </select>
+        </EditableCell>
       ),
     },
     {
@@ -64,13 +83,15 @@ export function HargaMaklonPanel() {
       default: true,
       align: "right",
       render: (r) => (
-        <input
-          type="number"
-          value={r.kapasitasMin ?? ""}
-          onChange={(e) => updateRow(r.id, { kapasitasMin: e.target.value === "" ? undefined : Number(e.target.value) })}
-          className="input w-[90px] text-right"
-          placeholder="—"
-        />
+        <EditableCell editing={editingId === r.id} display={r.kapasitasMin != null ? r.kapasitasMin.toLocaleString("id-ID") : "—"}>
+          <input
+            type="number"
+            value={r.kapasitasMin ?? ""}
+            onChange={(e) => updateRow(r.id, { kapasitasMin: e.target.value === "" ? undefined : Number(e.target.value) })}
+            className="input w-[90px] text-right"
+            placeholder="—"
+          />
+        </EditableCell>
       ),
     },
     {
@@ -81,13 +102,15 @@ export function HargaMaklonPanel() {
       default: false,
       align: "right",
       render: (r) => (
-        <input
-          type="number"
-          value={r.kapasitasMax ?? ""}
-          onChange={(e) => updateRow(r.id, { kapasitasMax: e.target.value === "" ? undefined : Number(e.target.value) })}
-          className="input w-[90px] text-right"
-          placeholder="—"
-        />
+        <EditableCell editing={editingId === r.id} display={r.kapasitasMax != null ? r.kapasitasMax.toLocaleString("id-ID") : "—"}>
+          <input
+            type="number"
+            value={r.kapasitasMax ?? ""}
+            onChange={(e) => updateRow(r.id, { kapasitasMax: e.target.value === "" ? undefined : Number(e.target.value) })}
+            className="input w-[90px] text-right"
+            placeholder="—"
+          />
+        </EditableCell>
       ),
     },
     {
@@ -95,16 +118,25 @@ export function HargaMaklonPanel() {
       label: "Harga",
       default: true,
       align: "right",
-      render: (r) => <NumberInput value={r.harga} onChange={(v) => updateRow(r.id, { harga: v })} currency commitOnBlurOnly className="input w-[110px] text-right" />,
+      render: (r) => (
+        <EditableCell editing={editingId === r.id} display={formatRupiah(r.harga)}>
+          <NumberInput value={r.harga} onChange={(v) => updateRow(r.id, { harga: v })} currency commitOnBlurOnly className="input w-[110px] text-right" />
+        </EditableCell>
+      ),
     },
     {
       key: "aksi",
       label: "Aksi",
       default: true,
       render: (r) => (
-        <Button onClick={() => deleteRow(r.id)} variant="danger" size="xs">
-          Hapus
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Button onClick={() => setEditingId(editingId === r.id ? null : r.id)} variant={editingId === r.id ? "success" : "ghost"} size="xs">
+            {editingId === r.id ? "Simpan" : "Edit"}
+          </Button>
+          <Button onClick={() => deleteRow(r.id)} variant="danger" size="xs">
+            Hapus
+          </Button>
+        </div>
       ),
     },
   ];
@@ -128,8 +160,8 @@ export function HargaMaklonPanel() {
       firstColumnRender={(r) => <span className="font-mono text-[11px] text-text-muted">{rows.indexOf(r) + 1}</span>}
       search={{ placeholder: "Cari nama/kode vendor…", getText: (r) => `${r.namaVendor} ${r.kodeVendor}` }}
       filterDefs={[
-        { label: "Kode Vendor", options: Array.from(new Set(rows.map((r) => r.kodeVendor).filter(Boolean))), test: (r, v) => r.kodeVendor === v },
-        { label: "Tipe Lengan", options: Array.from(new Set(rows.map((r) => r.tipeLengan).filter(Boolean))), test: (r, v) => r.tipeLengan === v },
+        { label: "Kode Vendor", options: Array.from(new Set(rows.map((r) => r.kodeVendor).filter(Boolean))).sort((a, b) => a.localeCompare(b, "id-ID")), test: (r, v) => r.kodeVendor === v },
+        { label: "Tipe Lengan", options: Array.from(new Set(rows.map((r) => r.tipeLengan).filter(Boolean))).sort((a, b) => a.localeCompare(b, "id-ID")), test: (r, v) => r.tipeLengan === v },
         { label: "Jenis Harga", options: ["Standar", "PKS"], test: (r, v) => r.jenisHarga === v },
       ]}
       emptyText='Belum ada data — klik "Import dari Google Sheets" atau "+ Tambah baris".'

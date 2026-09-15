@@ -1,8 +1,11 @@
 "use client";
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { NumberInput } from "@/components/mrp/number-input";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
+import { EditableCell } from "@/components/mrp/editable-cell";
+import { formatRupiah } from "@/lib/mrp/derive";
 import { useMrpStore } from "@/lib/mrp/store";
 import type { EkspedisiRateRow } from "@/lib/mrp/masterData";
 
@@ -17,29 +20,44 @@ export function EkspedisiRatePanel() {
   const addRow = useMrpStore((s) => s.addEkspedisiRateRow);
   const updateRow = useMrpStore((s) => s.updateEkspedisiRateRow);
   const deleteRow = useMrpStore((s) => s.deleteEkspedisiRateRow);
+  // Item revisi 2026-09-15 -- baris harus diklik "Edit" dulu sebelum bisa diketik (cegah salah ketik).
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const columns: ColumnDef<EkspedisiRateRow>[] = [
     {
       key: "nama",
       label: "Nama Ekspedisi",
       default: true,
-      render: (r) => <input value={r.nama} onChange={(e) => updateRow(r.id, { nama: e.target.value })} className="input w-[220px]" />,
+      render: (r) => (
+        <EditableCell editing={editingId === r.id} display={r.nama || "—"}>
+          <input value={r.nama} onChange={(e) => updateRow(r.id, { nama: e.target.value })} className="input w-[220px]" />
+        </EditableCell>
+      ),
     },
     {
       key: "pricePerKg",
       label: "Harga/kg",
       default: true,
       align: "right",
-      render: (r) => <NumberInput value={r.pricePerKg} onChange={(v) => updateRow(r.id, { pricePerKg: v })} currency commitOnBlurOnly className="input w-[130px] text-right" />,
+      render: (r) => (
+        <EditableCell editing={editingId === r.id} display={formatRupiah(r.pricePerKg)}>
+          <NumberInput value={r.pricePerKg} onChange={(v) => updateRow(r.id, { pricePerKg: v })} currency commitOnBlurOnly className="input w-[130px] text-right" />
+        </EditableCell>
+      ),
     },
     {
       key: "aksi",
       label: "Aksi",
       default: true,
       render: (r) => (
-        <Button onClick={() => deleteRow(r.id)} variant="danger" size="xs">
-          Hapus
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Button onClick={() => setEditingId(editingId === r.id ? null : r.id)} variant={editingId === r.id ? "success" : "ghost"} size="xs">
+            {editingId === r.id ? "Simpan" : "Edit"}
+          </Button>
+          <Button onClick={() => deleteRow(r.id)} variant="danger" size="xs">
+            Hapus
+          </Button>
+        </div>
       ),
     },
   ];
