@@ -3,12 +3,10 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { NumberInput } from "@/components/mrp/number-input";
-import { ImportSheetButton } from "@/components/mrp/import-sheet-button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { EditableCell } from "@/components/mrp/editable-cell";
 import { formatRupiah } from "@/lib/mrp/derive";
 import { useMrpStore } from "@/lib/mrp/store";
-import { GOOGLE_SHEET_URLS, fetchGoogleSheetCsv, mapHargaKainPksRows, parseCsvRows } from "@/lib/mrp/importGoogleSheet";
 import type { HargaKainPksRow } from "@/lib/mrp/masterData";
 
 /** Master Data — Harga Kain PKS: sama seperti Harga Kain tapi bertingkat berdasarkan tonase
@@ -20,16 +18,8 @@ export function HargaKainPksPanel() {
   const addRow = useMrpStore((s) => s.addHargaKainPksRow);
   const updateRow = useMrpStore((s) => s.updateHargaKainPksRow);
   const deleteRow = useMrpStore((s) => s.deleteHargaKainPksRow);
-  const replaceAll = useMrpStore((s) => s.replaceHargaKainPks);
   // Item revisi 2026-09-15 -- baris harus diklik "Edit" dulu sebelum bisa diketik (cegah salah ketik).
   const [editingId, setEditingId] = useState<string | null>(null);
-
-  async function handleImport() {
-    const csv = await fetchGoogleSheetCsv(GOOGLE_SHEET_URLS.hargaKainPks);
-    const parsed = mapHargaKainPksRows(parseCsvRows(csv));
-    replaceAll(parsed);
-    return parsed.length;
-  }
 
   const columns: ColumnDef<HargaKainPksRow>[] = [
     {
@@ -150,12 +140,9 @@ export function HargaKainPksPanel() {
         title="Harga Kain PKS (bertingkat per tonase)"
         subtitle={`${rows.length} baris. Belum dipakai otomatis di kalkulasi PO material.`}
         headerActions={
-          <div className="flex items-center gap-2">
-            <Button onClick={addRow} variant="dashed" size="sm">
-              + Tambah baris
-            </Button>
-            <ImportSheetButton onImport={handleImport} autoImportIfEmpty={rows.length === 0} />
-          </div>
+          <Button onClick={addRow} variant="dashed" size="sm">
+            + Tambah baris
+          </Button>
         }
         columns={columns}
         rows={rows}
@@ -169,7 +156,7 @@ export function HargaKainPksPanel() {
           { label: "Kategori", options: Array.from(new Set(rows.map((r) => r.kategori).filter(Boolean))).sort((a, b) => a.localeCompare(b, "id-ID")), test: (r, v) => r.kategori === v },
           { label: "Warna", options: Array.from(new Set(rows.map((r) => r.warna).filter(Boolean))).sort((a, b) => a.localeCompare(b, "id-ID")), test: (r, v) => r.warna === v },
         ]}
-        emptyText='Belum ada data — klik "Import dari Google Sheets" atau "+ Tambah baris".'
+        emptyText='Belum ada data — klik "+ Tambah baris".'
         bodyMaxHeight="60vh"
       />
     </>

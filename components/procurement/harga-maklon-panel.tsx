@@ -3,12 +3,10 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { NumberInput } from "@/components/mrp/number-input";
-import { ImportSheetButton } from "@/components/mrp/import-sheet-button";
 import { DataTable, type ColumnDef } from "@/components/mrp/data-table";
 import { EditableCell } from "@/components/mrp/editable-cell";
 import { formatRupiah } from "@/lib/mrp/derive";
 import { useMrpStore } from "@/lib/mrp/store";
-import { GOOGLE_SHEET_URLS, fetchGoogleSheetCsv, mapHargaMaklonRows, parseCsvRows } from "@/lib/mrp/importGoogleSheet";
 import type { HargaMaklonRow } from "@/lib/mrp/masterData";
 
 /** Master Data — Harga Maklon (ongkos jahit per vendor produksi, bertingkat berdasarkan
@@ -20,16 +18,8 @@ export function HargaMaklonPanel() {
   const addRow = useMrpStore((s) => s.addHargaMaklonRow);
   const updateRow = useMrpStore((s) => s.updateHargaMaklonRow);
   const deleteRow = useMrpStore((s) => s.deleteHargaMaklonRow);
-  const replaceAll = useMrpStore((s) => s.replaceHargaMaklon);
   // Item revisi 2026-09-15 -- baris harus diklik "Edit" dulu sebelum bisa diketik (cegah salah ketik).
   const [editingId, setEditingId] = useState<string | null>(null);
-
-  async function handleImport() {
-    const csv = await fetchGoogleSheetCsv(GOOGLE_SHEET_URLS.hargaMaklon);
-    const parsed = mapHargaMaklonRows(parseCsvRows(csv));
-    replaceAll(parsed);
-    return parsed.length;
-  }
 
   const columns: ColumnDef<HargaMaklonRow>[] = [
     {
@@ -146,12 +136,9 @@ export function HargaMaklonPanel() {
       title="Harga Maklon"
       subtitle="Ongkos jahit per vendor produksi — bertingkat berdasarkan kapasitas kumulatif (Standar/PKS). Belum dipakai otomatis di kalkulasi PO/invoice."
       headerActions={
-        <div className="flex items-center gap-2">
-          <Button onClick={addRow} variant="dashed" size="sm">
-            + Tambah baris
-          </Button>
-          <ImportSheetButton onImport={handleImport} autoImportIfEmpty={rows.length === 0} />
-        </div>
+        <Button onClick={addRow} variant="dashed" size="sm">
+          + Tambah baris
+        </Button>
       }
       columns={columns}
       rows={rows}
@@ -165,7 +152,7 @@ export function HargaMaklonPanel() {
         { label: "Tipe Lengan", options: Array.from(new Set(rows.map((r) => r.tipeLengan).filter(Boolean))).sort((a, b) => a.localeCompare(b, "id-ID")), test: (r, v) => r.tipeLengan === v },
         { label: "Jenis Harga", options: ["Standar", "PKS"], test: (r, v) => r.jenisHarga === v },
       ]}
-      emptyText='Belum ada data — klik "Import dari Google Sheets" atau "+ Tambah baris".'
+      emptyText='Belum ada data — klik "+ Tambah baris".'
       bodyMaxHeight="60vh"
     />
   );

@@ -2,9 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ImportSheetButton } from "@/components/mrp/import-sheet-button";
 import { useMrpStore } from "@/lib/mrp/store";
-import { GOOGLE_SHEET_URLS, fetchGoogleSheetCsv, mapEntitasRows, parseCsvRows } from "@/lib/mrp/importGoogleSheet";
 
 /** Master Data — daftar Entitas (badan usaha) yang dipakai Procurement (assign per PO/material)
  *  & Finance (approval, pilih entitas bayar). Sebelumnya ada 2 sumber berbeda yang tidak sinkron:
@@ -16,16 +14,8 @@ export function EntitasPanel() {
   const addEntitas = useMrpStore((s) => s.addEntitas);
   const updateEntitas = useMrpStore((s) => s.updateEntitas);
   const deleteEntitas = useMrpStore((s) => s.deleteEntitas);
-  const replaceEntitas = useMrpStore((s) => s.replaceEntitas);
   const [newName, setNewName] = useState("");
   const [search, setSearch] = useState("");
-
-  async function handleImport() {
-    const csv = await fetchGoogleSheetCsv(GOOGLE_SHEET_URLS.entitas);
-    const parsed = mapEntitasRows(parseCsvRows(csv));
-    replaceEntitas(parsed);
-    return parsed.length;
-  }
 
   function submitAdd() {
     const name = newName.trim();
@@ -42,9 +32,6 @@ export function EntitasPanel() {
         <div>
           <span className="font-sans text-[13px] font-semibold text-text-primary">List Entitas</span>
           <div className="mt-0.5 font-sans text-[10.5px] font-medium text-text-muted">Dipakai Procurement & Finance saat assign/approve PO.</div>
-        </div>
-        <div className="ml-auto">
-          <ImportSheetButton onImport={handleImport} autoImportIfEmpty={rows.length === 0} />
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle bg-[#FAFBFC] px-5 py-2.5">
