@@ -43,11 +43,13 @@ export function HargaKainPksPanel() {
       ),
     },
     {
-      // default:false — kategori SENGAJA diabaikan di lookup harga sungguhan (lihat catatan di
-      // hargaKainRateInfo, lib/mrp/derive.ts), jadi bukan info inti; dibatasi ke 7 kolom total.
+      // Item revisi 2026-09-15 (owner): default DITAMPILKAN (dulu false/disembunyikan ke toggle
+      // "Kolom") -- kategori SENGAJA diabaikan di lookup harga sungguhan (lihat catatan di
+      // hargaKainRateInfo, lib/mrp/derive.ts) TAPI owner tetap mau lihat kolom ini tanpa perlu
+      // buka "⊞ Kolom" dulu.
       key: "kategori",
       label: "Kategori",
-      default: false,
+      default: true,
       render: (r) => (
         <EditableCell editing={editingId === r.id} display={r.kategori || "—"}>
           <input value={r.kategori} onChange={(e) => updateRow(r.id, { kategori: e.target.value })} className="input w-[110px]" />
@@ -65,10 +67,12 @@ export function HargaKainPksPanel() {
       ),
     },
     {
-      // default:false — hampir selalu "TON" (jarang bervariasi), dipindah ke toggle "Kolom".
+      // Item revisi 2026-09-15 (owner): default DITAMPILKAN (dulu false/disembunyikan ke toggle
+      // "Kolom") -- hampir selalu "TON" (jarang bervariasi) tapi owner tetap mau lihat tanpa perlu
+      // buka "⊞ Kolom" dulu.
       key: "satuan",
       label: "Satuan",
-      default: false,
+      default: true,
       render: (r) => (
         <EditableCell editing={editingId === r.id} display={r.satuan}>
           <select value={r.satuan} onChange={(e) => updateRow(r.id, { satuan: e.target.value })} className="input w-[80px]">
