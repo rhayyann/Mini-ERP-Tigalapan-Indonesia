@@ -114,6 +114,7 @@ export function HargaKainPanel() {
       columns={columns}
       rows={rows}
       keyOf={(r) => r.id}
+      alwaysShowKey={editingId}
       firstColumnLabel="No."
       firstColumnRender={(r) => <span className="font-mono text-[11px] text-text-muted">{rows.indexOf(r) + 1}</span>}
       search={{ placeholder: "Cari warna/supplier…", getText: (r) => `${r.warna} ${r.namaSupplier} ${r.kodeSupplier} ${r.kategori}` }}

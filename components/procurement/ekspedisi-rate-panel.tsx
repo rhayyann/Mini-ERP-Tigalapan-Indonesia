@@ -74,6 +74,7 @@ export function EkspedisiRatePanel() {
       columns={columns}
       rows={rows}
       keyOf={(r) => r.id}
+      alwaysShowKey={editingId}
       search={{ placeholder: "Cari nama ekspedisi…", getText: (r) => r.nama }}
       firstColumnLabel="No."
       firstColumnRender={(r) => <span className="font-mono text-[11px] text-text-muted">{rows.indexOf(r) + 1}</span>}

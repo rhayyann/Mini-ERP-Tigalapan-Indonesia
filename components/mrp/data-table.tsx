@@ -38,6 +38,7 @@ export function DataTable<T>({
   keyOf,
   filterDefs,
   search,
+  alwaysShowKey,
   emptyText = "Tidak ada data.",
   firstColumnLabel,
   firstColumnRender,
@@ -55,6 +56,19 @@ export function DataTable<T>({
   keyOf: (row: T) => string;
   filterDefs?: FilterDef<T>[];
   search?: SearchDef<T>;
+  /** Item revisi 2026-09-15 (owner-reported: "input satu huruf, langsung terclose" di Master Data
+   *  -- klik "Edit" baris X, ketik 1 karakter, baris X HILANG dari tampilan): root cause -- kalau
+   *  ada `filterDefs`/`search` yang KEBETULAN sedang aktif & cocok dengan nilai LAMA baris itu
+   *  (mis. filter "Kategori" di-set ke "WA MYNO" untuk MENEMUKAN baris itu, lalu baris itu di-Edit
+   *  buat diperbaiki jadi "WANGKI MYNO") -- begitu user ketik 1 huruf, nilai baris berubah jadi
+   *  TIDAK LAGI cocok filter yang MASIH aktif, `filtered` di bawah otomatis MEMBUANG baris itu dari
+   *  tampilan -- bukan "tertutup", tapi literal ke-filter keluar SELAGI SEDANG diedit. Isi prop ini
+   *  dengan `keyOf` baris yang SEDANG dalam mode edit (kalau ada) -- baris itu SELALU ikut tampil
+   *  di `filtered`, TIDAK PERNAH ikut ke-filter keluar oleh filterDefs/search apa pun, SELAMA masih
+   *  dalam mode edit. Opsional & backward-compatible -- pemakai DataTable yang tidak mengisi prop
+   *  ini (SEMUA tabel lain, bukan Master Data yang punya gerbang Edit/Simpan) TIDAK berubah
+   *  perilaku sama sekali. */
+  alwaysShowKey?: string | null;
   emptyText?: string;
   firstColumnLabel: string;
   firstColumnRender: (row: T) => ReactNode;
@@ -113,8 +127,9 @@ export function DataTable<T>({
   const trimmedQuery = searchQuery.trim().toLowerCase();
   const filtered = rows.filter(
     (r) =>
-      (filterDefs ?? []).every((f, i) => !filterValues[i] || f.test(r, filterValues[i])) &&
-      (!search || !trimmedQuery || search.getText(r).toLowerCase().includes(trimmedQuery))
+      (alwaysShowKey != null && keyOf(r) === alwaysShowKey) ||
+      ((filterDefs ?? []).every((f, i) => !filterValues[i] || f.test(r, filterValues[i])) &&
+        (!search || !trimmedQuery || search.getText(r).toLowerCase().includes(trimmedQuery)))
   );
   const visibleColumns = columns.filter((c) => visible.has(c.key));
 

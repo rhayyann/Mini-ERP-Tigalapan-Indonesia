@@ -29,7 +29,12 @@ export function SupplierPanel() {
     setNewName("");
   }
 
-  const filtered = search.trim() ? rows.filter((r) => r.nama.toLowerCase().includes(search.trim().toLowerCase())) : rows;
+  // Fix (2026-09-15, sama akar masalah dengan alwaysShowKey di data-table.tsx): kalau baris yang
+  // SEDANG diedit (editingId) kebetulan nama barunya tidak lagi cocok `search` yang masih aktif
+  // (mis. user cari "abc" buat nemuin baris itu, lalu ngetik perbaiki jadi "abcdef" -- masih cocok
+  // -- TAPI kalau diganti total jadi nama lain, atau search-nya sendiri berubah), baris itu jangan
+  // sampai hilang dari tampilan SELAGI SEDANG diedit -- selalu ikut tampil terlepas dari `search`.
+  const filtered = search.trim() ? rows.filter((r) => r.id === editingId || r.nama.toLowerCase().includes(search.trim().toLowerCase())) : rows;
 
   return (
     <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface-card">
